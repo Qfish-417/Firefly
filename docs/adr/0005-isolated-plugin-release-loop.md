@@ -17,6 +17,8 @@ Run independent gates in a digest-pinned Docker image with no network, a read-on
 
 Persist Plugin, PluginVersion, PluginRelease, PluginReleaseTransition, SandboxRun and CanaryEvaluation records in PostgreSQL. A release proposal must reference a persisted ChangeSet and a completed governed Experience Engineer Task. Verification and release approval are independent evidence requirements. Canary routing uses deterministic buckets but first requires an explicit subject allowlist or prefix. Candidate activation and digest rollback update the active version pointer in the release transition transaction and emit an Outbox event.
 
+Expose the sequence through the Control Plane `PluginReleaseWorkflow`. It owns build-and-verify preparation, the release approval boundary, canary resolution and evaluation completion. Tests and callers do not advance release states directly.
+
 ## Consequences
 
 - M3 tests require PostgreSQL, Docker and a pinned sandbox image.

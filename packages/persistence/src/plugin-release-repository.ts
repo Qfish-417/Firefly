@@ -375,6 +375,14 @@ export class PluginReleaseRepository {
       .executeTakeFirst();
   }
 
+  async getVersionById(versionId: string): Promise<PluginVersionRecord | undefined> {
+    return this.db
+      .selectFrom("questlab.plugin_version")
+      .selectAll()
+      .where("version_id", "=", versionId)
+      .executeTakeFirst();
+  }
+
   private async assertEvidence(
     trx: Transaction<QuestLabDatabase>,
     release: PluginReleaseRecord,

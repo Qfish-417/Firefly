@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,13 +14,12 @@ import {
   type LearningFinding,
   type TaskEnvelope,
 } from "@firefly/contracts";
+import { PluginReleaseWorkflow } from "@firefly/control-plane";
 import { fingerprintTask } from "@firefly/governance";
 import {
   DockerSandboxRunner,
   GitWorktreeBuilder,
-  createVerificationReport,
   digestFiles,
-  resolveCanaryVersion,
 } from "@firefly/plugin-platform";
 import {
   ApprovalRepository,
@@ -48,7 +47,6 @@ test(
     await migrateToLatest(connectionString);
     const db = createDatabase(connectionString);
     const fixtureRoot = await mkdtemp(join(tmpdir(), "firefly-plugin-fixture-"));
-    let cleanupBuild: (() => Promise<void>) | undefined;
     try {
       await sql`
         TRUNCATE TABLE questlab.outbox_event, questlab.inbox_receipt,
@@ -86,13 +84,40 @@ test(
       });
       assert.equal(baselineSandbox.status, "failed");
 
-      const builder = new GitWorktreeBuilder(fixtureRoot);
-      const build = await builder.build({
+      const checks = [
+        "physics_invariants",
+        "assessment_invariance",
+        "accessibility",
+        "historical_replay",
+      ].map((name) => ({
+        name,
+        command: ["node", "plugins/solar-energy/test/gate.mjs", name],
+      }));
+      const releaseId = "plugin-release.solar-energy.1.3.0";
+      const canaryPolicy = {
+        percentage: 100,
+        authorized_subjects: [],
+        subject_prefixes: ["synthetic."],
+      } as const;
+      const workflow = new PluginReleaseWorkflow(
+        db,
+        new GitWorktreeBuilder(fixtureRoot),
+        new DockerSandboxRunner(sandboxImage),
+      );
+      const prepared = await workflow.prepare({
+        release_id: releaseId,
         run_id: runId,
         repository_path: repositoryPath,
         base_ref: "HEAD",
         plugin_id: "solar-energy",
+        candidate_version_id: "plugin-version.solar-energy.1.3.0",
         candidate_version: "1.3.0",
+        rollback_version_id: "plugin-version.solar-energy.1.2.0",
+        baseline_version: "1.2.0",
+        baseline_source_commit: sourceCommit,
+        authorized_task_id: task.message_id,
+        canary_policy: canaryPolicy,
+        checks,
         plan,
         patch_files: [
           {
@@ -108,157 +133,55 @@ test(
         generated_test_paths: ["plugins/solar-energy/test/gate.mjs"],
         owner_id: ownerId,
       });
-      cleanupBuild = build.cleanup;
-      assert.match(build.change_set.patch_commit, /^[a-f0-9]{40}$/);
-      assert.deepEqual(build.change_set.changed_paths, [
+      assert.equal(prepared.release.state, "awaiting_approval");
+      assert.equal(prepared.sandbox.status, "passed");
+      assert.equal(prepared.sandbox.network, "none");
+      assert.equal(prepared.sandbox.read_only, true);
+      assert.match(prepared.change_set.patch_commit, /^[a-f0-9]{40}$/);
+      assert.deepEqual(prepared.change_set.changed_paths, [
         "plugins/solar-energy/manifest.json",
         "plugins/solar-energy/src/daylight.mjs",
       ]);
-      assert.notEqual(build.change_set.plugin_artifact.digest, baselineArtifact.digest);
-      assertContract("ChangeSet", build.change_set);
-
-      const checks = [
-        "physics_invariants",
-        "assessment_invariance",
-        "accessibility",
-        "historical_replay",
-      ].map((name) => ({
-        name,
-        command: ["node", "plugins/solar-energy/test/gate.mjs", name],
-      }));
-      const startedAt = new Date();
-      const sandbox = await new DockerSandboxRunner(sandboxImage).run({
-        run_id: runId,
-        worktree_path: build.worktree_path,
-        owner_id: ownerId,
-        checks,
-      });
-      const completedAt = new Date();
-      assert.equal(sandbox.status, "passed");
-      assert.equal(sandbox.network, "none");
-      assert.equal(sandbox.read_only, true);
-
-      const artifacts = new ArtifactRepository(db);
-      await artifacts.store({ ...build.change_set.plugin_artifact, metadata: { run_id: runId, kind: "candidate-plugin" } });
-      for (const generatedTest of build.change_set.generated_tests) {
-        await artifacts.store({ ...generatedTest, metadata: { run_id: runId, kind: "gate-test" } });
-      }
-      for (const result of sandbox.checks) {
-        await artifacts.store({
-          ...result.evidence,
-          lineage_ids: [build.change_set.plugin_artifact.artifact_id],
-          metadata: { run_id: runId, kind: "sandbox-evidence", check: result.name },
-        });
-      }
-      const vertical = new VerticalSliceRepository(db);
-      await vertical.recordChangeSet(runId, `result.${task.message_id}`, build.change_set);
-      const verification = createVerificationReport({ run_id: runId, change_set: build.change_set, sandbox });
-      assertContract("VerificationReport", verification);
-      await vertical.recordVerification(runId, "event.sandbox-passed", verification);
-
+      assert.notEqual(prepared.change_set.plugin_artifact.digest, baselineArtifact.digest);
+      assertContract("ChangeSet", prepared.change_set);
+      assertContract("VerificationReport", prepared.verification);
       const releases = new PluginReleaseRepository(db);
-      await releases.registerBaseline({
-        plugin_id: "solar-energy",
-        version_id: "plugin-version.solar-energy.1.2.0",
-        version: "1.2.0",
-        artifact: baselineArtifact,
-        source_commit: sourceCommit,
-      });
-      const releaseId = "plugin-release.solar-energy.1.3.0";
-      const canaryPolicy = {
-        percentage: 100,
-        authorized_subjects: [],
-        subject_prefixes: ["synthetic."],
-      } satisfies JsonObject;
-      const proposal = {
+      assert.equal((await releases.propose({
         release_id: releaseId,
         run_id: runId,
         plugin_id: "solar-energy",
         candidate_version_id: "plugin-version.solar-energy.1.3.0",
         candidate_version: "1.3.0",
-        candidate_artifact: build.change_set.plugin_artifact,
-        source_commit: build.change_set.patch_commit,
+        candidate_artifact: prepared.change_set.plugin_artifact,
+        source_commit: prepared.change_set.patch_commit,
         rollback_version_id: "plugin-version.solar-energy.1.2.0",
-        change_set: build.change_set,
+        change_set: prepared.change_set,
         authorized_task_id: task.message_id,
-        canary_policy: canaryPolicy,
-      } as const;
-      await releases.propose(proposal);
-      assert.equal((await releases.propose(proposal)).release_id, releaseId);
-      const sandboxRecord = {
-        sandbox_run_id: `sandbox.${runId}`,
-        release_id: releaseId,
-        status: sandbox.status,
-        image: sandbox.image,
-        limits: sandbox.limits as unknown as JsonObject,
-        checks: sandbox.checks.map((check) => ({ name: check.name, status: check.status, evidence_id: check.evidence.artifact_id })),
-        started_at: startedAt,
-        completed_at: completedAt,
-      } as const;
-      await releases.recordSandboxRun(sandboxRecord);
-      assert.equal((await releases.recordSandboxRun(sandboxRecord)).sandbox_run_id, sandboxRecord.sandbox_run_id);
-      let release = (await releases.transition(releaseId, transition("sandbox", "sandbox_passed", 0))).release;
-      release = (await releases.transition(releaseId, {
-        ...transition("verification", "verification_passed", 1),
-        verification_report_id: verification.report_id,
-      })).release;
-      release = (await releases.transition(releaseId, transition("approval-request", "request_approval", 2))).release;
-      assert.equal(release.state, "awaiting_approval");
-
-      const approvalId = `approval.${releaseId}`;
-      const approvals = new ApprovalRepository(db);
-      await approvals.request({
-        id: approvalId,
-        run_id: runId,
-        subject_type: "PluginRelease",
-        subject_id: releaseId,
-        requested_by: "plugin-platform",
-      });
-      await approvals.approveSubject(
-        approvalId,
-        "PluginRelease",
+        canary_policy: canaryPolicy as unknown as JsonObject,
+      })).release_id, releaseId);
+      let release = await workflow.approveRelease(
         releaseId,
         "release-manager",
         "independent gates passed",
       );
-      release = (await releases.transition(releaseId, {
-        ...transition("approved", "approve", 3),
-        approval_id: approvalId,
-      })).release;
       assert.equal(release.state, "canary");
-
-      const authorized = resolveCanaryVersion({
-        release_id: releaseId,
-        subject_id: "synthetic.learner.001",
-        baseline_digest: baselineArtifact.digest,
-        candidate_digest: build.change_set.plugin_artifact.digest,
-        policy: canaryPolicy,
-      });
-      const unauthorized = resolveCanaryVersion({
-        release_id: releaseId,
-        subject_id: "learner.real.001",
-        baseline_digest: baselineArtifact.digest,
-        candidate_digest: build.change_set.plugin_artifact.digest,
-        policy: canaryPolicy,
-      });
-      assert.equal(authorized.selected_digest, build.change_set.plugin_artifact.digest);
+      const authorized = await workflow.resolveCanary(releaseId, "synthetic.learner.001");
+      const unauthorized = await workflow.resolveCanary(releaseId, "learner.real.001");
+      assert.equal(authorized.selected_digest, prepared.change_set.plugin_artifact.digest);
       assert.equal(unauthorized.selected_digest, baselineArtifact.digest);
-
-      await releases.recordCanaryEvaluation({
+      release = await workflow.completeCanary({
         evaluation_id: `canary.${runId}.success`,
         release_id: releaseId,
         cohort: "synthetic",
         sample_size: 50,
         metrics: { mastery_delta: 0.12, harm_signals: 0 },
         decision: "activate",
-        evidence_refs: sandbox.checks.map((check) => check.evidence),
+        evidence_refs: prepared.sandbox.checks.map((check) => check.evidence),
         evaluated_at: new Date(),
       });
-      release = (await releases.transition(releaseId, transition("canary-success", "canary_succeeded", 4))).release;
       assert.equal(release.state, "active");
-      assert.equal((await releases.getActiveVersion("solar-energy"))?.digest, build.change_set.plugin_artifact.digest);
-
-      await releases.recordCanaryEvaluation({
+      assert.equal((await releases.getActiveVersion("solar-energy"))?.digest, prepared.change_set.plugin_artifact.digest);
+      release = await workflow.completeCanary({
         evaluation_id: `canary.${runId}.fault-injection`,
         release_id: releaseId,
         cohort: "synthetic-fault-injection",
@@ -268,9 +191,9 @@ test(
         evidence_refs: [],
         evaluated_at: new Date(Date.now() + 1),
       });
-      release = (await releases.transition(releaseId, transition("rollback", "rollback", 5))).release;
       assert.equal(release.state, "rolled_back");
       assert.equal((await releases.getActiveVersion("solar-energy"))?.digest, baselineArtifact.digest);
+      const vertical = new VerticalSliceRepository(db);
       const trace = await vertical.getTrace(runId);
       assert.equal((trace?.plugin_release as { state?: string } | undefined)?.state, "rolled_back");
       assert.equal(trace?.plugin_release_transitions.length, 6);
@@ -281,7 +204,6 @@ test(
         baselineArtifact.digest,
       );
     } finally {
-      await cleanupBuild?.();
       await rm(fixtureRoot, { recursive: true, force: true });
       await db.destroy();
     }
@@ -442,19 +364,6 @@ async function completeGovernedEngineerTask(
   await tasks.claimNext("experience-engineer", "worker.m3", 30_000, now);
   await tasks.complete(task.message_id, "worker.m3", { status: "patch-proposal-accepted" }, new Date(now.getTime() + 1));
   return task;
-}
-
-function transition(
-  suffix: string,
-  event: Parameters<PluginReleaseRepository["transition"]>[1]["event"],
-  expectedVersion: number,
-) {
-  return {
-    event_id: `event.plugin-release.${suffix}`,
-    event,
-    expected_version: expectedVersion,
-    occurred_at: new Date(Date.now() + expectedVersion),
-  };
 }
 
 async function git(cwd: string, args: readonly string[]): Promise<string> {

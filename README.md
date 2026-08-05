@@ -78,7 +78,7 @@ solar-energy@1.2.0 忽略昼夜变化
 - M1 PostgreSQL 事实层已落地：`packages/persistence` 提供迁移、EvolutionRun 原子状态迁移、WorkflowTask 租约与检查点、Outbox / Inbox，以及 Artifact ACL 与血缘元数据。
 - M2 人工闭环已落地：`packages/agent-kernel`、`agents/*` 和 `packages/control-plane` 提供三个可拆分 Stub Agent、人工审批边界、确定性验证/Outcome 以及只读 Admin API。
 - M2.1 治理与循环哨兵已落地：`packages/governance`、治理契约和 PostgreSQL 因果图实现跳数、任务数、状态迁移数、重试上限、同一 epoch 指纹去重、自委派阻断、事件风暴检测与 Agent/Run 隔离。
-- M3 插件发布闭环已落地：`packages/plugin-platform` 和 `plugins/solar-energy` 提供批准路径约束、真实 Git worktree Commit、跨平台稳定 Digest、固定镜像 Docker Sandbox、四项独立门禁、二次发布审批、授权 Canary、原子激活与按 Digest 回滚。
+- M3 插件发布闭环已落地：`packages/control-plane` 的 `PluginReleaseWorkflow` 编排 `packages/plugin-platform` 和 `plugins/solar-energy`，提供批准路径约束、真实 Git worktree Commit、跨平台稳定 Digest、固定镜像 Docker Sandbox、四项独立门禁、二次发布审批、授权 Canary、原子激活与按 Digest 回滚。
 - M3 发布事实由 PostgreSQL 的 PluginVersion、PluginRelease、SandboxRun、CanaryEvaluation 与 Outbox 记录；发布必须引用已完成的受治理 Experience Engineer Task。
 - 旧 Java/Python 原型仍在原目录，只作追溯参考，不被新 TypeScript packages 依赖。
 

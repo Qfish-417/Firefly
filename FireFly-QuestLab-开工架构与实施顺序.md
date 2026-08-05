@@ -296,6 +296,7 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 - 物理不变量、Assessment 契约不变性、可访问性和历史 Replay 全部通过后，才能请求独立 PluginRelease 审批。
 - Canary 只解析给显式 allowlist 或 subject prefix 内的合成/内部对象；未授权对象即使百分比为 100 也继续使用基线 Digest。
 - 激活候选和回滚基线都在 PluginRelease 状态迁移事务中原子更新活动版本指针并写 Outbox。
+- Control Plane 的 `PluginReleaseWorkflow` 是正式用例入口，负责构建验证、等待发布审批、解析 Canary 和按最新评估完成激活/回滚；测试不直接拼接发布状态。
 
 ### Step 5：Model Gateway 与 Agent
 
