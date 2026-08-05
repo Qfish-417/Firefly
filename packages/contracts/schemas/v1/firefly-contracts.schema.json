@@ -1,0 +1,475 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://firefly.questlab/schemas/v1/contracts.json",
+  "title": "FireFly QuestLab contracts v1",
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]*$"
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "uri",
+        "digest",
+        "media_type",
+        "scope",
+        "owner_id",
+        "lineage_ids"
+      ],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/Identifier" },
+        "uri": { "type": "string", "format": "uri" },
+        "digest": { "$ref": "#/$defs/Digest" },
+        "media_type": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "scope": {
+          "enum": ["public", "tenant", "agent-private", "user-private", "session"]
+        },
+        "owner_id": { "$ref": "#/$defs/Identifier" },
+        "lineage_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Identifier" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "RetryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts", "initial_backoff_ms", "max_backoff_ms"],
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "initial_backoff_ms": { "type": "integer", "minimum": 0 },
+        "max_backoff_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "TaskLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duration_sec", "heartbeat_sec"],
+      "properties": {
+        "duration_sec": { "type": "integer", "minimum": 5, "maximum": 86400 },
+        "heartbeat_sec": { "type": "integer", "minimum": 1, "maximum": 3600 }
+      }
+    },
+    "TaskBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_tokens", "max_cost_usd", "max_duration_sec"],
+      "properties": {
+        "max_tokens": { "type": "integer", "minimum": 0 },
+        "max_cost_usd": { "type": "number", "minimum": 0 },
+        "max_duration_sec": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "TaskEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "message_id",
+        "message_type",
+        "schema_version",
+        "correlation_id",
+        "trace_id",
+        "producer",
+        "subject",
+        "idempotency_key",
+        "created_at",
+        "deadline",
+        "cancellation_token",
+        "lease",
+        "retry_policy",
+        "budget",
+        "artifact_refs",
+        "payload"
+      ],
+      "properties": {
+        "message_id": { "$ref": "#/$defs/Identifier" },
+        "message_type": { "$ref": "#/$defs/Identifier" },
+        "schema_version": { "const": 1 },
+        "correlation_id": { "$ref": "#/$defs/Identifier" },
+        "causation_id": { "$ref": "#/$defs/Identifier" },
+        "trace_id": { "$ref": "#/$defs/Identifier" },
+        "producer": { "$ref": "#/$defs/Identifier" },
+        "subject": { "$ref": "#/$defs/Identifier" },
+        "idempotency_key": { "type": "string", "minLength": 4, "maxLength": 256 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "deadline": { "type": "string", "format": "date-time" },
+        "cancellation_token": { "$ref": "#/$defs/Identifier" },
+        "lease": { "$ref": "#/$defs/TaskLease" },
+        "retry_policy": { "$ref": "#/$defs/RetryPolicy" },
+        "budget": { "$ref": "#/$defs/TaskBudget" },
+        "artifact_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        },
+        "payload": { "type": "object" }
+      }
+    },
+    "EventEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "event_type",
+        "schema_version",
+        "correlation_id",
+        "trace_id",
+        "producer",
+        "idempotency_key",
+        "occurred_at",
+        "artifact_refs",
+        "payload"
+      ],
+      "properties": {
+        "event_id": { "$ref": "#/$defs/Identifier" },
+        "event_type": { "$ref": "#/$defs/Identifier" },
+        "schema_version": { "const": 1 },
+        "correlation_id": { "$ref": "#/$defs/Identifier" },
+        "causation_id": { "$ref": "#/$defs/Identifier" },
+        "trace_id": { "$ref": "#/$defs/Identifier" },
+        "producer": { "$ref": "#/$defs/Identifier" },
+        "idempotency_key": { "type": "string", "minLength": 4, "maxLength": 256 },
+        "occurred_at": { "type": "string", "format": "date-time" },
+        "artifact_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        },
+        "payload": { "type": "object" }
+      }
+    },
+    "ExecutionSnapshots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_version"],
+      "properties": {
+        "input_version": { "$ref": "#/$defs/Identifier" },
+        "model": { "$ref": "#/$defs/Identifier" },
+        "prompt": { "$ref": "#/$defs/Identifier" },
+        "tools": { "$ref": "#/$defs/Identifier" },
+        "knowledge": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "AgentResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result_id",
+        "task_id",
+        "schema_version",
+        "status",
+        "completed_at",
+        "snapshots",
+        "artifact_refs",
+        "output"
+      ],
+      "properties": {
+        "result_id": { "$ref": "#/$defs/Identifier" },
+        "task_id": { "$ref": "#/$defs/Identifier" },
+        "schema_version": { "const": 1 },
+        "status": { "enum": ["completed", "failed", "canceled", "needs_human"] },
+        "completed_at": { "type": "string", "format": "date-time" },
+        "snapshots": { "$ref": "#/$defs/ExecutionSnapshots" },
+        "artifact_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        },
+        "output": { "type": "object" },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "$ref": "#/$defs/Identifier" },
+            "message": { "type": "string", "minLength": 1 },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "failed" } } },
+          "then": {
+            "required": ["error"],
+            "properties": { "error": true }
+          }
+        }
+      ]
+    },
+    "PluginExposure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin_id", "version", "digest"],
+      "properties": {
+        "plugin_id": { "$ref": "#/$defs/Identifier" },
+        "version": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "#/$defs/Digest" }
+      }
+    },
+    "LearningEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "learner_id",
+        "world_id",
+        "mission_id",
+        "event_type",
+        "occurred_at",
+        "artifact_refs",
+        "attributes"
+      ],
+      "properties": {
+        "event_id": { "$ref": "#/$defs/Identifier" },
+        "learner_id": { "$ref": "#/$defs/Identifier" },
+        "world_id": { "$ref": "#/$defs/Identifier" },
+        "mission_id": { "$ref": "#/$defs/Identifier" },
+        "event_type": {
+          "enum": [
+            "mission_activated",
+            "challenge_attempted",
+            "artifact_submitted",
+            "assessment_completed",
+            "hint_consumed",
+            "delayed_review_completed",
+            "transfer_task_completed"
+          ]
+        },
+        "occurred_at": { "type": "string", "format": "date-time" },
+        "plugin_exposure": { "$ref": "#/$defs/PluginExposure" },
+        "artifact_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        },
+        "attributes": { "type": "object" }
+      }
+    },
+    "SuccessCriteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["no_harm_constraints"],
+      "properties": {
+        "mastery_delta": { "type": "number", "minimum": -1, "maximum": 1 },
+        "delayed_retention_delta": { "type": "number", "minimum": -1, "maximum": 1 },
+        "transfer_success_delta": { "type": "number", "minimum": -1, "maximum": 1 },
+        "no_harm_constraints": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        }
+      }
+    },
+    "LearningFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "scope",
+        "problem",
+        "evidence_refs",
+        "affected_concepts",
+        "confidence",
+        "severity",
+        "recommended_change_type",
+        "success_criteria"
+      ],
+      "properties": {
+        "finding_id": { "$ref": "#/$defs/Identifier" },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["world_id"],
+          "properties": {
+            "world_id": { "$ref": "#/$defs/Identifier" },
+            "plugin_version": { "type": "string", "minLength": 1 },
+            "cohort": { "$ref": "#/$defs/Identifier" }
+          }
+        },
+        "problem": { "type": "string", "minLength": 10 },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        },
+        "affected_concepts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "severity": { "enum": ["low", "medium", "high", "critical"] },
+        "recommended_change_type": {
+          "enum": ["instruction", "plugin", "plugin_and_instruction"]
+        },
+        "success_criteria": { "$ref": "#/$defs/SuccessCriteria" }
+      }
+    },
+    "ImprovementPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_id",
+        "finding_id",
+        "status",
+        "change_class",
+        "target_artifact",
+        "allowed_paths",
+        "risk_level",
+        "verification_contract",
+        "rollback_target"
+      ],
+      "properties": {
+        "plan_id": { "$ref": "#/$defs/Identifier" },
+        "finding_id": { "$ref": "#/$defs/Identifier" },
+        "status": { "enum": ["proposed", "approved", "rejected"] },
+        "change_class": { "enum": ["A1", "A2", "A3"] },
+        "target_artifact": { "$ref": "#/$defs/ArtifactRef" },
+        "allowed_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "risk_level": { "enum": ["low", "medium", "high"] },
+        "verification_contract": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "rollback_target": { "$ref": "#/$defs/ArtifactRef" },
+        "approved_by": { "$ref": "#/$defs/Identifier" },
+        "approved_at": { "type": "string", "format": "date-time" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "approved" } } },
+          "then": {
+            "required": ["approved_by", "approved_at"],
+            "properties": {
+              "approved_by": true,
+              "approved_at": true
+            }
+          }
+        }
+      ]
+    },
+    "ChangeSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "changeset_id",
+        "plan_id",
+        "source_snapshot",
+        "patch_commit",
+        "plugin_artifact",
+        "generated_tests",
+        "changed_paths",
+        "risk_declaration"
+      ],
+      "properties": {
+        "changeset_id": { "$ref": "#/$defs/Identifier" },
+        "plan_id": { "$ref": "#/$defs/Identifier" },
+        "source_snapshot": { "$ref": "#/$defs/ArtifactRef" },
+        "patch_commit": { "type": "string", "pattern": "^[a-f0-9]{7,64}$" },
+        "plugin_artifact": { "$ref": "#/$defs/ArtifactRef" },
+        "generated_tests": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        },
+        "changed_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "risk_declaration": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "VerificationCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "evidence_refs"],
+      "properties": {
+        "name": { "$ref": "#/$defs/Identifier" },
+        "status": { "enum": ["passed", "failed", "skipped"] },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        }
+      }
+    },
+    "VerificationReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report_id", "changeset_id", "status", "baseline_snapshot", "checks"],
+      "properties": {
+        "report_id": { "$ref": "#/$defs/Identifier" },
+        "changeset_id": { "$ref": "#/$defs/Identifier" },
+        "status": { "enum": ["passed", "failed"] },
+        "baseline_snapshot": { "$ref": "#/$defs/ArtifactRef" },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/VerificationCheck" }
+        }
+      }
+    },
+    "LearningOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome_id",
+        "plan_id",
+        "plugin_artifact",
+        "cohort",
+        "metrics",
+        "decision",
+        "evidence_refs"
+      ],
+      "properties": {
+        "outcome_id": { "$ref": "#/$defs/Identifier" },
+        "plan_id": { "$ref": "#/$defs/Identifier" },
+        "plugin_artifact": { "$ref": "#/$defs/ArtifactRef" },
+        "cohort": { "$ref": "#/$defs/Identifier" },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mastery_delta",
+            "delayed_retention_delta",
+            "transfer_success_delta",
+            "harm_signals"
+          ],
+          "properties": {
+            "mastery_delta": { "type": "number", "minimum": -1, "maximum": 1 },
+            "delayed_retention_delta": { "type": "number", "minimum": -1, "maximum": 1 },
+            "transfer_success_delta": { "type": "number", "minimum": -1, "maximum": 1 },
+            "harm_signals": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "decision": {
+          "enum": ["recommend_activate", "recommend_rollback", "needs_human"]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        }
+      }
+    }
+  }
+}

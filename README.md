@@ -72,9 +72,13 @@ solar-energy@1.2.0 忽略昼夜变化
 
 ## 当前仓库状态
 
-- 当前目录尚未初始化为 Git 仓库。
-- 当前环境没有可用的 GitHub CLI `gh`。
-- 本地编码不需要 GitHub 权限；worktree、Commit 和回滚需要先建立本地 Git 仓库。
-- 创建远端、推送分支、开 PR 和配置 Actions 时，再按最小权限单独授权。
+- Git 仓库已关联 `Qfish-417/Firefly`，开发采用短分支和可审查提交。
+- M0 第一批已落地：`packages/contracts` 提供 v1 Schema 与运行时校验，`packages/learning-domain` 提供四个可测试状态机。
+- 旧 Java/Python 原型仍在原目录，只作追溯参考，不被新 TypeScript packages 依赖。
 
-在正式写代码前，需要先确定：在当前目录初始化新仓库，还是另建 `firefly-questlab` 仓库并将现有原型归档到 `legacy/prototype-v0`。
+开发检查：
+
+```bash
+npm install
+npm run check
+```
