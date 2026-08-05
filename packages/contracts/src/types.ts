@@ -36,6 +36,17 @@ export interface TaskBudget {
   readonly max_duration_sec: number;
 }
 
+export interface GovernanceContext {
+  readonly root_run_id: string;
+  readonly parent_task_id?: string;
+  readonly hop_count: number;
+  readonly max_hops: number;
+  readonly task_fingerprint: `sha256:${string}`;
+  readonly policy_snapshot: string;
+  readonly epoch: number;
+  readonly cooldown_key?: string;
+}
+
 export interface TaskEnvelope<TPayload extends JsonObject = JsonObject> {
   readonly message_id: string;
   readonly message_type: string;
@@ -52,6 +63,7 @@ export interface TaskEnvelope<TPayload extends JsonObject = JsonObject> {
   readonly lease: TaskLease;
   readonly retry_policy: RetryPolicy;
   readonly budget: TaskBudget;
+  readonly governance?: GovernanceContext;
   readonly artifact_refs: readonly ArtifactRef[];
   readonly payload: TPayload;
 }
@@ -66,6 +78,7 @@ export interface EventEnvelope<TPayload extends JsonObject = JsonObject> {
   readonly producer: string;
   readonly idempotency_key: string;
   readonly occurred_at: string;
+  readonly governance?: GovernanceContext;
   readonly artifact_refs: readonly ArtifactRef[];
   readonly payload: TPayload;
 }

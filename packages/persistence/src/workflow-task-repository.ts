@@ -1,5 +1,5 @@
-import type { AgentResult, JsonObject } from "@firefly/contracts";
-import { sql, type Kysely, type Selectable } from "kysely";
+import type { AgentResult, ArtifactRef, GovernanceContext, JsonObject } from "@firefly/contracts";
+import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 
 import type { QuestLabDatabase, WorkflowTaskTable } from "./database.ts";
 
@@ -14,6 +14,12 @@ export interface EnqueueTaskInput {
   readonly available_at: Date;
   readonly deadline: Date;
   readonly max_attempts: number;
+}
+
+export interface GovernedEnqueueTaskInput extends Omit<EnqueueTaskInput, "artifact_refs"> {
+  readonly artifact_refs: readonly ArtifactRef[];
+  readonly governance: GovernanceContext;
+  readonly max_tasks_per_run: number;
 }
 
 export type WorkflowTaskRecord = Selectable<WorkflowTaskTable>;
@@ -38,6 +44,33 @@ export class TaskLeaseError extends Error {
   }
 }
 
+export type TaskGovernanceViolation =
+  | "hop_limit"
+  | "task_repetition"
+  | "budget_exhausted"
+  | "delegation_violation";
+
+export class TaskGovernanceError extends Error {
+  readonly violation: TaskGovernanceViolation;
+  readonly runId: string;
+  readonly fingerprint: string;
+
+  constructor(
+    violation: TaskGovernanceViolation,
+    runId: string,
+    fingerprint: string,
+    detail: string,
+  ) {
+    super(`Governance rejected task for ${runId}: ${detail}`);
+    this.name = "TaskGovernanceError";
+    this.violation = violation;
+    this.runId = runId;
+    this.fingerprint = fingerprint;
+  }
+}
+
+type DatabaseExecutor = Kysely<QuestLabDatabase> | Transaction<QuestLabDatabase>;
+
 export class WorkflowTaskRepository {
   private readonly db: Kysely<QuestLabDatabase>;
 
@@ -46,10 +79,179 @@ export class WorkflowTaskRepository {
   }
 
   async enqueue(input: EnqueueTaskInput): Promise<WorkflowTaskRecord> {
-    const inserted = await this.db
+    return this.enqueueWith(this.db, input);
+  }
+
+  async enqueueGoverned(input: GovernedEnqueueTaskInput): Promise<WorkflowTaskRecord> {
+    const { governance } = input;
+    if (governance.root_run_id !== input.run_id) {
+      throw new TaskGovernanceError(
+        "delegation_violation",
+        input.run_id,
+        governance.task_fingerprint,
+        "root_run_id does not match run_id",
+      );
+    }
+    if (
+      governance.hop_count < 0 ||
+      governance.max_hops < 1 ||
+      governance.hop_count > governance.max_hops
+    ) {
+      throw new TaskGovernanceError(
+        "hop_limit",
+        input.run_id,
+        governance.task_fingerprint,
+        `hop ${governance.hop_count} exceeds maximum ${governance.max_hops}`,
+      );
+    }
+    if (input.max_tasks_per_run < 1) {
+      throw new TypeError("max_tasks_per_run must be positive");
+    }
+
+    return this.db.transaction().execute(async (trx) => {
+      const replay = await trx
+        .selectFrom("questlab.workflow_task")
+        .selectAll()
+        .where("idempotency_key", "=", input.idempotency_key)
+        .executeTakeFirst();
+      if (replay) {
+        this.assertReplayMatches(replay, input);
+        return replay;
+      }
+
+      await trx
+        .insertInto("questlab.run_budget_usage")
+        .values({ run_id: input.run_id })
+        .onConflict((conflict) => conflict.column("run_id").doNothing())
+        .execute();
+      const usage = await trx
+        .selectFrom("questlab.run_budget_usage")
+        .selectAll()
+        .where("run_id", "=", input.run_id)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (usage.tasks_created >= input.max_tasks_per_run) {
+        throw new TaskGovernanceError(
+          "budget_exhausted",
+          input.run_id,
+          governance.task_fingerprint,
+          `task budget ${input.max_tasks_per_run} is exhausted`,
+        );
+      }
+
+      const quarantined = await trx
+        .selectFrom("questlab.quarantine")
+        .select("quarantine_id")
+        .where("run_id", "=", input.run_id)
+        .where("active", "=", true)
+        .where((expression) =>
+          expression.or([
+            expression.and([
+              expression("subject_type", "=", "run"),
+              expression("subject_id", "=", input.run_id),
+            ]),
+            expression.and([
+              expression("subject_type", "=", "agent"),
+              expression("subject_id", "=", input.subject),
+            ]),
+          ]),
+        )
+        .executeTakeFirst();
+      if (quarantined) {
+        throw new TaskGovernanceError(
+          "delegation_violation",
+          input.run_id,
+          governance.task_fingerprint,
+          `${input.subject} is quarantined`,
+        );
+      }
+
+      const repeated = await trx
+        .selectFrom("questlab.workflow_task")
+        .select("id")
+        .where("run_id", "=", input.run_id)
+        .where("epoch", "=", governance.epoch)
+        .where("task_fingerprint", "=", governance.task_fingerprint)
+        .executeTakeFirst();
+      if (repeated) {
+        throw new TaskGovernanceError(
+          "task_repetition",
+          input.run_id,
+          governance.task_fingerprint,
+          `fingerprint already exists in epoch ${governance.epoch}`,
+        );
+      }
+
+      if (governance.parent_task_id) {
+        const parent = await trx
+          .selectFrom("questlab.workflow_task")
+          .select(["id", "run_id", "subject", "hop_count", "root_run_id"])
+          .where("id", "=", governance.parent_task_id)
+          .executeTakeFirst();
+        if (
+          !parent ||
+          parent.run_id !== input.run_id ||
+          parent.root_run_id !== governance.root_run_id ||
+          governance.hop_count !== parent.hop_count + 1 ||
+          parent.subject === input.subject
+        ) {
+          throw new TaskGovernanceError(
+            "delegation_violation",
+            input.run_id,
+            governance.task_fingerprint,
+            "parent task is missing, cross-run, wrong-depth, or delegates to the same Agent",
+          );
+        }
+      } else if (governance.hop_count !== 0) {
+        throw new TaskGovernanceError(
+          "delegation_violation",
+          input.run_id,
+          governance.task_fingerprint,
+          "a root task must have hop_count 0",
+        );
+      }
+
+      const inserted = await this.enqueueWith(trx, input);
+      if (governance.parent_task_id) {
+        await trx
+          .insertInto("questlab.causal_edge")
+          .values({
+            run_id: input.run_id,
+            parent_node_id: governance.parent_task_id,
+            child_node_id: input.id,
+            edge_type: "task",
+          })
+          .execute();
+      }
+      await trx
+        .updateTable("questlab.run_budget_usage")
+        .set({
+          tasks_created: sql<number>`tasks_created + 1`,
+          updated_at: new Date(),
+        })
+        .where("run_id", "=", input.run_id)
+        .execute();
+      return inserted;
+    });
+  }
+
+  private async enqueueWith(
+    db: DatabaseExecutor,
+    input: EnqueueTaskInput | GovernedEnqueueTaskInput,
+  ): Promise<WorkflowTaskRecord> {
+    const governance = "governance" in input ? input.governance : undefined;
+    const inserted = await db
       .insertInto("questlab.workflow_task")
       .values({
-        ...input,
+        id: input.id,
+        run_id: input.run_id,
+        task_type: input.task_type,
+        subject: input.subject,
+        payload: input.payload,
+        idempotency_key: input.idempotency_key,
+        available_at: input.available_at,
+        deadline: input.deadline,
+        max_attempts: input.max_attempts,
         artifact_refs: JSON.stringify(input.artifact_refs),
         status: "pending",
         attempt: 0,
@@ -59,6 +261,18 @@ export class WorkflowTaskRepository {
         result: null,
         last_error: null,
         completed_at: null,
+        ...(governance
+          ? {
+              root_run_id: governance.root_run_id,
+              parent_task_id: governance.parent_task_id ?? null,
+              hop_count: governance.hop_count,
+              max_hops: governance.max_hops,
+              task_fingerprint: governance.task_fingerprint,
+              policy_snapshot: governance.policy_snapshot,
+              epoch: governance.epoch,
+              cooldown_key: governance.cooldown_key ?? null,
+            }
+          : {}),
       })
       .onConflict((conflict) => conflict.column("idempotency_key").doNothing())
       .returningAll()
@@ -67,11 +281,19 @@ export class WorkflowTaskRepository {
       return inserted;
     }
 
-    const existing = await this.db
+    const existing = await db
       .selectFrom("questlab.workflow_task")
       .selectAll()
       .where("idempotency_key", "=", input.idempotency_key)
       .executeTakeFirstOrThrow();
+    this.assertReplayMatches(existing, input);
+    return existing;
+  }
+
+  private assertReplayMatches(
+    existing: WorkflowTaskRecord,
+    input: Pick<EnqueueTaskInput, "id" | "run_id" | "task_type" | "subject" | "idempotency_key">,
+  ): void {
     if (
       existing.id !== input.id ||
       existing.run_id !== input.run_id ||
@@ -80,7 +302,6 @@ export class WorkflowTaskRepository {
     ) {
       throw new TaskIdempotencyConflictError(input.idempotency_key);
     }
-    return existing;
   }
 
   async findById(taskId: string): Promise<WorkflowTaskRecord | undefined> {

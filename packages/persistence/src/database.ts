@@ -52,6 +52,14 @@ export interface WorkflowTaskTable {
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
   completed_at: Timestamp | null;
+  root_run_id: Generated<string | null>;
+  parent_task_id: Generated<string | null>;
+  hop_count: Generated<number>;
+  max_hops: Generated<number>;
+  task_fingerprint: Generated<string | null>;
+  policy_snapshot: Generated<string | null>;
+  epoch: Generated<number>;
+  cooldown_key: Generated<string | null>;
 }
 
 export interface TaskCheckpointTable {
@@ -196,6 +204,66 @@ export interface LearningOutcomeTable {
   created_at: Generated<Timestamp>;
 }
 
+export interface CausalEdgeTable {
+  run_id: string;
+  parent_node_id: string;
+  child_node_id: string;
+  edge_type: "task" | "event" | "artifact" | "transition";
+  created_at: Generated<Timestamp>;
+}
+
+export interface RunBudgetUsageTable {
+  run_id: string;
+  tasks_created: Generated<number>;
+  transitions_applied: Generated<number>;
+  tokens_used: Generated<number>;
+  cost_microusd: Generated<number>;
+  tool_calls: Generated<number>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface SentinelIncidentTable {
+  incident_id: string;
+  run_id: string;
+  incident_type:
+    | "causal_cycle"
+    | "hop_limit"
+    | "task_repetition"
+    | "budget_exhausted"
+    | "delegation_violation"
+    | "state_oscillation"
+    | "event_storm";
+  severity: "medium" | "high" | "critical";
+  fingerprint: string;
+  status: "open" | "acknowledged" | "resolved";
+  action: "reject" | "pause" | "quarantine" | "needs_human" | "rollback";
+  details: JsonDocument;
+  first_seen_at: Timestamp;
+  last_seen_at: Timestamp;
+  occurrence_count: Generated<number>;
+}
+
+export interface QuarantineTable {
+  quarantine_id: string;
+  run_id: string;
+  subject_type: "run" | "agent" | "task" | "plugin" | "tool";
+  subject_id: string;
+  incident_id: string;
+  reason: string;
+  active: Generated<boolean>;
+  created_at: Generated<Timestamp>;
+  released_at: Timestamp | null;
+  released_by: string | null;
+}
+
+export interface SentinelObservationTable {
+  observation_id: string;
+  run_id: string;
+  signal_type: string;
+  fingerprint: string;
+  observed_at: Timestamp;
+}
+
 export interface QuestLabDatabase {
   "questlab.evolution_run": EvolutionRunTable;
   "questlab.evolution_transition": EvolutionTransitionTable;
@@ -214,6 +282,11 @@ export interface QuestLabDatabase {
   "questlab.change_set": ChangeSetTable;
   "questlab.verification_report": VerificationReportTable;
   "questlab.learning_outcome": LearningOutcomeTable;
+  "questlab.causal_edge": CausalEdgeTable;
+  "questlab.run_budget_usage": RunBudgetUsageTable;
+  "questlab.sentinel_incident": SentinelIncidentTable;
+  "questlab.quarantine": QuarantineTable;
+  "questlab.sentinel_observation": SentinelObservationTable;
 }
 
 export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {

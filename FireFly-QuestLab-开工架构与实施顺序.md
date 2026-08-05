@@ -6,6 +6,8 @@
 
 FireFly QuestLab 应从“模块化单体 + 异步 Worker”开始，而不是先部署三个微服务。三个 Agent 是三个稳定的能力与权限边界，不等于三个必须独立运行的进程。
 
+这不是完全去中心化架构，而是**联邦式执行架构**：Agent 可以拆分、独立部署和独立扩缩容，但策略、预算、审批、因果审计与工作流事实必须集中治理。这样既保留 Agent 的自治能力，也避免多个 Agent 通过相互委派形成不可审计的自循环。
+
 推荐主体：
 
 ```text
@@ -13,6 +15,7 @@ TypeScript monorepo
 ├─ Web / Admin Console
 ├─ Learning Runtime
 ├─ Control Plane
+├─ Governance / Loop Sentinel
 ├─ Model Gateway（pi-ai 多模型适配）
 ├─ 三个 Agent Bundle
 └─ Tool / Plugin / Memory 端口
@@ -106,6 +109,20 @@ Control Plane
 
 Learning Director 与 Experience Engineer 之间没有“请直接把插件改掉”的私聊调用。必须先由 Scientist 形成证据，再由控制面产生经批准的计划。
 
+### 2.6 联邦治理与循环防护
+
+Agent 的执行能力可以分布，但治理决定不能分散到 Agent 自身。每次受治理的 Task 都携带 `root_run_id`、父任务、跳数、任务指纹、策略快照和 epoch；Control Plane 只接受符合当前策略快照的任务。
+
+三层防护：
+
+| 层次 | 机制 | 处理的问题 |
+|---|---|---|
+| 规范层 | 版本化契约、禁止自委派、固定所有者与允许的状态迁移 | 在产生任务前减少非法协作 |
+| 哨兵层 | Loop Sentinel、任务/迁移/重试预算、跳数限制、指纹去重、事件窗口 | 在运行时阻断重复、风暴和无限委派 |
+| 事实层 | `causal_edge`、`run_budget_usage`、`sentinel_incident`、`quarantine` | 保留不可变证据，支持人工恢复、审计和策略调优 |
+
+阻断策略不是一刀切：同一 epoch 的重复任务直接拒绝；自委派隔离违规 Agent；因果环、事件风暴、跳数或 Run 预算耗尽则隔离整个 Run 并转人工处理。解除隔离必须是显式治理操作，不能由触发隔离的 Agent 自行完成。
+
 ## 3. 必须先冻结的契约
 
 编码前先冻结 JSON Schema v1：
@@ -136,6 +153,16 @@ Learning Director 与 Experience Engineer 之间没有“请直接把插件改�
   "idempotency_key": "build:plan_01:solar-energy@1.2.0",
   "deadline": "2026-08-05T12:00:00Z",
   "artifact_refs": [],
+  "governance": {
+    "root_run_id": "evolution_01",
+    "parent_task_id": "task_07",
+    "hop_count": 3,
+    "max_hops": 8,
+    "task_fingerprint": "sha256:...",
+    "policy_snapshot": "governance.default.v1",
+    "epoch": 1,
+    "cooldown_key": "solar-energy:improvement"
+  },
   "payload": {}
 }
 ```
@@ -144,6 +171,8 @@ Learning Director 与 Experience Engineer 之间没有“请直接把插件改�
 
 - Schema 只向后兼容演进；破坏性变化增加主版本。
 - 每个 Task 声明租约、取消令牌、重试策略和预算。
+- 受治理 Task 的父子深度必须连续；同一 Agent 不得成为直接父子任务的双方。
+- `task_fingerprint` 由 Task 类型、目标 Agent、规范化 payload 和 ArtifactRef 计算，不能由 Agent 任意声明。
 - 每个结果带输入快照版本、模型/Prompt/Tool Snapshot 和证据谱系。
 - 大内容不塞入消息，只传 `ArtifactRef + digest + media_type + ACL`。
 - Agent 输出先做 Schema 和权限校验，再进入业务状态机。
@@ -181,6 +210,7 @@ FireFly/
 │  ├─ contracts/
 │  ├─ learning-domain/
 │  ├─ control-plane/
+│  ├─ governance/
 │  ├─ model-gateway/
 │  ├─ agent-kernel/
 │  ├─ tool-platform/
@@ -209,9 +239,9 @@ FireFly/
 
 ## 6. 数据库与实现顺序
 
-### Step 0：仓库决策
+### Step 0：仓库基线（已完成）
 
-- 决定在当前目录初始化新 Git 仓库，还是建立新的 `firefly-questlab` 目录。
+- 当前目录已经初始化为 Git 仓库并关联 `Qfish-417/Firefly`。
 - 旧原型只移动到 `legacy/prototype-v0`，不删除。
 - 建立 ADR、格式化、Lint、Test 和迁移约定。
 
@@ -241,6 +271,14 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 - 不接 LLM，使用固定输入跑通 `LearningEvent -> LearningOutcome`。
 - 三 Agent 先作为可替换 Stub，验证任务租约、重试、取消和恢复。
 - 所有状态和制品在 Admin API 可查询。
+
+### Step 3.5：治理与 Loop Sentinel
+
+- 给 Task / Event 增加可选治理上下文，保持 v1 契约向后兼容。
+- 持久化父子 Task 因果边、Run 预算、哨兵事件、事件窗口与隔离状态。
+- 在同一数据库事务中校验并消耗任务预算；状态迁移同样原子消耗迁移预算。
+- 阻断跳数越界、同 epoch 重复指纹、自委派、因果环、事件风暴和重试越界。
+- Admin Trace 同时返回因果边、预算用量、哨兵事件和隔离记录。
 
 ### Step 4：太阳能插件与独立门禁
 
@@ -283,6 +321,7 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 | M0 契约 | Schema、状态机、ADR | 合同测试与非法转换测试通过 |
 | M1 事实层 | Postgres、Outbox/Inbox、Artifact | 重启可恢复，重复消息无重复副作用 |
 | M2 人工闭环 | 三 Stub Agent、Admin 查询 | 一条因果链完整跑通 |
+| M2.1 治理哨兵 | 规范、预算、因果图、Loop Sentinel、隔离 | 循环、风暴、自委派和预算耗尽均被确定性阻断 |
 | M3 插件闭环 | Sandbox、门禁、Canary、Rollback | 故障注入能恢复指定 Digest |
 | M4 模型闭环 | pi-ai Gateway、三个真实 Agent | Provider 可替换，输出均结构化可追溯 |
 | M5 记忆工具 | 授权检索、聚合、异步工具 | 越权测试、删除传播和长任务恢复通过 |
@@ -299,13 +338,13 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 
 ### 9.1 当前状态
 
-- 当前目录不是 Git 仓库。
-- 当前机器未安装或未暴露 GitHub CLI `gh`。
-- 因此目前无法判断任何 GitHub 账号是否已登录，也不存在可推送的远端。
+- 当前目录已经是 Git 仓库，远端 `origin` 指向 `https://github.com/Qfish-417/Firefly.git`。
+- M0、M1、M2 已通过短分支推送到远端；M2.1 在 `feat/m2-governance-sentinel` 上开发。
+- HTTPS Git 凭据已能完成分支推送；当前实现和测试不依赖 GitHub API。
 
 ### 9.2 本地写代码是否需要 GitHub
 
-不需要。创建目录、编写代码、运行测试和使用本地 Git 都不需要 GitHub 权限。但 Experience Engineer 的 worktree、Commit、Diff、回滚和审计依赖一个本地 Git 仓库，所以正式编码前应先获得用户对“在哪里初始化仓库”的明确选择。
+不需要。创建目录、编写代码、运行测试、Commit 和本地 worktree 都不需要 GitHub API 密钥。当前远端使用 Git HTTPS 凭据进行推送，不应把 Personal Access Token 或其他密钥写进对话、代码、日志或仓库。
 
 ### 9.3 什么时候需要 GitHub
 
@@ -322,12 +361,12 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 
 不建议一开始申请组织管理员权限。首个远端阶段只需：仓库访问、分支推送、PR 读写和 Actions 只读；需要配置 CI、Secrets 或分支保护时再单独授权。
 
-### 9.4 进入编码前需要用户确认的权限动作
+### 9.4 后续远端操作原则
 
-1. 允许在当前目录初始化 Git，或指定一个新的仓库目录。
-2. 若需要远端协作，提供已创建的 GitHub 仓库 URL，或授权创建仓库。
-3. 若由本机操作 GitHub，安装并登录 `gh`，授权最小仓库范围。
-4. 需要推送、开 PR、配置 Actions 或 Secrets 时分别确认，不默认扩大权限。
+1. 普通 Commit、分支和 Push 沿用当前 Git 凭据，不需要额外 API 密钥。
+2. 创建 PR 可由用户打开 GitHub 提示链接，或后续安装并登录 `gh`；只有自动创建 PR 时才需要相应授权。
+3. Actions、Secrets、Environments 和 Branch Protection 在实际使用前分别确认，不默认扩大权限。
+4. 任何凭据只进入本机凭据管理器或 GitHub Secret，不进入 `.env` 示例、测试夹具和 Agent 记忆。
 
 ## 10. 文档事实源
 

@@ -30,7 +30,11 @@ test(
 
     try {
       await sql`
-        TRUNCATE TABLE questlab.evolution_run, questlab.artifact
+        TRUNCATE TABLE
+          questlab.evolution_run,
+          questlab.outbox_event,
+          questlab.inbox_receipt,
+          questlab.artifact
         RESTART IDENTITY CASCADE
       `.execute(db);
 
@@ -74,6 +78,19 @@ test(
         assert.equal(trace.agent_results.length, 5);
         assert.equal(trace.learning_events.length, 2);
         assert.equal(trace.artifacts.length, 5);
+        assert.equal(trace.causal_edges.length, 4);
+        assert.equal(trace.sentinel_incidents.length, 0);
+        assert.equal(trace.quarantines.length, 0);
+        const budget = trace.budget_usage as {
+          readonly tasks_created: number;
+          readonly transitions_applied: number;
+        };
+        assert.equal(budget.tasks_created, 5);
+        assert.equal(budget.transitions_applied, 9);
+        assert.deepEqual(
+          (trace.tasks as readonly { readonly hop_count: number }[]).map((task) => task.hop_count),
+          [0, 1, 2, 3, 4],
+        );
         assert.deepEqual(
           new Set(
             (trace.tasks as readonly { readonly subject: string }[]).map((task) => task.subject),

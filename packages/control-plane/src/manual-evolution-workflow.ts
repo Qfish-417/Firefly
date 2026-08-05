@@ -15,6 +15,12 @@ import {
   type VerificationReport,
 } from "@firefly/contracts";
 import { ExperienceEngineerStub } from "@firefly/experience-engineer";
+import {
+  LoopSentinel,
+  defaultGovernancePolicy,
+  fingerprintTask,
+  type GovernancePolicy,
+} from "@firefly/governance";
 import { LearningDirectorStub } from "@firefly/learning-director";
 import { LearningScientistStub } from "@firefly/learning-scientist";
 import {
@@ -61,6 +67,8 @@ export class ManualEvolutionWorkflow {
   private readonly artifactRepository: ArtifactRepository;
   private readonly verticalRepository: VerticalSliceRepository;
   private readonly agents: AgentRegistry;
+  private readonly sentinel: LoopSentinel;
+  private readonly governancePolicy: GovernancePolicy;
   private readonly now: () => Date;
 
   constructor(
@@ -71,6 +79,7 @@ export class ManualEvolutionWorkflow {
       new LearningScientistStub(),
       new ExperienceEngineerStub(),
     ],
+    governancePolicy: GovernancePolicy = defaultGovernancePolicy,
   ) {
     this.runRepository = new EvolutionRunRepository(db);
     this.taskRepository = new WorkflowTaskRepository(db);
@@ -79,6 +88,8 @@ export class ManualEvolutionWorkflow {
     this.verticalRepository = new VerticalSliceRepository(db);
     this.agents = new AgentRegistry(workers);
     this.now = now;
+    this.governancePolicy = governancePolicy;
+    this.sentinel = new LoopSentinel(db, governancePolicy, now);
   }
 
   async start(input: ManualEvolutionInput): Promise<AwaitingApprovalResult> {
@@ -113,6 +124,8 @@ export class ManualEvolutionWorkflow {
       },
       [],
       "learning-events-observed",
+      undefined,
+      0,
     );
 
     await this.verticalRepository.recordLearningEvents(
@@ -130,6 +143,8 @@ export class ManualEvolutionWorkflow {
       },
       [input.evidence_artifact],
       input.learning_events.at(-1)!.event_id,
+      taskIdFor("GenerateMissionPlanTask", input.run_id),
+      1,
     );
     const finding = extractContract<LearningFinding>(scientistResult, "finding", "LearningFinding");
     await this.verticalRepository.recordFinding(input.run_id, scientistResult.result_id, finding);
@@ -207,6 +222,8 @@ export class ManualEvolutionWorkflow {
       { plan: approvedPlan as unknown as JsonObject },
       [input.source_plugin],
       `event.plan-approved.${input.run_id}`,
+      taskIdFor("AnalyzeLearningOutcomeTask", input.run_id),
+      2,
     );
     const changeSet = extractContract<ChangeSet>(engineerResult, "change_set", "ChangeSet");
     await this.artifactRepository.store({
@@ -257,6 +274,8 @@ export class ManualEvolutionWorkflow {
       },
       [changeSet.plugin_artifact],
       `event.verification-passed.${input.run_id}`,
+      taskIdFor("BuildPluginChangeTask", input.run_id),
+      3,
     );
     run = await this.transition(input, "canary_started", run.version, "canary-started");
 
@@ -271,6 +290,8 @@ export class ManualEvolutionWorkflow {
       },
       [verificationArtifact],
       `event.canary-started.${input.run_id}`,
+      taskIdFor("ActivateCanaryMissionTask", input.run_id),
+      4,
     );
     const outcome = extractContract<LearningOutcome>(outcomeResult, "outcome", "LearningOutcome");
     await this.verticalRepository.recordOutcome(input.run_id, outcomeResult.result_id, outcome);
@@ -297,9 +318,17 @@ export class ManualEvolutionWorkflow {
     payload: JsonObject,
     artifactRefs: readonly ArtifactRef[],
     causationId: string,
+    parentTaskId: string | undefined,
+    hopCount: number,
   ): Promise<AgentResult> {
     const createdAt = this.now();
-    const taskId = `task.${taskType.replace(/Task$/, "").toLowerCase()}.${input.run_id}`;
+    const taskId = taskIdFor(taskType, input.run_id);
+    const taskFingerprint = fingerprintTask({
+      task_type: taskType,
+      subject: agentId,
+      payload,
+      artifact_refs: artifactRefs,
+    });
     const task: TaskEnvelope = {
       message_id: taskId,
       message_type: taskType,
@@ -316,17 +345,29 @@ export class ManualEvolutionWorkflow {
       lease: { duration_sec: 300, heartbeat_sec: 30 },
       retry_policy: { max_attempts: 3, initial_backoff_ms: 1000, max_backoff_ms: 30_000 },
       budget: { max_tokens: 0, max_cost_usd: 0, max_duration_sec: 1800 },
+      governance: {
+        root_run_id: input.run_id,
+        ...(parentTaskId ? { parent_task_id: parentTaskId } : {}),
+        hop_count: hopCount,
+        max_hops: this.governancePolicy.max_hops,
+        task_fingerprint: taskFingerprint,
+        policy_snapshot: this.governancePolicy.snapshot,
+        epoch: 0,
+        ...(taskType === "BuildPluginChangeTask" || taskType === "ActivateCanaryMissionTask"
+          ? { cooldown_key: `plugin-change.${input.run_id}` }
+          : {}),
+      },
       artifact_refs: artifactRefs,
       payload,
     };
     assertContract("TaskEnvelope", task);
-    await this.taskRepository.enqueue({
+    await this.sentinel.dispatch(task, {
       id: task.message_id,
       run_id: input.run_id,
       task_type: task.message_type,
       subject: task.subject,
       payload: task.payload,
-      artifact_refs: task.artifact_refs as unknown as readonly JsonObject[],
+      artifact_refs: task.artifact_refs,
       idempotency_key: task.idempotency_key,
       available_at: createdAt,
       deadline: new Date(task.deadline),
@@ -367,9 +408,14 @@ export class ManualEvolutionWorkflow {
       trace_id: input.trace_id,
       producer: "control-plane",
       occurred_at: this.now(),
+      max_transitions: this.governancePolicy.max_transitions_per_run,
     });
     return result.run;
   }
+}
+
+function taskIdFor(taskType: AgentTaskType, runId: string): string {
+  return `task.${taskType.replace(/Task$/, "").toLowerCase()}.${runId}`;
 }
 
 function extractContract<T>(

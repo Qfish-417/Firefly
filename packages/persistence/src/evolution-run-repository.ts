@@ -33,6 +33,7 @@ export interface PersistedTransitionCommand extends TransitionCommand<EvolutionR
   readonly trace_id: string;
   readonly producer: string;
   readonly occurred_at: Date;
+  readonly max_transitions?: number;
 }
 
 export interface PersistedTransitionResult {
@@ -57,6 +58,18 @@ export class EvolutionRunNotFoundError extends Error {
     super(`Evolution run not found: ${runId}`);
     this.name = "EvolutionRunNotFoundError";
     this.runId = runId;
+  }
+}
+
+export class EvolutionTransitionBudgetError extends Error {
+  readonly runId: string;
+  readonly limit: number;
+
+  constructor(runId: string, limit: number) {
+    super(`Evolution run ${runId} exhausted its transition budget of ${limit}`);
+    this.name = "EvolutionTransitionBudgetError";
+    this.runId = runId;
+    this.limit = limit;
   }
 }
 
@@ -119,6 +132,26 @@ export class EvolutionRunRepository {
         .executeTakeFirst();
       if (!current) {
         throw new EvolutionRunNotFoundError(runId);
+      }
+
+      if (command.max_transitions !== undefined) {
+        if (command.max_transitions < 1) {
+          throw new TypeError("max_transitions must be positive");
+        }
+        await trx
+          .insertInto("questlab.run_budget_usage")
+          .values({ run_id: runId })
+          .onConflict((conflict) => conflict.column("run_id").doNothing())
+          .execute();
+        const usage = await trx
+          .selectFrom("questlab.run_budget_usage")
+          .select("transitions_applied")
+          .where("run_id", "=", runId)
+          .forUpdate()
+          .executeTakeFirstOrThrow();
+        if (usage.transitions_applied >= command.max_transitions) {
+          throw new EvolutionTransitionBudgetError(runId, command.max_transitions);
+        }
       }
 
       const transition = transitionEvolutionRun(
@@ -184,6 +217,17 @@ export class EvolutionRunRepository {
           last_error: null,
         })
         .execute();
+
+      if (command.max_transitions !== undefined) {
+        await trx
+          .updateTable("questlab.run_budget_usage")
+          .set({
+            transitions_applied: (expression) => expression("transitions_applied", "+", 1),
+            updated_at: command.occurred_at,
+          })
+          .where("run_id", "=", runId)
+          .execute();
+      }
 
       return { run: updated, changed: true };
     });

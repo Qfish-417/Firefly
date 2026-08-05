@@ -10,6 +10,7 @@
     "@firefly/agent-kernel": "0.1.0",
     "@firefly/contracts": "0.1.0",
     "@firefly/experience-engineer": "0.1.0",
+    "@firefly/governance": "0.1.0",
     "@firefly/learning-director": "0.1.0",
     "@firefly/learning-scientist": "0.1.0",
     "@firefly/persistence": "0.1.0",

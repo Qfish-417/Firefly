@@ -1,0 +1,14 @@
+{
+  "name": "@firefly/governance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@firefly/contracts": "0.1.0",
+    "@firefly/persistence": "0.1.0",
+    "kysely": "^0.28.8"
+  }
+}

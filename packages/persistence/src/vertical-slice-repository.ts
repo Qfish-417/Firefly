@@ -24,6 +24,10 @@ export interface EvolutionTrace {
   readonly verification?: unknown;
   readonly outcome?: unknown;
   readonly artifacts: readonly unknown[];
+  readonly causal_edges: readonly unknown[];
+  readonly sentinel_incidents: readonly unknown[];
+  readonly quarantines: readonly unknown[];
+  readonly budget_usage?: unknown;
 }
 
 export class VerticalSliceRepository {
@@ -163,6 +167,10 @@ export class VerticalSliceRepository {
       verification,
       outcome,
       artifacts,
+      causalEdges,
+      sentinelIncidents,
+      quarantines,
+      budgetUsage,
     ] = await Promise.all([
       this.db.selectFrom("questlab.evolution_transition").selectAll().where("run_id", "=", runId).orderBy("to_version").execute(),
       this.db.selectFrom("questlab.workflow_task").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
@@ -185,6 +193,10 @@ export class VerticalSliceRepository {
         )
         .orderBy("created_at")
         .execute(),
+      this.db.selectFrom("questlab.causal_edge").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
+      this.db.selectFrom("questlab.sentinel_incident").selectAll().where("run_id", "=", runId).orderBy("first_seen_at").execute(),
+      this.db.selectFrom("questlab.quarantine").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
+      this.db.selectFrom("questlab.run_budget_usage").selectAll().where("run_id", "=", runId).executeTakeFirst(),
     ]);
 
     return {
@@ -200,6 +212,10 @@ export class VerticalSliceRepository {
       ...(verification ? { verification } : {}),
       ...(outcome ? { outcome } : {}),
       artifacts,
+      causal_edges: causalEdges,
+      sentinel_incidents: sentinelIncidents,
+      quarantines,
+      ...(budgetUsage ? { budget_usage: budgetUsage } : {}),
     };
   }
 }
