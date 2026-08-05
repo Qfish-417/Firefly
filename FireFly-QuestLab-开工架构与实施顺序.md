@@ -215,6 +215,7 @@ FireFly/
 │  ├─ agent-kernel/
 │  ├─ tool-platform/
 │  ├─ memory-platform/
+│  ├─ plugin-platform/
 │  ├─ plugin-sdk/
 │  └─ evaluation/
 ├─ agents/
@@ -280,11 +281,21 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 - 阻断跳数越界、同 epoch 重复指纹、自委派、因果环、事件风暴和重试越界。
 - Admin Trace 同时返回因果边、预算用量、哨兵事件和隔离记录。
 
-### Step 4：太阳能插件与独立门禁
+### Step 4：太阳能插件与独立门禁（已完成）
 
 - 建 `solar-energy@1.2.0` 缺陷版本和 `1.3.0` 候选版本。
 - 固定物理不变量、Rubric 不变性、可访问性和历史 Replay。
 - 实现 worktree、Sandbox、Digest、Canary 和真实回滚。
+
+实际实现约束：
+
+- `GitWorktreeBuilder` 只写 ImprovementPlan 明确批准且位于目标插件根目录内的路径，拒绝重复路径、路径逃逸和符号链接。
+- 基线制品 Digest 必须与 `base_ref` 内容一致；文本制品统一 LF 后计算稳定 Digest。
+- 变更生成真实 Git Commit，并保存在 `refs/firefly/changes/*` 审计引用中。
+- Docker Sandbox 镜像必须固定 SHA-256 Digest，使用无网络、只读根文件系统、只读 worktree、capability 清空、`no-new-privileges`、PID/内存/CPU/超时限制。
+- 物理不变量、Assessment 契约不变性、可访问性和历史 Replay 全部通过后，才能请求独立 PluginRelease 审批。
+- Canary 只解析给显式 allowlist 或 subject prefix 内的合成/内部对象；未授权对象即使百分比为 100 也继续使用基线 Digest。
+- 激活候选和回滚基线都在 PluginRelease 状态迁移事务中原子更新活动版本指针并写 Outbox。
 
 ### Step 5：Model Gateway 与 Agent
 
@@ -322,7 +333,7 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 | M1 事实层 | Postgres、Outbox/Inbox、Artifact | 重启可恢复，重复消息无重复副作用 |
 | M2 人工闭环 | 三 Stub Agent、Admin 查询 | 一条因果链完整跑通 |
 | M2.1 治理哨兵 | 规范、预算、因果图、Loop Sentinel、隔离 | 循环、风暴、自委派和预算耗尽均被确定性阻断 |
-| M3 插件闭环 | Sandbox、门禁、Canary、Rollback | 故障注入能恢复指定 Digest |
+| M3 插件闭环（完成） | Worktree、Docker Sandbox、门禁、Canary、Rollback | 缺陷基线被拒绝；候选四门禁通过；故障注入恢复指定 Digest |
 | M4 模型闭环 | pi-ai Gateway、三个真实 Agent | Provider 可替换，输出均结构化可追溯 |
 | M5 记忆工具 | 授权检索、聚合、异步工具 | 越权测试、删除传播和长任务恢复通过 |
 
@@ -339,7 +350,7 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 ### 9.1 当前状态
 
 - 当前目录已经是 Git 仓库，远端 `origin` 指向 `https://github.com/Qfish-417/Firefly.git`。
-- M0、M1、M2 已通过短分支推送到远端；M2.1 在 `feat/m2-governance-sentinel` 上开发。
+- M0、M1、M2、M2.1 已通过短分支推送到远端；M3 在 `feat/m3-plugin-release-loop` 上开发。
 - HTTPS Git 凭据已能完成分支推送；当前实现和测试不依赖 GitHub API。
 
 ### 9.2 本地写代码是否需要 GitHub

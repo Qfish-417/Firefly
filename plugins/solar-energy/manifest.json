@@ -1,0 +1,7 @@
+{
+  "plugin_id": "solar-energy",
+  "version": "1.2.0",
+  "entrypoint": "src/daylight.mjs",
+  "assessment_contract": "solar-assessment-v1",
+  "gate_runner": "test/gate.mjs"
+}

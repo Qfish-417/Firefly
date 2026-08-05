@@ -2,7 +2,7 @@ import { Kysely, PostgresDialect, type Generated, type JSONColumnType } from "ky
 import { Pool } from "pg";
 
 import type { ArtifactScope, JsonObject } from "@firefly/contracts";
-import type { EvolutionRunState } from "@firefly/learning-domain";
+import type { EvolutionRunState, PluginReleaseState } from "@firefly/learning-domain";
 
 export type Timestamp = Date;
 export type JsonDocument = JSONColumnType<JsonObject, JsonObject, JsonObject>;
@@ -264,6 +264,78 @@ export interface SentinelObservationTable {
   observed_at: Timestamp;
 }
 
+export interface PluginTable {
+  plugin_id: string;
+  active_version_id: string | null;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface PluginVersionTable {
+  version_id: string;
+  plugin_id: string;
+  version: string;
+  digest: string;
+  artifact_ref: JsonDocument;
+  source_commit: string;
+  status: "candidate" | "active" | "inactive" | "quarantined";
+  created_at: Generated<Timestamp>;
+}
+
+export interface PluginReleaseTable {
+  release_id: string;
+  run_id: string;
+  plugin_id: string;
+  candidate_version_id: string;
+  rollback_version_id: string;
+  changeset_id: string;
+  authorized_task_id: string;
+  state: PluginReleaseState;
+  version: number;
+  canary_policy: JsonDocument;
+  verification_report_id: string | null;
+  approval_id: string | null;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface PluginReleaseTransitionTable {
+  event_id: string;
+  release_id: string;
+  event_type: string;
+  from_state: PluginReleaseState;
+  to_state: PluginReleaseState;
+  from_version: number;
+  to_version: number;
+  evidence: JsonDocument;
+  occurred_at: Timestamp;
+}
+
+export interface SandboxRunTable {
+  sandbox_run_id: string;
+  release_id: string;
+  status: "passed" | "failed" | "timed_out";
+  runner: "docker";
+  image: string;
+  network_mode: "none";
+  read_only: true;
+  limits: JsonDocument;
+  checks: JsonList;
+  started_at: Timestamp;
+  completed_at: Timestamp;
+}
+
+export interface CanaryEvaluationTable {
+  evaluation_id: string;
+  release_id: string;
+  cohort: string;
+  sample_size: number;
+  metrics: JsonDocument;
+  decision: "activate" | "rollback" | "needs_human";
+  evidence_refs: JsonList;
+  evaluated_at: Timestamp;
+}
+
 export interface QuestLabDatabase {
   "questlab.evolution_run": EvolutionRunTable;
   "questlab.evolution_transition": EvolutionTransitionTable;
@@ -287,6 +359,12 @@ export interface QuestLabDatabase {
   "questlab.sentinel_incident": SentinelIncidentTable;
   "questlab.quarantine": QuarantineTable;
   "questlab.sentinel_observation": SentinelObservationTable;
+  "questlab.plugin": PluginTable;
+  "questlab.plugin_version": PluginVersionTable;
+  "questlab.plugin_release": PluginReleaseTable;
+  "questlab.plugin_release_transition": PluginReleaseTransitionTable;
+  "questlab.sandbox_run": SandboxRunTable;
+  "questlab.canary_evaluation": CanaryEvaluationTable;
 }
 
 export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {

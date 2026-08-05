@@ -28,6 +28,11 @@ export interface EvolutionTrace {
   readonly sentinel_incidents: readonly unknown[];
   readonly quarantines: readonly unknown[];
   readonly budget_usage?: unknown;
+  readonly plugin_release?: unknown;
+  readonly plugin_release_transitions: readonly unknown[];
+  readonly sandbox_runs: readonly unknown[];
+  readonly canary_evaluations: readonly unknown[];
+  readonly active_plugin_version?: unknown;
 }
 
 export class VerticalSliceRepository {
@@ -171,6 +176,11 @@ export class VerticalSliceRepository {
       sentinelIncidents,
       quarantines,
       budgetUsage,
+      pluginRelease,
+      pluginReleaseTransitions,
+      sandboxRuns,
+      canaryEvaluations,
+      activePluginVersion,
     ] = await Promise.all([
       this.db.selectFrom("questlab.evolution_transition").selectAll().where("run_id", "=", runId).orderBy("to_version").execute(),
       this.db.selectFrom("questlab.workflow_task").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
@@ -197,6 +207,55 @@ export class VerticalSliceRepository {
       this.db.selectFrom("questlab.sentinel_incident").selectAll().where("run_id", "=", runId).orderBy("first_seen_at").execute(),
       this.db.selectFrom("questlab.quarantine").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
       this.db.selectFrom("questlab.run_budget_usage").selectAll().where("run_id", "=", runId).executeTakeFirst(),
+      this.db.selectFrom("questlab.plugin_release").selectAll().where("run_id", "=", runId).executeTakeFirst(),
+      this.db
+        .selectFrom("questlab.plugin_release_transition")
+        .innerJoin(
+          "questlab.plugin_release",
+          "questlab.plugin_release.release_id",
+          "questlab.plugin_release_transition.release_id",
+        )
+        .selectAll("questlab.plugin_release_transition")
+        .where("questlab.plugin_release.run_id", "=", runId)
+        .orderBy("questlab.plugin_release_transition.to_version")
+        .execute(),
+      this.db
+        .selectFrom("questlab.sandbox_run")
+        .innerJoin(
+          "questlab.plugin_release",
+          "questlab.plugin_release.release_id",
+          "questlab.sandbox_run.release_id",
+        )
+        .selectAll("questlab.sandbox_run")
+        .where("questlab.plugin_release.run_id", "=", runId)
+        .orderBy("questlab.sandbox_run.started_at")
+        .execute(),
+      this.db
+        .selectFrom("questlab.canary_evaluation")
+        .innerJoin(
+          "questlab.plugin_release",
+          "questlab.plugin_release.release_id",
+          "questlab.canary_evaluation.release_id",
+        )
+        .selectAll("questlab.canary_evaluation")
+        .where("questlab.plugin_release.run_id", "=", runId)
+        .orderBy("questlab.canary_evaluation.evaluated_at")
+        .execute(),
+      this.db
+        .selectFrom("questlab.plugin_release")
+        .innerJoin(
+          "questlab.plugin",
+          "questlab.plugin.plugin_id",
+          "questlab.plugin_release.plugin_id",
+        )
+        .innerJoin(
+          "questlab.plugin_version",
+          "questlab.plugin_version.version_id",
+          "questlab.plugin.active_version_id",
+        )
+        .selectAll("questlab.plugin_version")
+        .where("questlab.plugin_release.run_id", "=", runId)
+        .executeTakeFirst(),
     ]);
 
     return {
@@ -216,6 +275,11 @@ export class VerticalSliceRepository {
       sentinel_incidents: sentinelIncidents,
       quarantines,
       ...(budgetUsage ? { budget_usage: budgetUsage } : {}),
+      ...(pluginRelease ? { plugin_release: pluginRelease } : {}),
+      plugin_release_transitions: pluginReleaseTransitions,
+      sandbox_runs: sandboxRuns,
+      canary_evaluations: canaryEvaluations,
+      ...(activePluginVersion ? { active_plugin_version: activePluginVersion } : {}),
     };
   }
 }

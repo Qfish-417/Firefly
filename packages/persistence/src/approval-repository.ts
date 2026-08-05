@@ -92,6 +92,34 @@ export class ApprovalRepository {
     });
   }
 
+  async approveSubject(
+    approvalId: string,
+    subjectType: string,
+    subjectId: string,
+    decidedBy: string,
+    reason: string,
+    now = new Date(),
+  ): Promise<ApprovalRecord> {
+    const approval = await this.db
+      .updateTable("questlab.approval")
+      .set({
+        status: "approved",
+        decided_by: decidedBy,
+        reason,
+        decided_at: now,
+      })
+      .where("id", "=", approvalId)
+      .where("subject_type", "=", subjectType)
+      .where("subject_id", "=", subjectId)
+      .where("status", "=", "pending")
+      .returningAll()
+      .executeTakeFirst();
+    if (!approval) {
+      throw new ApprovalDecisionError(approvalId);
+    }
+    return approval;
+  }
+
   async findByRunId(runId: string): Promise<readonly ApprovalRecord[]> {
     return this.db
       .selectFrom("questlab.approval")
