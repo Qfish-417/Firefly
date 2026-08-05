@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="8">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="9">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -236,6 +236,41 @@
         <mxCell id="p8-e3" value="authority" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;startArrow=block;strokeColor=#D97706;" edge="1" parent="p8-governance" source="p8-sentinel" target="p8-authority"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p8-e4" value="Governed Task" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p8-1" source="p8-governance" target="p8-agents"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p8-e5" value="Event / Result / ArtifactRef" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#44546F;" edge="1" parent="p8-1" source="p8-agents" target="p8-ledger"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-model-gateway" name="09-M4模型网关与信任边界">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p9-0"/><mxCell id="p9-1" parent="p9-0"/>
+        <mxCell id="p9-title" value="M4 Model Gateway：模型只提供建议，治理与副作用仍由平台掌握" style="text;html=1;align=center;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p9-1"><mxGeometry x="180" y="25" width="1240" height="50" as="geometry"/></mxCell>
+
+        <mxCell id="p9-control" value="Control Plane / Governed Task&#xa;deadline · cancellation · token/cost/duration budget&#xa;PostgreSQL 是唯一工作流事实源" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=13;fontStyle=1;" vertex="1" parent="p9-1"><mxGeometry x="500" y="95" width="600" height="95" as="geometry"/></mxCell>
+
+        <mxCell id="p9-agents" value="Agent 信任边界" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=14;fontStyle=1;" vertex="1" parent="p9-1"><mxGeometry x="60" y="235" width="390" height="430" as="geometry"/></mxCell>
+        <mxCell id="p9-director" value="Learning Director（M4.1）&#xa;模型：五阶段指导&#xa;代码绑定：Mission / PluginExposure / Canary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=12;" vertex="1" parent="p9-agents"><mxGeometry x="35" y="65" width="320" height="95" as="geometry"/></mxCell>
+        <mxCell id="p9-scientist" value="Learning Scientist（M4.1）&#xa;模型：证据解释&#xa;代码绑定：Finding ID / Scope / Evidence / No-harm" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=12;" vertex="1" parent="p9-agents"><mxGeometry x="35" y="185" width="320" height="95" as="geometry"/></mxCell>
+        <mxCell id="p9-engineer" value="Experience Engineer（M4.2）&#xa;当前：确定性 Stub&#xa;下一步：PatchProposal → Worktree → Sandbox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=12;" vertex="1" parent="p9-agents"><mxGeometry x="35" y="305" width="320" height="90" as="geometry"/></mxCell>
+
+        <mxCell id="p9-gateway" value="packages/model-gateway" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=15;fontStyle=1;" vertex="1" parent="p9-1"><mxGeometry x="500" y="235" width="600" height="430" as="geometry"/></mxCell>
+        <mxCell id="p9-route" value="Workload Router&#xa;有序主模型 / 后备模型&#xa;稳定 Routing Snapshot" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=12;" vertex="1" parent="p9-gateway"><mxGeometry x="35" y="65" width="245" height="100" as="geometry"/></mxCell>
+        <mxCell id="p9-budget" value="Budget + Resilience&#xa;Token / Cost 预检与后检&#xa;Retry / Timeout / Cancel&#xa;流式仅首 delta 前 fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=12;" vertex="1" parent="p9-gateway"><mxGeometry x="320" y="65" width="245" height="100" as="geometry"/></mxCell>
+        <mxCell id="p9-snapshots" value="Immutable Execution Evidence&#xa;Model + Routing + Prompt&#xa;Tool + Knowledge Snapshot&#xa;Usage + Latency + Route" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=12;" vertex="1" parent="p9-gateway"><mxGeometry x="35" y="205" width="245" height="105" as="geometry"/></mxCell>
+        <mxCell id="p9-no-tools" value="No Tool Side Effects&#xa;不传 tools 给 pi-ai&#xa;拒绝 model tool call&#xa;严格 JSON → 可信字段绑定 → Contract" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=12;" vertex="1" parent="p9-gateway"><mxGeometry x="320" y="205" width="245" height="105" as="geometry"/></mxCell>
+        <mxCell id="p9-ports" value="Provider-neutral ports：generate · stream · embed · rerank" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=12;fontStyle=1;" vertex="1" parent="p9-gateway"><mxGeometry x="95" y="345" width="410" height="55" as="geometry"/></mxCell>
+
+        <mxCell id="p9-providers" value="Provider 适配层" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=14;fontStyle=1;" vertex="1" parent="p9-1"><mxGeometry x="1150" y="235" width="390" height="430" as="geometry"/></mxCell>
+        <mxCell id="p9-piai" value="@earendil-works/pi-ai@0.83.0&#xa;generate / stream&#xa;统一模型目录、Provider 与认证解析&#xa;凭据不进入快照" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=12;" vertex="1" parent="p9-providers"><mxGeometry x="35" y="70" width="320" height="120" as="geometry"/></mxCell>
+        <mxCell id="p9-llms" value="多模型 Provider&#xa;Anthropic / OpenAI / Google / DeepSeek / ...&#xa;模型与顺序由 workload 配置决定" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=12;" vertex="1" parent="p9-providers"><mxGeometry x="35" y="220" width="320" height="95" as="geometry"/></mxCell>
+        <mxCell id="p9-extra" value="独立 Embedding / Rerank Provider&#xa;pi-ai 当前不提供，未配置时 fail closed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=12;" vertex="1" parent="p9-providers"><mxGeometry x="35" y="340" width="320" height="60" as="geometry"/></mxCell>
+
+        <mxCell id="p9-platform" value="确定性平台门禁（模型不可绕过）&#xa;Loop Sentinel · Approval · Artifact ACL · Git Worktree · Docker Sandbox · Release State Machine · Canary / Rollback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p9-1"><mxGeometry x="210" y="750" width="1180" height="95" as="geometry"/></mxCell>
+        <mxCell id="p9-rule" value="M4.1 已完成 Director + Scientist；M4.2 只有在 Engineer 产生真实 Commit 并与 Sandbox 同生命周期后，才称三个真实 Agent 模型闭环完成" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p9-1"><mxGeometry x="300" y="885" width="1000" height="60" as="geometry"/></mxCell>
+
+        <mxCell id="p9-e1" value="Task" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#44546F;" edge="1" parent="p9-1" source="p9-control" target="p9-agents"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p9-e2" value="GenerationRequest" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;startArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p9-1" source="p9-agents" target="p9-gateway"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p9-e3" value="Provider call" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;startArrow=block;strokeColor=#4C78A8;" edge="1" parent="p9-1" source="p9-gateway" target="p9-providers"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p9-e4" value="validated AgentResult" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p9-1" source="p9-agents" target="p9-platform"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

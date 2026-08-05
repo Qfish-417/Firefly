@@ -298,11 +298,13 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 - 激活候选和回滚基线都在 PluginRelease 状态迁移事务中原子更新活动版本指针并写 Outbox。
 - Control Plane 的 `PluginReleaseWorkflow` 是正式用例入口，负责构建验证、等待发布审批、解析 Canary 和按最新评估完成激活/回滚；测试不直接拼接发布状态。
 
-### Step 5：Model Gateway 与 Agent
+### Step 5：Model Gateway 与 Agent（M4.1 已完成，M4.2 进行中）
 
-- TypeScript Gateway 接入 `pi-ai`，提供 generate/stream/embed/rerank 端口。
-- 先接 Learning Scientist 的结构化 Finding，再接 Director，最后接 Engineer。
-- 固定模型、Prompt、Tool 和 Knowledge Snapshot，记录 Token、时延和成本。
+- `packages/model-gateway` 已接入维护中的 `@earendil-works/pi-ai@0.83.0`，提供 generate/stream 与独立 embed/rerank 端口；后两者不伪装成 pi-ai 原生能力。
+- 已实现 workload 主备路由、Gateway 级重试、超时、取消、Token/成本预检与后检，以及 Model/Routing/Prompt/Tool/Knowledge Snapshot。
+- Learning Scientist 已使用模型解释授权证据，Learning Director 已使用模型生成固定五阶段内的指导；可信代码绑定身份、证据、插件曝光、阶段顺序和 Canary 决策。
+- 模型不接收工具，任何 tool call 都被拒绝；流式调用只允许在输出首个 delta 前切换 Provider。
+- Experience Engineer 在 M4.2 中接入，必须将授权源码读取、PatchProposal、Git worktree、真实 Commit、Sandbox 和 cleanup 置于同一 Control Plane 生命周期，禁止伪造 Commit。
 
 ### Step 6：RAG、记忆与工具动态化
 
@@ -335,7 +337,7 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 | M2 人工闭环 | 三 Stub Agent、Admin 查询 | 一条因果链完整跑通 |
 | M2.1 治理哨兵 | 规范、预算、因果图、Loop Sentinel、隔离 | 循环、风暴、自委派和预算耗尽均被确定性阻断 |
 | M3 插件闭环（完成） | Worktree、Docker Sandbox、门禁、Canary、Rollback | 缺陷基线被拒绝；候选四门禁通过；故障注入恢复指定 Digest |
-| M4 模型闭环 | pi-ai Gateway、三个真实 Agent | Provider 可替换，输出均结构化可追溯 |
+| M4 模型闭环（M4.1 完成） | pi-ai Gateway、Director/Scientist 模型建议、Stub 后备 | Provider 可替换，输出结构化可追溯；M4.2 补齐 Engineer 真实构建 |
 | M5 记忆工具 | 授权检索、聚合、异步工具 | 越权测试、删除传播和长任务恢复通过 |
 
 不满足以下条件，不称为“自闭环”：
@@ -351,7 +353,7 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 ### 9.1 当前状态
 
 - 当前目录已经是 Git 仓库，远端 `origin` 指向 `https://github.com/Qfish-417/Firefly.git`。
-- M0、M1、M2、M2.1 已通过短分支推送到远端；M3 在 `feat/m3-plugin-release-loop` 上开发。
+- M0、M1、M2、M2.1、M3 已通过短分支推送到远端；M4.1 在 `feat/m4-pi-ai-model-gateway` 上开发。
 - HTTPS Git 凭据已能完成分支推送；当前实现和测试不依赖 GitHub API。
 
 ### 9.2 本地写代码是否需要 GitHub
@@ -389,6 +391,7 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 | 总体架构图 | `FireFly-QuestLab-目标架构-v3.drawio` |
 | RAG、记忆、检索、多模态、安全 | `FireFly-RAG与记忆系统设计.md` |
 | 工具分类、发现、异步、动态加载、KV Cache | `FireFly-工具系统设计.md` |
+| Model Gateway、模型路由、预算、Agent 接入 | `FireFly-Model-Gateway构建设计.md` |
 | 旧架构推演 | `FireFly-开放式架构分析.md` |
 
 发生冲突时，按“本文 -> v3 主图 -> 专项文档 -> 旧推演”的顺序解释；代码契约最终以 `packages/contracts` 中已版本化 Schema 为准。

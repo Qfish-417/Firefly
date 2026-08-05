@@ -12,6 +12,7 @@ import {
   type LearningFinding,
   type LearningOutcome,
   type TaskEnvelope,
+  type TaskBudget,
   type VerificationReport,
 } from "@firefly/contracts";
 import { ExperienceEngineerStub } from "@firefly/experience-engineer";
@@ -60,6 +61,18 @@ export interface CompletedEvolutionResult {
   readonly outcome: LearningOutcome;
 }
 
+export interface ManualEvolutionExecutionOptions {
+  readonly task_budget: TaskBudget;
+  readonly worker_id_prefix: string;
+  readonly mode: "deterministic-stub" | "model-assisted";
+}
+
+const deterministicExecution: ManualEvolutionExecutionOptions = {
+  task_budget: { max_tokens: 0, max_cost_usd: 0, max_duration_sec: 1800 },
+  worker_id_prefix: "stub-worker",
+  mode: "deterministic-stub",
+};
+
 export class ManualEvolutionWorkflow {
   private readonly runRepository: EvolutionRunRepository;
   private readonly taskRepository: WorkflowTaskRepository;
@@ -70,6 +83,7 @@ export class ManualEvolutionWorkflow {
   private readonly sentinel: LoopSentinel;
   private readonly governancePolicy: GovernancePolicy;
   private readonly now: () => Date;
+  private readonly execution: ManualEvolutionExecutionOptions;
 
   constructor(
     db: Kysely<QuestLabDatabase>,
@@ -80,6 +94,7 @@ export class ManualEvolutionWorkflow {
       new ExperienceEngineerStub(),
     ],
     governancePolicy: GovernancePolicy = defaultGovernancePolicy,
+    execution: ManualEvolutionExecutionOptions = deterministicExecution,
   ) {
     this.runRepository = new EvolutionRunRepository(db);
     this.taskRepository = new WorkflowTaskRepository(db);
@@ -89,6 +104,7 @@ export class ManualEvolutionWorkflow {
     this.agents = new AgentRegistry(workers);
     this.now = now;
     this.governancePolicy = governancePolicy;
+    this.execution = execution;
     this.sentinel = new LoopSentinel(db, governancePolicy, now);
   }
 
@@ -99,7 +115,11 @@ export class ManualEvolutionWorkflow {
       id: input.run_id,
       correlation_id: input.correlation_id,
       goal: { description: input.goal, cohort: input.cohort },
-      budget: { max_cost_usd: 0, max_duration_sec: 3600, mode: "deterministic-stub" },
+      budget: {
+        max_cost_usd: executionBudgetCost(this.execution),
+        max_duration_sec: 3600,
+        mode: this.execution.mode,
+      },
       risk_level: "high",
     });
     await this.artifactRepository.store({
@@ -344,7 +364,7 @@ export class ManualEvolutionWorkflow {
       cancellation_token: `cancel.${taskId}`,
       lease: { duration_sec: 300, heartbeat_sec: 30 },
       retry_policy: { max_attempts: 3, initial_backoff_ms: 1000, max_backoff_ms: 30_000 },
-      budget: { max_tokens: 0, max_cost_usd: 0, max_duration_sec: 1800 },
+      budget: this.execution.task_budget,
       governance: {
         root_run_id: input.run_id,
         ...(parentTaskId ? { parent_task_id: parentTaskId } : {}),
@@ -375,7 +395,7 @@ export class ManualEvolutionWorkflow {
     });
     const claimed = await this.taskRepository.claimNext(
       agentId,
-      `stub-worker.${agentId}`,
+      `${this.execution.worker_id_prefix}.${agentId}`,
       task.lease.duration_sec * 1000,
       createdAt,
     );
@@ -388,7 +408,7 @@ export class ManualEvolutionWorkflow {
     await this.taskRepository.completeWithAgentResult(
       input.run_id,
       agentId,
-      `stub-worker.${agentId}`,
+      `${this.execution.worker_id_prefix}.${agentId}`,
       result,
       this.now(),
     );
@@ -412,6 +432,10 @@ export class ManualEvolutionWorkflow {
     });
     return result.run;
   }
+}
+
+function executionBudgetCost(execution: ManualEvolutionExecutionOptions): number {
+  return execution.task_budget.max_cost_usd * 5;
 }
 
 function taskIdFor(taskType: AgentTaskType, runId: string): string {

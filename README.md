@@ -2,7 +2,7 @@
 
 FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学习效果驱动受控改进的三 Agent 系统。
 
-当前阶段是 **v3 架构落地**。M0 契约与状态机、M1 PostgreSQL 工作流事实层、M2 无 LLM 人工闭环、M2.1 治理与循环哨兵、M3 插件发布闭环已经完成；现有 Java/Python 教育买课与秒杀实现属于 `prototype-v0`，仅用于追溯早期实验，不代表目标架构，也不应继续在其上补业务功能。
+当前阶段是 **v3 架构落地**。M0 契约与状态机、M1 PostgreSQL 工作流事实层、M2 无 LLM 人工闭环、M2.1 治理与循环哨兵、M3 插件发布闭环已经完成；M4.1 Model Gateway 与 Director/Scientist 模型建议层已经完成。现有 Java/Python 教育买课与秒杀实现属于 `prototype-v0`，仅用于追溯早期实验，不代表目标架构，也不应继续在其上补业务功能。
 
 ## 三 Agent
 
@@ -19,12 +19,13 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 按以下顺序阅读：
 
 1. [开工架构与实施顺序](./FireFly-QuestLab-开工架构与实施顺序.md)：编码阶段的事实源，包含通信协议、模块边界、仓库结构、里程碑和 GitHub 权限。
-2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：8 页精简主图，包含独立的联邦治理与循环防护视图。
+2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：9 页精简主图，包含独立的联邦治理、循环防护与 M4 Model Gateway 视图。
 3. [产品与三 Agent 详细设计](./FireFly-QuestLab产品与三Agent详细设计.md)：产品、领域对象、状态机和太阳能纵向切片。
 4. [RAG 与记忆系统设计](./FireFly-RAG与记忆系统设计.md)：聚合检索、记忆分层、压缩、多模态与安全。
 5. [工具系统设计](./FireFly-工具系统设计.md)：五类工具、发现、异步、动态加载和 KV Cache。
 6. [开放式架构分析](./FireFly-开放式架构分析.md)：早期问题分析与决策背景。
 7. [目标架构构建文档](./FireFly-目标架构构建文档.md)：更详细的阶段性建设要求。
+8. [Model Gateway 构建设计](./FireFly-Model-Gateway构建设计.md)：M4 代码边界、配置、失败语义和 Engineer M4.2 建造脉络。
 
 `FireFly-开放式目标架构.drawio` 是旧的 11 页分析图，内容较密且存在重复；保留作历史参考，不再作为主图。`FireFly-Agent设计.drawio` 和 `FireFly-Agent设计说明.md` 均属于 Legacy Prototype v0。
 
@@ -80,6 +81,8 @@ solar-energy@1.2.0 忽略昼夜变化
 - M2.1 治理与循环哨兵已落地：`packages/governance`、治理契约和 PostgreSQL 因果图实现跳数、任务数、状态迁移数、重试上限、同一 epoch 指纹去重、自委派阻断、事件风暴检测与 Agent/Run 隔离。
 - M3 插件发布闭环已落地：`packages/control-plane` 的 `PluginReleaseWorkflow` 编排 `packages/plugin-platform` 和 `plugins/solar-energy`，提供批准路径约束、真实 Git worktree Commit、跨平台稳定 Digest、固定镜像 Docker Sandbox、四项独立门禁、二次发布审批、授权 Canary、原子激活与按 Digest 回滚。
 - M3 发布事实由 PostgreSQL 的 PluginVersion、PluginRelease、SandboxRun、CanaryEvaluation 与 Outbox 记录；发布必须引用已完成的受治理 Experience Engineer Task。
+- M4.1 模型建议层已落地：`packages/model-gateway` 使用维护中的 `@earendil-works/pi-ai@0.83.0`，提供 generate/stream、主备路由、预算、重试/超时/取消、不可变快照，并显式保留独立 embed/rerank 端口。
+- Learning Director 与 Learning Scientist 已有真实模型 Worker；模型只能补充阶段指导或解释证据，不能改写 Mission/证据身份、Canary、审批、工具和发布状态。Experience Engineer 在 M4.2 与真实 worktree/Sandbox 生命周期合并前继续使用确定性 Stub。
 - 旧 Java/Python 原型仍在原目录，只作追溯参考，不被新 TypeScript packages 依赖。
 
 开发检查：

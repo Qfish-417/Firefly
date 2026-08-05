@@ -8,6 +8,8 @@ import {
   type AgentWorker,
 } from "@firefly/agent-kernel";
 
+export * from "./model-agent.ts";
+
 export class LearningDirectorStub implements AgentWorker {
   readonly id = "learning-director" as const;
   readonly taskTypes = ["GenerateMissionPlanTask", "ActivateCanaryMissionTask"] as const;

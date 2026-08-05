@@ -13,6 +13,7 @@
     "@firefly/governance": "0.1.0",
     "@firefly/learning-director": "0.1.0",
     "@firefly/learning-scientist": "0.1.0",
+    "@firefly/model-gateway": "0.1.0",
     "@firefly/persistence": "0.1.0",
     "@firefly/plugin-platform": "0.1.0",
     "kysely": "^0.28.8"
