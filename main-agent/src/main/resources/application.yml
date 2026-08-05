@@ -1,0 +1,63 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: firefly-main-agent
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:5432/firefly
+    username: firefly
+    password: firefly123
+    driver-class-name: org.postgresql.Driver
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: 6379
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        service: firefly-main-agent
+      config:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        file-extension: yml
+        # 监听的 L1 软升级热更配置
+        shared-configs:
+          - data-id: firefly-main-prompt.yml
+            refresh: true
+          - data-id: firefly-sentinel-rules.json
+            refresh: true
+          - data-id: firefly-canary-strategy.yml
+            refresh: true
+          - data-id: firefly-rag-params.yml
+            refresh: true
+    sentinel:
+      transport:
+        dashboard: localhost:8858
+      eager: true
+
+# RocketMQ（收 release_topic 通知）
+rocketmq:
+  name-server: ${ROCKETMQ_NAMESRV:localhost:9876}
+  producer:
+    group: firefly-main-producer
+
+# gRPC 调侦察/升级的地址（从 Nacos 服务发现动态获取，这里给默认值）
+firefly:
+  grpc:
+    scout-addr: ${SCOUT_GRPC:localhost:9092}
+    upgrade-addr: ${UPGRADE_GRPC:localhost:9093}
+
+# 暴露给侦察拉指标
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus,info
+  endpoint:
+    health:
+      show-details: always
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl

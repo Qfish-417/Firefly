@@ -1,0 +1,12 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+httpx==0.25.2
+psycopg2-binary==2.9.9
+redis==5.0.1
+pymilvus==2.3.4
+elasticsearch==8.11.0
+sentence-transformers==2.2.2
+FlagEmbedding==1.2.8
+rocketmq-client-python==0.0.4
+nacos-sdk-python==0.1.13
+pydantic==2.5.2

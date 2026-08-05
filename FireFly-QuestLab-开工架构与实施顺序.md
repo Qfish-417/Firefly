@@ -1,0 +1,343 @@
+# FireFly QuestLab 开工架构与实施顺序
+
+> 状态：v3 开工基线，2026-08-05。本文是进入编码阶段的唯一导航；产品语义见产品设计，RAG 和工具细节见专项文档，整体关系见 `FireFly-QuestLab-目标架构-v3.drawio`。
+
+## 1. 开工结论
+
+FireFly QuestLab 应从“模块化单体 + 异步 Worker”开始，而不是先部署三个微服务。三个 Agent 是三个稳定的能力与权限边界，不等于三个必须独立运行的进程。
+
+推荐主体：
+
+```text
+TypeScript monorepo
+├─ Web / Admin Console
+├─ Learning Runtime
+├─ Control Plane
+├─ Model Gateway（pi-ai 多模型适配）
+├─ 三个 Agent Bundle
+└─ Tool / Plugin / Memory 端口
+
+PostgreSQL
+├─ 业务事实与状态机
+├─ Workflow / Task / Approval
+├─ Outbox / Inbox
+└─ pgvector（MVP 检索）
+
+独立进程
+├─ Sandbox Runner
+├─ Replay / Evaluation Worker
+└─ Python Analytics Worker（确有统计或科学计算需求时）
+```
+
+选择理由：
+
+- `pi-ai` 位于 TypeScript Model Gateway，Agent 不绑定模型供应商。
+- MVP 共享契约、事务和调试链路，避免过早承担三套部署与分布式一致性。
+- Sandbox、Replay 和高风险工具从第一天进程隔离。
+- Agent Bundle 只依赖端口和事件契约，后续可以原样拆为独立服务。
+- 当前 Java/Python 教育电商代码保留为 `prototype-v0` 参考，不作为迁移底座。
+
+## 2. 三 Agent 究竟如何协作
+
+### 2.1 一句话规则
+
+三个 Agent 不直接修改彼此内部状态，也不以自由文本聊天作为正式交接。`Control Plane` 创建任务、校验结果并推进状态；Agent 通过版本化任务、事实事件和制品引用协作。
+
+### 2.2 职责与交付物
+
+| Agent | 负责 | 接收 | 交付 | 无权执行 |
+|---|---|---|---|---|
+| Learning Director | 运营学习旅程和用户沟通 | Goal、Profile、Mastery、MissionState、策略 | MissionPlan、NextAction、Intervention、LearnerMessage | 改代码、改评测基线、批准上线 |
+| Learning Scientist | 观察、聚合、诊断和复评 | LearningEvent、ArtifactRef、Assessment、版本暴露 | LearningFinding、EvidencePack、OutcomeEvaluation | 直接改学习状态、直接发布策略 |
+| Experience Engineer | 实现批准后的软件或配置变更 | ApprovedImprovementPlan、Finding、目标快照、验证契约 | ChangeSet、PatchCommit、PluginDigest、GeneratedTests | 改门禁、改基线、批准或发布自身变更 |
+
+控制面、Policy Engine、Reviewer、Sandbox、CI、Release 和 Rollback 是确定性平台能力，不是第四个 Agent。
+
+### 2.3 四条通信通道
+
+| 通道 | 表达的含义 | 适合内容 | 不适合内容 |
+|---|---|---|---|
+| Task | 希望某项能力执行动作 | `AnalyzeLearningOutcomeTask`、`BuildPluginChangeTask` | 已经发生的事实 |
+| Event | 已经发生且不可改写的事实 | `LearningFindingCreated`、`PluginChangeVerified` | 命令、超大正文 |
+| ArtifactRef | 大对象或不可变制品的引用 | 作品、证据包、Git Commit、报告、OCI Digest | 小状态、权限判断 |
+| Sync API | 短时查询或无副作用校验 | 健康、能力查询、Schema 校验、流式用户回复 | 构建、审批等待、Canary |
+
+### 2.4 唯一事实源
+
+- PostgreSQL 中的业务状态和工作流状态是唯一事实源。
+- 状态更新和 Outbox 写入处于同一数据库事务。
+- Consumer 先写 Inbox，以 `event_id` 去重，再处理任务。
+- MQ 只是投递加速层；缓存、向量库和 Agent 上下文都不是事实源。
+- Agent 重启后从 Task、Checkpoint 和 ArtifactRef 恢复，不依赖历史对话。
+
+### 2.5 完整协作链
+
+```text
+Learner / Learning Runtime
+  -> LearningEvent + ArtifactRef
+
+Control Plane
+  -> AnalyzeLearningOutcomeTask
+
+Learning Scientist
+  -> LearningFinding + EvidencePack
+
+Control Plane + Policy / Human
+  -> ApprovedImprovementPlan
+
+Experience Engineer
+  -> ChangeSet + PatchCommit + GeneratedTests
+
+Independent Gates
+  -> VerificationReport
+
+Control Plane + Release Policy
+  -> PluginCanary
+
+Learning Director / Learning Runtime
+  -> 让授权对象使用候选插件，不改变评测标准
+
+Learning Scientist
+  -> LearningOutcome
+
+Control Plane
+  -> activate | rollback | needs_human
+```
+
+Learning Director 与 Experience Engineer 之间没有“请直接把插件改掉”的私聊调用。必须先由 Scientist 形成证据，再由控制面产生经批准的计划。
+
+## 3. 必须先冻结的契约
+
+编码前先冻结 JSON Schema v1：
+
+1. `TaskEnvelope`
+2. `EventEnvelope`
+3. `ArtifactRef`
+4. `AgentResult`
+5. `LearningEvent`
+6. `LearningFinding`
+7. `ImprovementPlan`
+8. `ChangeSet`
+9. `VerificationReport`
+10. `LearningOutcome`
+
+统一信封至少包含：
+
+```json
+{
+  "message_id": "msg_01",
+  "message_type": "BuildPluginChangeTask",
+  "schema_version": 1,
+  "correlation_id": "evolution_01",
+  "causation_id": "evt_08",
+  "trace_id": "trace_01",
+  "producer": "control-plane",
+  "subject": "experience-engineer",
+  "idempotency_key": "build:plan_01:solar-energy@1.2.0",
+  "deadline": "2026-08-05T12:00:00Z",
+  "artifact_refs": [],
+  "payload": {}
+}
+```
+
+契约规则：
+
+- Schema 只向后兼容演进；破坏性变化增加主版本。
+- 每个 Task 声明租约、取消令牌、重试策略和预算。
+- 每个结果带输入快照版本、模型/Prompt/Tool Snapshot 和证据谱系。
+- 大内容不塞入消息，只传 `ArtifactRef + digest + media_type + ACL`。
+- Agent 输出先做 Schema 和权限校验，再进入业务状态机。
+
+## 4. 目标模块边界
+
+| Bounded Context | 拥有的数据 | 对外能力 |
+|---|---|---|
+| Identity & Consent | User、Tenant、Role、Consent、Retention | 鉴权、范围与删除策略 |
+| Learning Runtime | World、Mission、Attempt、Assessment、Mastery | 确定性学习状态机 |
+| Agent Control Plane | Run、Task、Lease、Checkpoint、Approval | 调度、恢复、状态推进 |
+| Knowledge & Memory | MemoryItem、IndexEntry、Lineage、ACL | 写入、结构化、检索、压缩 |
+| Tool Platform | ToolDescriptor、Lease、Operation | 发现、授权、同步/异步执行 |
+| Plugin Platform | Manifest、Version、Digest、Release | 安装、沙箱、Canary、回滚 |
+| Evaluation | Dataset、Invariant、Replay、Report | 独立门禁与效果比较 |
+| Model Gateway | Provider、Route、Usage、PromptSnapshot | pi-ai 路由、流式、预算、审计 |
+
+硬边界：
+
+- Learning Runtime 接受 Agent 建议，但独立校验状态转换。
+- Model Gateway 不执行工具副作用。
+- Experience Engineer 只能写计划声明的 worktree 范围。
+- Candidate 不能修改自己的 Rubric、Dataset、Policy 或 Approval。
+- 用户私有、Agent 私有、租户和公共知识在检索前授权，不能检索后再过滤。
+
+## 5. 建议仓库结构
+
+```text
+FireFly/
+├─ apps/
+│  ├─ web/
+│  ├─ api/
+│  └─ worker/
+├─ packages/
+│  ├─ contracts/
+│  ├─ learning-domain/
+│  ├─ control-plane/
+│  ├─ model-gateway/
+│  ├─ agent-kernel/
+│  ├─ tool-platform/
+│  ├─ memory-platform/
+│  ├─ plugin-sdk/
+│  └─ evaluation/
+├─ agents/
+│  ├─ learning-director/
+│  ├─ learning-scientist/
+│  └─ experience-engineer/
+├─ plugins/
+│  └─ solar-energy/
+├─ evaluation/
+│  ├─ datasets/
+│  ├─ invariants/
+│  └─ replay/
+├─ infra/
+│  ├─ migrations/
+│  └─ compose/
+├─ docs/
+└─ legacy/
+   └─ prototype-v0/
+```
+
+第一阶段不要先拆 `director/scientist/engineer` 三个网络服务。每个 Agent 包暴露同一个 `AgentWorker` 接口，通过进程内适配器消费任务；独立部署时只替换 Transport Adapter。
+
+## 6. 数据库与实现顺序
+
+### Step 0：仓库决策
+
+- 决定在当前目录初始化新 Git 仓库，还是建立新的 `firefly-questlab` 目录。
+- 旧原型只移动到 `legacy/prototype-v0`，不删除。
+- 建立 ADR、格式化、Lint、Test 和迁移约定。
+
+### Step 1：契约与状态机
+
+- 建 `packages/contracts` 和 JSON Schema 测试。
+- 实现 Journey、Mission、PluginRelease、EvolutionRun 状态机。
+- 用纯函数测试合法转换、非法转换和幂等重放。
+
+### Step 2：PostgreSQL 事实层
+
+按顺序建立：
+
+```text
+learning_world / mission / attempt / evidence / assessment / mastery
+evolution_run / workflow_task / task_checkpoint / approval
+outbox_event / inbox_receipt
+artifact / artifact_acl / lineage
+plugin / plugin_version / plugin_release
+learning_finding / improvement_plan / verification_report / learning_outcome
+```
+
+先用 PostgreSQL 和 pgvector；MVP 不要求 RocketMQ、Milvus、Elasticsearch、Nacos 同时启动。
+
+### Step 3：人工纵向闭环
+
+- 不接 LLM，使用固定输入跑通 `LearningEvent -> LearningOutcome`。
+- 三 Agent 先作为可替换 Stub，验证任务租约、重试、取消和恢复。
+- 所有状态和制品在 Admin API 可查询。
+
+### Step 4：太阳能插件与独立门禁
+
+- 建 `solar-energy@1.2.0` 缺陷版本和 `1.3.0` 候选版本。
+- 固定物理不变量、Rubric 不变性、可访问性和历史 Replay。
+- 实现 worktree、Sandbox、Digest、Canary 和真实回滚。
+
+### Step 5：Model Gateway 与 Agent
+
+- TypeScript Gateway 接入 `pi-ai`，提供 generate/stream/embed/rerank 端口。
+- 先接 Learning Scientist 的结构化 Finding，再接 Director，最后接 Engineer。
+- 固定模型、Prompt、Tool 和 Knowledge Snapshot，记录 Token、时延和成本。
+
+### Step 6：RAG、记忆与工具动态化
+
+- 先做授权、结构化聚合、文本混合检索和引用。
+- 再做长期记忆分类、压缩、多模态和动态工具发现。
+- 动态加载只加载描述与受控 Provider，不把未知代码装入 Agent 主进程。
+
+## 7. 第一个纵向切片
+
+场景固定为“火星基地太阳能 Mission”：旧插件忽略昼夜变化，使学习者形成 `constant_solar_output` 错误概念。
+
+首切必须证明：
+
+1. Director 能运行 Mission 并记录插件暴露版本。
+2. Scientist 能以确定性聚合加模型解释生成可复现 Finding。
+3. 人工批准后，Engineer 只能在声明范围内生成 ChangeSet。
+4. 独立门禁验证物理、评测、可访问性和 Replay。
+5. Canary 只面向合成学习者或内部授权账号。
+6. Scientist 比较掌握、保持、迁移和无伤害指标。
+7. 达标激活 `1.3.0`；退化真实回滚 `1.2.0`。
+
+暂不做支付、商城、全学科知识图谱、真实未成年人实验、生产核心自修改和多集群部署。
+
+## 8. 里程碑与完成定义
+
+| 里程碑 | 交付 | 验收 |
+|---|---|---|
+| M0 契约 | Schema、状态机、ADR | 合同测试与非法转换测试通过 |
+| M1 事实层 | Postgres、Outbox/Inbox、Artifact | 重启可恢复，重复消息无重复副作用 |
+| M2 人工闭环 | 三 Stub Agent、Admin 查询 | 一条因果链完整跑通 |
+| M3 插件闭环 | Sandbox、门禁、Canary、Rollback | 故障注入能恢复指定 Digest |
+| M4 模型闭环 | pi-ai Gateway、三个真实 Agent | Provider 可替换，输出均结构化可追溯 |
+| M5 记忆工具 | 授权检索、聚合、异步工具 | 越权测试、删除传播和长任务恢复通过 |
+
+不满足以下条件，不称为“自闭环”：
+
+- 真实业务指标可测，不用模型自评替代。
+- Agent 结果不直接越过状态机和门禁。
+- 失败、超时、重复投递和进程重启可恢复。
+- 候选版本不能修改自身验收标准。
+- 发布与回滚不依赖 Experience Engineer 在线。
+
+## 9. Git 与 GitHub 权限
+
+### 9.1 当前状态
+
+- 当前目录不是 Git 仓库。
+- 当前机器未安装或未暴露 GitHub CLI `gh`。
+- 因此目前无法判断任何 GitHub 账号是否已登录，也不存在可推送的远端。
+
+### 9.2 本地写代码是否需要 GitHub
+
+不需要。创建目录、编写代码、运行测试和使用本地 Git 都不需要 GitHub 权限。但 Experience Engineer 的 worktree、Commit、Diff、回滚和审计依赖一个本地 Git 仓库，所以正式编码前应先获得用户对“在哪里初始化仓库”的明确选择。
+
+### 9.3 什么时候需要 GitHub
+
+| 动作 | 最小需求 |
+|---|---|
+| 创建远端仓库 | 个人账号建仓权限，或组织 `Create repository` 权限 |
+| 推送分支 | Repository Contents: Read/Write |
+| 创建和更新 PR | Pull requests: Read/Write |
+| 查看 CI | Actions: Read |
+| 修改 workflow | Contents: Write，并允许修改 `.github/workflows` |
+| 推送 OCI/Package | Packages: Read/Write |
+| 配置 Secrets / Environments | 对应仓库或环境的管理权限，仅部署阶段需要 |
+| 配置 Branch Protection | Administration: Write，仅治理阶段需要 |
+
+不建议一开始申请组织管理员权限。首个远端阶段只需：仓库访问、分支推送、PR 读写和 Actions 只读；需要配置 CI、Secrets 或分支保护时再单独授权。
+
+### 9.4 进入编码前需要用户确认的权限动作
+
+1. 允许在当前目录初始化 Git，或指定一个新的仓库目录。
+2. 若需要远端协作，提供已创建的 GitHub 仓库 URL，或授权创建仓库。
+3. 若由本机操作 GitHub，安装并登录 `gh`，授权最小仓库范围。
+4. 需要推送、开 PR、配置 Actions 或 Secrets 时分别确认，不默认扩大权限。
+
+## 10. 文档事实源
+
+| 问题 | 文档 |
+|---|---|
+| 产品与业务对象 | `FireFly-QuestLab产品与三Agent详细设计.md` |
+| 三 Agent 通信与开工顺序 | 本文 |
+| 总体架构图 | `FireFly-QuestLab-目标架构-v3.drawio` |
+| RAG、记忆、检索、多模态、安全 | `FireFly-RAG与记忆系统设计.md` |
+| 工具分类、发现、异步、动态加载、KV Cache | `FireFly-工具系统设计.md` |
+| 旧架构推演 | `FireFly-开放式架构分析.md` |
+
+发生冲突时，按“本文 -> v3 主图 -> 专项文档 -> 旧推演”的顺序解释；代码契约最终以 `packages/contracts` 中已版本化 Schema 为准。
