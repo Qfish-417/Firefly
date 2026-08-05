@@ -1,0 +1,13 @@
+{
+  "name": "@firefly/learning-director",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@firefly/agent-kernel": "0.1.0",
+    "@firefly/contracts": "0.1.0"
+  }
+}

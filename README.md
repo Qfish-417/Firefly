@@ -2,7 +2,7 @@
 
 FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学习效果驱动受控改进的三 Agent 系统。
 
-当前阶段是 **v3 架构落地**。M0 契约与状态机、M1 PostgreSQL 工作流事实层已经完成；现有 Java/Python 教育买课与秒杀实现属于 `prototype-v0`，仅用于追溯早期实验，不代表目标架构，也不应继续在其上补业务功能。
+当前阶段是 **v3 架构落地**。M0 契约与状态机、M1 PostgreSQL 工作流事实层、M2 无 LLM 人工闭环已经完成；现有 Java/Python 教育买课与秒杀实现属于 `prototype-v0`，仅用于追溯早期实验，不代表目标架构，也不应继续在其上补业务功能。
 
 ## 三 Agent
 
@@ -75,6 +75,8 @@ solar-energy@1.2.0 忽略昼夜变化
 - Git 仓库已关联 `Qfish-417/Firefly`，开发采用短分支和可审查提交。
 - M0 第一批已落地：`packages/contracts` 提供 v1 Schema 与运行时校验，`packages/learning-domain` 提供四个可测试状态机。
 - M1 PostgreSQL 事实层已落地：`packages/persistence` 提供迁移、EvolutionRun 原子状态迁移、WorkflowTask 租约与检查点、Outbox / Inbox，以及 Artifact ACL 与血缘元数据。
+- M2 人工闭环已落地：`packages/agent-kernel`、`agents/*` 和 `packages/control-plane` 提供三个可拆分 Stub Agent、人工审批边界、确定性验证/Outcome 以及只读 Admin API。
+- M2 的验证和 Canary 指标仍是固定夹具，不代表真实插件门禁与发布；Sandbox、真实 Canary 和 Rollback 属于 M3。
 - 旧 Java/Python 原型仍在原目录，只作追溯参考，不被新 TypeScript packages 依赖。
 
 开发检查：
@@ -87,12 +89,13 @@ npm run check
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell
-docker compose -p firefly-questlab-m1 -f infra/compose/questlab-dev.yml up -d
+docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml up -d
 $env:DATABASE_URL = "postgresql://questlab:questlab@127.0.0.1:55432/questlab"
 npm run db:migrate
 $env:TEST_DATABASE_URL = $env:DATABASE_URL
 npm run test:integration
-docker compose -p firefly-questlab-m1 -f infra/compose/questlab-dev.yml down
+npm run admin:start
+docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 ```
 
-该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
+Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。

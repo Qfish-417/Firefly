@@ -127,6 +127,75 @@ export interface ArtifactLineageTable {
   created_at: Generated<Timestamp>;
 }
 
+export interface LearningEventTable {
+  event_id: string;
+  run_id: string;
+  causation_id: string | null;
+  payload: JsonDocument;
+  occurred_at: Timestamp;
+  created_at: Generated<Timestamp>;
+}
+
+export interface AgentResultTable {
+  result_id: string;
+  run_id: string;
+  task_id: string;
+  agent_id: "learning-director" | "learning-scientist" | "experience-engineer";
+  status: "completed" | "failed" | "canceled" | "needs_human";
+  snapshots: JsonDocument;
+  artifact_refs: JsonList;
+  output: JsonDocument;
+  completed_at: Timestamp;
+}
+
+export interface LearningFindingTable {
+  finding_id: string;
+  run_id: string;
+  causation_id: string;
+  payload: JsonDocument;
+  created_at: Generated<Timestamp>;
+}
+
+export interface ImprovementPlanTable {
+  plan_id: string;
+  run_id: string;
+  finding_id: string;
+  causation_id: string;
+  status: "proposed" | "approved" | "rejected";
+  payload: JsonDocument;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface ChangeSetTable {
+  changeset_id: string;
+  run_id: string;
+  plan_id: string;
+  causation_id: string;
+  payload: JsonDocument;
+  created_at: Generated<Timestamp>;
+}
+
+export interface VerificationReportTable {
+  report_id: string;
+  run_id: string;
+  changeset_id: string;
+  causation_id: string;
+  status: "passed" | "failed";
+  payload: JsonDocument;
+  created_at: Generated<Timestamp>;
+}
+
+export interface LearningOutcomeTable {
+  outcome_id: string;
+  run_id: string;
+  plan_id: string;
+  causation_id: string;
+  decision: "recommend_activate" | "recommend_rollback" | "needs_human";
+  payload: JsonDocument;
+  created_at: Generated<Timestamp>;
+}
+
 export interface QuestLabDatabase {
   "questlab.evolution_run": EvolutionRunTable;
   "questlab.evolution_transition": EvolutionTransitionTable;
@@ -138,6 +207,13 @@ export interface QuestLabDatabase {
   "questlab.artifact": ArtifactTable;
   "questlab.artifact_acl": ArtifactAclTable;
   "questlab.artifact_lineage": ArtifactLineageTable;
+  "questlab.learning_event": LearningEventTable;
+  "questlab.agent_result": AgentResultTable;
+  "questlab.learning_finding": LearningFindingTable;
+  "questlab.improvement_plan": ImprovementPlanTable;
+  "questlab.change_set": ChangeSetTable;
+  "questlab.verification_report": VerificationReportTable;
+  "questlab.learning_outcome": LearningOutcomeTable;
 }
 
 export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {

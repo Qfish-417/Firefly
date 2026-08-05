@@ -18,6 +18,7 @@
     ]
   },
   "include": [
-    "packages/**/*.ts"
+    "packages/**/*.ts",
+    "agents/**/*.ts"
   ]
 }

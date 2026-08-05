@@ -4,13 +4,15 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "agents/*"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"packages/**/*.test.ts\"",
-    "test:integration": "node --test \"packages/**/*.integration.test.ts\"",
+    "test": "node --test \"packages/**/*.test.ts\" \"agents/**/*.test.ts\"",
+    "test:integration": "node --test \"packages/**/*.integration.test.ts\" \"agents/**/*.integration.test.ts\"",
     "db:migrate": "node packages/persistence/src/migrate.ts",
+    "admin:start": "node packages/control-plane/src/admin-server.ts",
     "check": "npm run typecheck && npm test"
   },
   "engines": {
