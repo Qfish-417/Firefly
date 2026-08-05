@@ -1,0 +1,15 @@
+{
+  "name": "@firefly/persistence",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@firefly/contracts": "0.1.0",
+    "@firefly/learning-domain": "0.1.0",
+    "kysely": "^0.28.8",
+    "pg": "^8.16.3"
+  }
+}
