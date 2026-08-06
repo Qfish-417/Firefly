@@ -365,6 +365,57 @@ export interface ModelInvocationTable {
   created_at: Generated<Timestamp>;
 }
 
+export type MemoryScope = "public" | "tenant" | "agent_private" | "user_private" | "session";
+export type MemoryStage = "raw" | "episodic" | "structured" | "semantic" | "procedural" | "archived";
+export type MemoryStatus = "captured" | "normalized" | "structured" | "indexed" | "consolidated" | "active" | "quarantined" | "deleted";
+
+export interface MemoryRecordTable {
+  memory_id: string;
+  tenant_id: string;
+  owner_type: "platform" | "tenant" | "agent" | "user" | "session";
+  owner_id: string;
+  scope: MemoryScope;
+  stage: MemoryStage;
+  kind: string;
+  content_digest: string;
+  source_refs: JsonList;
+  metadata: JsonDocument;
+  confidence: number;
+  sensitivity: "public" | "internal" | "private" | "restricted";
+  status: MemoryStatus;
+  valid_from: Timestamp | null;
+  valid_to: Timestamp | null;
+  version: number;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+  deleted_at: Timestamp | null;
+}
+
+export interface MemoryAclTable {
+  memory_id: string;
+  principal_type: "user" | "agent" | "tenant" | "role" | "session";
+  principal_id: string;
+  permission: "read" | "write" | "delete";
+  created_at: Generated<Timestamp>;
+}
+
+export interface StructuredEventTable {
+  event_id: string;
+  tenant_id: string;
+  subject_id: string;
+  event_type: string;
+  object: JsonDocument;
+  scope: MemoryScope;
+  owner_id: string;
+  occurred_from: Timestamp;
+  occurred_to: Timestamp | null;
+  dedupe_key: string;
+  source_memory_ids: JsonList;
+  confidence: number;
+  conflict_status: "none" | "conflict" | "superseded";
+  created_at: Generated<Timestamp>;
+}
+
 export interface QuestLabDatabase {
   "questlab.evolution_run": EvolutionRunTable;
   "questlab.evolution_transition": EvolutionTransitionTable;
@@ -395,6 +446,9 @@ export interface QuestLabDatabase {
   "questlab.sandbox_run": SandboxRunTable;
   "questlab.canary_evaluation": CanaryEvaluationTable;
   "questlab.model_invocation": ModelInvocationTable;
+  "questlab.memory_record": MemoryRecordTable;
+  "questlab.memory_acl": MemoryAclTable;
+  "questlab.structured_event": StructuredEventTable;
 }
 
 export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="11">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="12">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -312,6 +312,26 @@
         <mxCell id="p11-e3" value="select evidence" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p11-1" source="p11-plan" target="p11-selection"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p11-e4" value="compose" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p11-1" source="p11-selection" target="p11-pack"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p11-e5" value="result" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p11-1" source="p11-aggregate" target="p11-pack"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-memory-facts" name="12-M5记忆ACL与结构化聚合事实层">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p12-0"/><mxCell id="p12-1" parent="p12-0"/>
+        <mxCell id="p12-title" value="M5 Memory Fact Layer: ACL is enforced before retrieval, aggregation is deterministic" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p12-1"><mxGeometry x="120" y="25" width="1360" height="55" as="geometry"/></mxCell>
+        <mxCell id="p12-write" value="Capture / Structure&#xa;MemoryRecord metadata + source refs&#xa;raw content remains in object storage&#xa;stage: raw -> episodic -> structured" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=14;fontStyle=1;" vertex="1" parent="p12-1"><mxGeometry x="70" y="125" width="410" height="300" as="geometry"/></mxCell>
+        <mxCell id="p12-record" value="memory_record&#xa;tenant / owner / scope / stage&#xa;digest / confidence / sensitivity&#xa;active / deleted" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p12-write"><mxGeometry x="35" y="75" width="340" height="130" as="geometry"/></mxCell>
+        <mxCell id="p12-acl" value="memory_acl&#xa;user / agent / tenant / role / session&#xa;read / write / delete&#xa;explicit grants" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p12-write"><mxGeometry x="35" y="220" width="340" height="65" as="geometry"/></mxCell>
+        <mxCell id="p12-gateway" value="Retrieval Gateway&#xa;Principal + tenant + allowed scopes&#xa;Scope / owner / ACL filter&#xa;active-only and limit" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p12-1"><mxGeometry x="570" y="125" width="410" height="300" as="geometry"/></mxCell>
+        <mxCell id="p12-readable" value="listReadable()&#xa;public / tenant / user_private&#xa;agent_private / session&#xa;ACL cannot be relaxed by Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;" vertex="1" parent="p12-gateway"><mxGeometry x="35" y="85" width="340" height="130" as="geometry"/></mxCell>
+        <mxCell id="p12-event" value="structured_event&#xa;dedupe_key + source_memory_ids&#xa;visibility copied from sources&#xa;broader scope rejected" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p12-gateway"><mxGeometry x="35" y="230" width="340" height="55" as="geometry"/></mxCell>
+        <mxCell id="p12-aggregate" value="Allowlisted Aggregator&#xa;COUNT DISTINCT dedupe_key&#xa;subject / event type / time range&#xa;returns value + included_event_ids" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p12-1"><mxGeometry x="1070" y="125" width="430" height="300" as="geometry"/></mxCell>
+        <mxCell id="p12-result" value="Deterministic result&#xa;structured_result.value&#xa;included IDs / conflict count&#xa;RAG only adds citations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;" vertex="1" parent="p12-aggregate"><mxGeometry x="40" y="90" width="350" height="130" as="geometry"/></mxCell>
+        <mxCell id="p12-boundary" value="安全边界：公共知识可跨租户读取；私有记忆必须匹配 owner 或 ACL；删除/归档记录不参与检索；模型不得从 TopK Chunk 自行完成精确计数" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p12-1"><mxGeometry x="180" y="570" width="1240" height="105" as="geometry"/></mxCell>
+        <mxCell id="p12-e1" value="capture" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p12-1" source="p12-write" target="p12-gateway"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p12-e2" value="authorized evidence" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p12-1" source="p12-gateway" target="p12-aggregate"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p12-e3" value="EvidencePack" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p12-1" source="p12-aggregate" target="p12-boundary"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

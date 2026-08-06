@@ -668,6 +668,14 @@ rag-memory/
 
 ### R0：契约与单租户文本闭环
 
+当前已落地的 R0/M5 基础切片：
+
+- `packages/retrieval-planner` 输出动态 `candidate_k`、`fusion_k`、`rerank_k` 和 `context_k`，并区分结构化聚合问题与普通 RAG 问题。
+- `questlab.memory_record`、`questlab.memory_acl` 和 `questlab.structured_event` 已进入 PostgreSQL 事实层。
+- `MemoryRepository.listReadable` 执行 Scope/Owner/ACL 过滤；`recordEvent` 拒绝来源记忆到事件 Scope 的权限扩大；`aggregateReadableEvents` 返回确定性去重计数和参与计算的事件 ID。
+
+尚未完成：实际 BM25/Vector Retriever、索引构建、EvidencePack Context Composer、删除传播任务和多模态派生索引。
+
 - 建 MemoryRecord、EvidenceRef、QueryPlan、EvidencePack Schema。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。

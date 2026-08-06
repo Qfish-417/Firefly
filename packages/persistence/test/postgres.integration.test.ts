@@ -8,6 +8,8 @@ import {
   ArtifactRepository,
   EvolutionRunRepository,
   InboxRepository,
+  MemoryRepository,
+  MemoryPolicyError,
   ModelInvocationRepository,
   OutboxRepository,
   WorkflowTaskRepository,
@@ -32,7 +34,9 @@ test(
           questlab.outbox_event,
           questlab.inbox_receipt,
           questlab.artifact,
-          questlab.model_invocation
+          questlab.model_invocation,
+          questlab.structured_event,
+          questlab.memory_record
         RESTART IDENTITY CASCADE
       `.execute(db);
 
@@ -43,6 +47,7 @@ test(
       const inboxRepository = new InboxRepository(db);
       const artifactRepository = new ArtifactRepository(db);
       const modelInvocationRepository = new ModelInvocationRepository(db);
+      const memoryRepository = new MemoryRepository(db);
 
       await context.test("model invocation projection is idempotent and aggregatable", async () => {
         const record = {
@@ -89,6 +94,122 @@ test(
             total_cost_microusd: 1_000,
             average_latency_ms: 42,
           },
+        ]);
+      });
+
+      await context.test("memory ACLs isolate users and structured aggregation counts distinct events", async () => {
+        await memoryRepository.capture({
+          memory_id: "memory.integration.public",
+          tenant_id: "tenant.integration",
+          owner_type: "platform",
+          owner_id: "platform",
+          scope: "public",
+          stage: "structured",
+          kind: "event",
+          content_digest: "sha256:public",
+          confidence: 1,
+          sensitivity: "public",
+          status: "active",
+        });
+        await memoryRepository.capture({
+          memory_id: "memory.integration.user",
+          tenant_id: "tenant.integration",
+          owner_type: "user",
+          owner_id: "user.integration.01",
+          scope: "user_private",
+          stage: "structured",
+          kind: "event",
+          content_digest: "sha256:user",
+          confidence: 0.9,
+          sensitivity: "private",
+          status: "active",
+        });
+        await memoryRepository.capture({
+          memory_id: "memory.integration.other-user",
+          tenant_id: "tenant.integration",
+          owner_type: "user",
+          owner_id: "user.integration.02",
+          scope: "user_private",
+          stage: "structured",
+          kind: "event",
+          content_digest: "sha256:other",
+          confidence: 0.9,
+          sensitivity: "private",
+          status: "active",
+        });
+
+        const principal = { tenant_id: "tenant.integration", user_id: "user.integration.01" };
+        const readable = await memoryRepository.listReadable(principal);
+        assert.deepEqual(readable.map((memory) => memory.memory_id).sort(), [
+          "memory.integration.public",
+          "memory.integration.user",
+        ]);
+
+        await memoryRepository.recordEvent({
+          event_id: "event.integration.trip.01",
+          tenant_id: "tenant.integration",
+          subject_id: "user.integration.01",
+          event_type: "travel",
+          object: { country_code: "US" },
+          scope: "user_private",
+          owner_id: "user.integration.01",
+          occurred_from: new Date("2026-05-10T00:00:00Z"),
+          dedupe_key: "travel:user.integration.01:US:2026-05-10",
+          source_memory_ids: ["memory.integration.user"],
+          confidence: 0.9,
+        });
+        await memoryRepository.recordEvent({
+          event_id: "event.integration.trip.01-duplicate",
+          tenant_id: "tenant.integration",
+          subject_id: "user.integration.01",
+          event_type: "travel",
+          object: { country_code: "US" },
+          scope: "user_private",
+          owner_id: "user.integration.01",
+          occurred_from: new Date("2026-05-10T00:00:00Z"),
+          dedupe_key: "travel:user.integration.01:US:2026-05-10-duplicate",
+          source_memory_ids: ["memory.integration.user"],
+          confidence: 0.9,
+        });
+        await memoryRepository.recordEvent({
+          event_id: "event.integration.trip.other",
+          tenant_id: "tenant.integration",
+          subject_id: "user.integration.02",
+          event_type: "travel",
+          object: { country_code: "US" },
+          scope: "user_private",
+          owner_id: "user.integration.02",
+          occurred_from: new Date("2026-05-11T00:00:00Z"),
+          dedupe_key: "travel:user.integration.02:US:2026-05-11",
+          source_memory_ids: ["memory.integration.other-user"],
+          confidence: 0.9,
+        });
+        await assert.rejects(
+          memoryRepository.recordEvent({
+            event_id: "event.integration.private-leak",
+            tenant_id: "tenant.integration",
+            subject_id: "user.integration.01",
+            event_type: "travel",
+            object: { country_code: "US" },
+            scope: "public",
+            owner_id: "platform",
+            occurred_from: new Date("2026-05-12T00:00:00Z"),
+            dedupe_key: "travel:user.integration.01:US:private-leak",
+            source_memory_ids: ["memory.integration.user"],
+            confidence: 0.9,
+          }),
+          (error: unknown) => error instanceof MemoryPolicyError,
+        );
+
+        const aggregate = await memoryRepository.aggregateReadableEvents(principal, {
+          subject_id: "user.integration.01",
+          event_type: "travel",
+        });
+        assert.equal(aggregate.operation, "count_distinct");
+        assert.equal(aggregate.value, 2);
+        assert.deepEqual(aggregate.included_event_ids, [
+          "event.integration.trip.01",
+          "event.integration.trip.01-duplicate",
         ]);
       });
 
