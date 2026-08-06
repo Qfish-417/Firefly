@@ -309,6 +309,8 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 
 ### Step 6：RAG、记忆与工具动态化
 
+M5 starts with the model invocation projection (`questlab.model_invocation`) so model budget, retry and provider health are observable before enabling durable memory writes. See [ADR 0008](./docs/adr/0008-model-invocation-projection.md).
+
 - 先做授权、结构化聚合、文本混合检索和引用。
 - 再做长期记忆分类、压缩、多模态和动态工具发现。
 - 动态加载只加载描述与受控 Provider，不把未知代码装入 Agent 主进程。

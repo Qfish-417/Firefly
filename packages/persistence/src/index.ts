@@ -6,5 +6,6 @@ export * from "./evolution-run-repository.ts";
 export * from "./governance-repositories.ts";
 export * from "./plugin-release-repository.ts";
 export * from "./migrate.ts";
+export * from "./model-invocation-repository.ts";
 export * from "./vertical-slice-repository.ts";
 export * from "./workflow-task-repository.ts";

@@ -8,6 +8,7 @@ import {
   type GenerationStreamEvent,
   type GenerationTransport,
   type ModelDescriptor,
+  type ModelInvocationRecord,
   type ModelRoutingPolicy,
   type ModelTarget,
   type TransportCall,
@@ -61,6 +62,41 @@ test("gateway falls back to the next route after a retryable provider error", as
   assert.equal(result.snapshots.model, "model:provider-b/model-b:v1");
   assert.equal(failing.calls, 1);
   assert.equal(succeeding.calls, 1);
+});
+
+test("gateway reports one privacy-preserving invocation record per provider attempt", async () => {
+  const records: ModelInvocationRecord[] = [];
+  const failing = new FakeTransport("first", async () => {
+    throw new ModelGatewayError("PROVIDER_ERROR", "provider unavailable", true);
+  });
+  const succeeding = new FakeTransport("second", async () => ({
+    text: "ok",
+    finish_reason: "stop",
+    usage,
+  }));
+  const gateway = new RoutedModelGateway({
+    policy: policy([
+      route("route.first", "first", "provider-a", "model-a"),
+      route("route.second", "second", "provider-b", "model-b"),
+    ]),
+    transports: [failing, succeeding],
+    observer: {
+      record: (record) => {
+        records.push(record);
+      },
+    },
+  });
+
+  await gateway.generate(baseRequest);
+
+  assert.deepEqual(records.map((record) => [record.attempt, record.status]), [
+    [1, "failed"],
+    [2, "succeeded"],
+  ]);
+  assert.equal(records[0]?.error?.code, "PROVIDER_ERROR");
+  assert.equal(records[1]?.usage?.total_tokens, usage.total_tokens);
+  assert.equal("system_prompt" in records[0]!, false);
+  assert.equal(records[1]?.snapshots.prompt, baseRequest.snapshots.prompt);
 });
 
 test("gateway skips an unavailable catalog model and uses the next configured route", async () => {

@@ -107,3 +107,5 @@ docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 ```
 
 Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`，响应同时包含因果边、预算、哨兵、PluginRelease、Sandbox、Canary 与当前活动 PluginVersion。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
+
+M5 首个运行时切片是 [ADR 0008](./docs/adr/0008-model-invocation-projection.md) 定义的模型调用投影：每次 Provider 尝试的重试、Token、成本、延迟和失败分类均可聚合查询，且不落原始 prompt。

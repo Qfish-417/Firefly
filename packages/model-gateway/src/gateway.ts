@@ -11,6 +11,8 @@ import type {
   GenerationTransport,
   ModelCapability,
   ModelDescriptor,
+  ModelInvocationObserver,
+  ModelInvocationRecord,
   ModelRoute,
   ModelRoutingPolicy,
   RerankPort,
@@ -28,6 +30,7 @@ export interface RoutedModelGatewayOptions {
   readonly reranker?: RerankPort;
   readonly now?: () => number;
   readonly wait?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+  readonly observer?: ModelInvocationObserver;
 }
 
 export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, RerankPort {
@@ -49,15 +52,37 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
     const startedAt = this.now();
     const prepared = this.prepareRoutes(request, "generate");
     let lastError: ModelGatewayError | undefined;
+    let attemptNumber = 0;
 
     for (const route of prepared) {
       for (let attempt = 1; attempt <= this.options.policy.retry.max_attempts; attempt += 1) {
+        attemptNumber += 1;
+        const attemptStartedAt = this.now();
         try {
           const call = this.createCall(request, route, startedAt);
           const result = await route.transport.generate(call);
-          return this.finish(request, route.route, route.descriptor, result, startedAt);
+          const finished = this.finish(request, route.route, route.descriptor, result, startedAt);
+          await this.recordInvocation({
+            request,
+            route,
+            attempt: attemptNumber,
+            startedAt: attemptStartedAt,
+            completedAt: this.now(),
+            status: "succeeded",
+            result: finished,
+          });
+          return finished;
         } catch (error) {
           lastError = normalizeModelError(error);
+          await this.recordInvocation({
+            request,
+            route,
+            attempt: attemptNumber,
+            startedAt: attemptStartedAt,
+            completedAt: this.now(),
+            status: "failed",
+            error: lastError,
+          });
           if (!lastError.retryable || request.signal?.aborted) {
             throw lastError;
           }
@@ -75,10 +100,13 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
     const startedAt = this.now();
     const prepared = this.prepareRoutes(request, "stream");
     let lastError: ModelGatewayError | undefined;
+    let attemptNumber = 0;
 
     for (const route of prepared) {
       for (let attempt = 1; attempt <= this.options.policy.retry.max_attempts; attempt += 1) {
         let emittedText = false;
+        attemptNumber += 1;
+        const attemptStartedAt = this.now();
         try {
           const call = this.createCall(request, route, startedAt);
           for await (const event of route.transport.stream(call)) {
@@ -86,9 +114,19 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
               emittedText ||= event.text.length > 0;
               yield event;
             } else {
+              const finished = this.finish(request, route.route, route.descriptor, event.result, startedAt);
+              await this.recordInvocation({
+                request,
+                route,
+                attempt: attemptNumber,
+                startedAt: attemptStartedAt,
+                completedAt: this.now(),
+                status: "succeeded",
+                result: finished,
+              });
               yield {
                 type: "completed",
-                result: this.finish(request, route.route, route.descriptor, event.result, startedAt),
+                result: finished,
               };
               return;
             }
@@ -96,6 +134,15 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
           throw new ModelGatewayError("PROVIDER_ERROR", "Provider stream ended without a result", true);
         } catch (error) {
           lastError = normalizeModelError(error);
+          await this.recordInvocation({
+            request,
+            route,
+            attempt: attemptNumber,
+            startedAt: attemptStartedAt,
+            completedAt: this.now(),
+            status: "failed",
+            error: lastError,
+          });
           if (emittedText) {
             throw new ModelGatewayError(
               "PARTIAL_STREAM_FAILURE",
@@ -251,6 +298,48 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
   private async backoff(attempt: number, signal?: AbortSignal): Promise<void> {
     const base = this.options.policy.retry.initial_backoff_ms * 2 ** (attempt - 1);
     await this.wait(Math.min(base, this.options.policy.retry.max_backoff_ms), signal);
+  }
+
+  private async recordInvocation(input: {
+    readonly request: GenerationRequest;
+    readonly route: PreparedRoute;
+    readonly attempt: number;
+    readonly startedAt: number;
+    readonly completedAt: number;
+    readonly status: "succeeded" | "failed";
+    readonly result?: GenerationResult;
+    readonly error?: ModelGatewayError;
+  }): Promise<void> {
+    const observer = this.options.observer;
+    if (!observer) return;
+    const record: ModelInvocationRecord = {
+      invocation_id: `${input.request.request_id}:${input.attempt}`,
+      request_id: input.request.request_id,
+      workload: input.request.workload,
+      route_id: input.route.route.route_id,
+      transport_id: input.route.route.transport_id,
+      provider: input.route.route.provider,
+      model: input.route.route.model,
+      attempt: input.attempt,
+      status: input.status,
+      started_at_ms: input.startedAt,
+      completed_at_ms: input.completedAt,
+      latency_ms: Math.max(0, input.completedAt - input.startedAt),
+      ...(input.result?.usage ? { usage: input.result.usage } : {}),
+      ...(input.error
+        ? { error: { code: input.error.code, message: input.error.message, retryable: input.error.retryable } }
+        : {}),
+      snapshots: {
+        ...input.request.snapshots,
+        ...(input.result?.snapshots.model ? { model: input.result.snapshots.model } : {}),
+        ...(input.result?.snapshots.routing ? { routing: input.result.snapshots.routing } : {}),
+      },
+    };
+    try {
+      await observer.record(record);
+    } catch {
+      // Observability must never change provider or workflow semantics.
+    }
   }
 }
 

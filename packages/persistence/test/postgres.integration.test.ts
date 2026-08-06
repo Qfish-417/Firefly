@@ -8,6 +8,7 @@ import {
   ArtifactRepository,
   EvolutionRunRepository,
   InboxRepository,
+  ModelInvocationRepository,
   OutboxRepository,
   WorkflowTaskRepository,
   createDatabase,
@@ -30,7 +31,8 @@ test(
           questlab.evolution_run,
           questlab.outbox_event,
           questlab.inbox_receipt,
-          questlab.artifact
+          questlab.artifact,
+          questlab.model_invocation
         RESTART IDENTITY CASCADE
       `.execute(db);
 
@@ -40,6 +42,55 @@ test(
       const outboxRepository = new OutboxRepository(db);
       const inboxRepository = new InboxRepository(db);
       const artifactRepository = new ArtifactRepository(db);
+      const modelInvocationRepository = new ModelInvocationRepository(db);
+
+      await context.test("model invocation projection is idempotent and aggregatable", async () => {
+        const record = {
+          invocation_id: "model-invocation.integration.01",
+          request_id: "model-request.integration.01",
+          workload: "learning-scientist.analyze",
+          route_id: "route.01",
+          transport_id: "pi-ai",
+          provider: "test-provider",
+          model: "test-model",
+          attempt: 1,
+          status: "succeeded" as const,
+          started_at_ms: now.getTime(),
+          completed_at_ms: now.getTime() + 42,
+          latency_ms: 42,
+          usage: {
+            input_tokens: 20,
+            output_tokens: 10,
+            cached_input_tokens: 0,
+            total_tokens: 30,
+            cost_usd: 0.001,
+          },
+          snapshots: {
+            prompt: "prompt:test:v1",
+            tools: "tools:none:v1",
+            knowledge: "knowledge:test:v1",
+            model: "model:test-provider/test-model:v1",
+            routing: "routing:test:v1",
+          },
+        };
+        const first = await modelInvocationRepository.record(record);
+        const replay = await modelInvocationRepository.record(record);
+        assert.equal(first.invocation_id, replay.invocation_id);
+        const aggregate = await modelInvocationRepository.aggregate({
+          workload: "learning-scientist.analyze",
+        });
+        assert.deepEqual(aggregate, [
+          {
+            workload: "learning-scientist.analyze",
+            provider: "test-provider",
+            status: "succeeded",
+            calls: 1,
+            total_tokens: 30,
+            total_cost_microusd: 1_000,
+            average_latency_ms: 42,
+          },
+        ]);
+      });
 
       await context.test("EvolutionRun transition and Outbox write are idempotent", async () => {
         await runRepository.create({

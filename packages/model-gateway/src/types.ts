@@ -71,6 +71,41 @@ export interface GenerationResult {
   readonly snapshots: ExecutionSnapshotSet;
 }
 
+export type ModelInvocationStatus = "succeeded" | "failed";
+
+/** A privacy-preserving record for one provider attempt. Raw prompts are never included. */
+export interface ModelInvocationRecord {
+  readonly invocation_id: string;
+  readonly request_id: string;
+  readonly workload: string;
+  readonly route_id: string;
+  readonly transport_id: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly attempt: number;
+  readonly status: ModelInvocationStatus;
+  readonly started_at_ms: number;
+  readonly completed_at_ms: number;
+  readonly latency_ms: number;
+  readonly usage?: ModelUsage;
+  readonly error?: {
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+  };
+  readonly snapshots: {
+    readonly prompt: string;
+    readonly tools: string;
+    readonly knowledge: string;
+    readonly model?: string;
+    readonly routing?: string;
+  };
+}
+
+export interface ModelInvocationObserver {
+  record(record: ModelInvocationRecord): void | Promise<void>;
+}
+
 export type GenerationStreamEvent =
   | { readonly type: "text_delta"; readonly text: string }
   | { readonly type: "completed"; readonly result: GenerationResult };

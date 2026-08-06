@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="9">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="10">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -271,6 +271,26 @@
         <mxCell id="p9-e2" value="GenerationRequest" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;startArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p9-1" source="p9-agents" target="p9-gateway"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p9-e3" value="Provider call" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;startArrow=block;strokeColor=#4C78A8;" edge="1" parent="p9-1" source="p9-gateway" target="p9-providers"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p9-e4" value="validated AgentResult" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p9-1" source="p9-agents" target="p9-platform"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-invocation" name="10-M5模型调用投影与观测边界">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p10-0"/><mxCell id="p10-1" parent="p10-0"/>
+        <mxCell id="p10-title" value="M5 Model Invocation Projection: every provider attempt is observable, raw prompts stay out of the ledger" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p10-1"><mxGeometry x="120" y="25" width="1360" height="55" as="geometry"/></mxCell>
+        <mxCell id="p10-gateway" value="RoutedModelGateway" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=15;fontStyle=1;" vertex="1" parent="p10-1"><mxGeometry x="70" y="140" width="500" height="480" as="geometry"/></mxCell>
+        <mxCell id="p10-attempt" value="Provider attempt&#xa;route + provider + model&#xa;attempt number + latency" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p10-gateway"><mxGeometry x="45" y="75" width="410" height="95" as="geometry"/></mxCell>
+        <mxCell id="p10-result" value="Success / failure&#xa;usage: tokens + cost&#xa;error code + retryable" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;" vertex="1" parent="p10-gateway"><mxGeometry x="45" y="205" width="410" height="95" as="geometry"/></mxCell>
+        <mxCell id="p10-snapshot" value="Snapshot IDs only&#xa;prompt / tools / knowledge&#xa;model + routing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;" vertex="1" parent="p10-gateway"><mxGeometry x="45" y="335" width="410" height="95" as="geometry"/></mxCell>
+        <mxCell id="p10-observer" value="ModelInvocationObserver&#xa;optional port&#xa;telemetry failure cannot change workflow semantics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=13;fontStyle=1;" vertex="1" parent="p10-1"><mxGeometry x="675" y="235" width="330" height="130" as="geometry"/></mxCell>
+        <mxCell id="p10-db" value="PostgreSQL projection&#xa;questlab.model_invocation&#xa;idempotent request/attempt key&#xa;append-oriented audit records" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=14;fontStyle=1;" vertex="1" parent="p10-1"><mxGeometry x="1100" y="140" width="400" height="480" as="geometry"/></mxCell>
+        <mxCell id="p10-table" value="Indexes&#xa;workload + time&#xa;provider + status&#xa;request + attempt" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p10-db"><mxGeometry x="40" y="95" width="320" height="115" as="geometry"/></mxCell>
+        <mxCell id="p10-aggregate" value="ModelInvocationRepository.aggregate()&#xa;calls / tokens / cost / average latency&#xa;workload + provider + status" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;" vertex="1" parent="p10-db"><mxGeometry x="40" y="260" width="320" height="115" as="geometry"/></mxCell>
+        <mxCell id="p10-boundary" value="Trust boundary&#xa;projection is not workflow truth&#xa;no raw prompt, secret or generated text&#xa;RAG / memory may consume metrics, never mutate release state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p10-1"><mxGeometry x="300" y="720" width="1000" height="105" as="geometry"/></mxCell>
+        <mxCell id="p10-e1" value="record per attempt" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p10-1" source="p10-gateway" target="p10-observer"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p10-e2" value="persist" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p10-1" source="p10-observer" target="p10-db"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p10-e3" value="aggregate query" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p10-1" source="p10-db" target="p10-boundary"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

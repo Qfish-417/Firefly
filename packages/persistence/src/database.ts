@@ -336,6 +336,35 @@ export interface CanaryEvaluationTable {
   evaluated_at: Timestamp;
 }
 
+export interface ModelInvocationTable {
+  invocation_id: string;
+  request_id: string;
+  workload: string;
+  route_id: string;
+  transport_id: string;
+  provider: string;
+  model: string;
+  attempt: number;
+  status: "succeeded" | "failed";
+  started_at: Timestamp;
+  completed_at: Timestamp;
+  latency_ms: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+  total_tokens: number | null;
+  cost_microusd: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  error_retryable: boolean | null;
+  prompt_snapshot: string;
+  tools_snapshot: string;
+  knowledge_snapshot: string;
+  model_snapshot: string | null;
+  routing_snapshot: string | null;
+  created_at: Generated<Timestamp>;
+}
+
 export interface QuestLabDatabase {
   "questlab.evolution_run": EvolutionRunTable;
   "questlab.evolution_transition": EvolutionTransitionTable;
@@ -365,6 +394,7 @@ export interface QuestLabDatabase {
   "questlab.plugin_release_transition": PluginReleaseTransitionTable;
   "questlab.sandbox_run": SandboxRunTable;
   "questlab.canary_evaluation": CanaryEvaluationTable;
+  "questlab.model_invocation": ModelInvocationTable;
 }
 
 export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {
