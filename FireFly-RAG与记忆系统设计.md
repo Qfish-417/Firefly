@@ -390,6 +390,22 @@ Agent 不直接接收散乱 Chunk，而接收统一证据包：
 }
 ```
 
+### 9.5 动态 TopK 与证据停止规则
+
+TopK 不采用单一固定值。检索规划器输出四个独立参数：
+
+```text
+candidate_k -> fusion_k -> rerank_k -> context_k
+```
+
+`candidate_k` 是每路 Retriever 的候选上限，`fusion_k` 是融合后的候选上限，`rerank_k` 是重排输入规模，`context_k` 是最终送入 Agent 的证据数量。四者必须分开记录，不能把最终上下文数量反推为召回数量。
+
+规划器根据意图、Agent、实体数量、可用 Token 和证据覆盖目标动态计算 K，并设置 `min_context_k`、`score_floor`、`marginal_gain_floor` 与 `max_context_tokens`。ACL 过滤发生在候选进入上下文之前；同一来源、同一实体的重复 Chunk 会被多样性规则降权或跳过。
+
+聚合、比较、多跳和时间问题必须设置 `structured_query_required=true`。Aggregator 负责完整计算次数、去重、时间窗口和关系路径，RAG 只返回参与计算的原始证据。普通事实查询在达到最低证据量后，如果候选分数低于阈值或边际收益不足，应提前停止；不能为了填满固定 K 引入低质量片段。
+
+当前运行时实现位于 `packages/retrieval-planner`，它只生成可审计的 QueryPlan 和证据选择结果，不直接执行 SQL、向量搜索或模型调用。
+
 ## 10. 文档分块
 
 ### 10.1 按类型分块
