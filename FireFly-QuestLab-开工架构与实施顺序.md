@@ -298,13 +298,14 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 - 激活候选和回滚基线都在 PluginRelease 状态迁移事务中原子更新活动版本指针并写 Outbox。
 - Control Plane 的 `PluginReleaseWorkflow` 是正式用例入口，负责构建验证、等待发布审批、解析 Canary 和按最新评估完成激活/回滚；测试不直接拼接发布状态。
 
-### Step 5：Model Gateway 与 Agent（M4.1 已完成，M4.2 进行中）
+### Step 5：Model Gateway 与 Agent（已完成）
 
 - `packages/model-gateway` 已接入维护中的 `@earendil-works/pi-ai@0.83.0`，提供 generate/stream 与独立 embed/rerank 端口；后两者不伪装成 pi-ai 原生能力。
 - 已实现 workload 主备路由、Gateway 级重试、超时、取消、Token/成本预检与后检，以及 Model/Routing/Prompt/Tool/Knowledge Snapshot。
 - Learning Scientist 已使用模型解释授权证据，Learning Director 已使用模型生成固定五阶段内的指导；可信代码绑定身份、证据、插件曝光、阶段顺序和 Canary 决策。
 - 模型不接收工具，任何 tool call 都被拒绝；流式调用只允许在输出首个 delta 前切换 Provider。
-- Experience Engineer 在 M4.2 中接入，必须将授权源码读取、PatchProposal、Git worktree、真实 Commit、Sandbox 和 cleanup 置于同一 Control Plane 生命周期，禁止伪造 Commit。
+- Experience Engineer 已通过 `IsolatedPluginEngineeringTool` 接入：授权源码读取、PatchProposal、Git worktree、真实 Commit、Sandbox 和 cleanup 位于同一受控生命周期；模型不能声明 Commit、Digest、门禁结果或发布决策。
+- Control Plane 持久化真实 VerificationReport；失败进入 `verification_failed`，通过且存在证据才进入 Canary。PluginRelease 直接消费已验证候选，不重复构建，并继续等待独立发布审批。
 
 ### Step 6：RAG、记忆与工具动态化
 
@@ -337,7 +338,7 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 | M2 人工闭环 | 三 Stub Agent、Admin 查询 | 一条因果链完整跑通 |
 | M2.1 治理哨兵 | 规范、预算、因果图、Loop Sentinel、隔离 | 循环、风暴、自委派和预算耗尽均被确定性阻断 |
 | M3 插件闭环（完成） | Worktree、Docker Sandbox、门禁、Canary、Rollback | 缺陷基线被拒绝；候选四门禁通过；故障注入恢复指定 Digest |
-| M4 模型闭环（M4.1 完成） | pi-ai Gateway、Director/Scientist 模型建议、Stub 后备 | Provider 可替换，输出结构化可追溯；M4.2 补齐 Engineer 真实构建 |
+| M4 模型闭环（完成） | pi-ai Gateway、三个真实 Agent、Stub 后备、Engineer 隔离构建 | Provider 可替换；模型输出可追溯；真实 Commit、门禁失败和发布证据均受治理 |
 | M5 记忆工具 | 授权检索、聚合、异步工具 | 越权测试、删除传播和长任务恢复通过 |
 
 不满足以下条件，不称为“自闭环”：
@@ -353,7 +354,7 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 ### 9.1 当前状态
 
 - 当前目录已经是 Git 仓库，远端 `origin` 指向 `https://github.com/Qfish-417/Firefly.git`。
-- M0、M1、M2、M2.1、M3 已通过短分支推送到远端；M4.1 在 `feat/m4-pi-ai-model-gateway` 上开发。
+- M0、M1、M2、M2.1、M3 已通过短分支推送到远端；M4 在 `feat/m4-pi-ai-model-gateway` 上完成本地开发，等待 GitHub 443 网络恢复后推送。
 - HTTPS Git 凭据已能完成分支推送；当前实现和测试不依赖 GitHub API。
 
 ### 9.2 本地写代码是否需要 GitHub

@@ -18,6 +18,8 @@ import {
   type AgentWorker,
 } from "@firefly/agent-kernel";
 
+export * from "./model-agent.ts";
+
 export class ExperienceEngineerStub implements AgentWorker {
   readonly id = "experience-engineer" as const;
   readonly taskTypes = ["BuildPluginChangeTask"] as const;
@@ -31,7 +33,10 @@ export class ExperienceEngineerStub implements AgentWorker {
       throw new InvalidAgentTaskPayloadError(task.message_type, "an approved plan is required");
     }
     const disallowed = plan.allowed_paths.filter(
-      (path) => !path.startsWith("plugins/solar-energy/src/") && !path.startsWith("plugins/solar-energy/test/"),
+      (path) =>
+        path !== "plugins/solar-energy/manifest.json" &&
+        !path.startsWith("plugins/solar-energy/src/") &&
+        !path.startsWith("plugins/solar-energy/test/"),
     );
     if (disallowed.length > 0) {
       throw new InvalidAgentTaskPayloadError(task.message_type, "allowed_paths escape the plugin boundary");

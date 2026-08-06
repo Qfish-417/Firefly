@@ -177,8 +177,8 @@ export class ManualEvolutionWorkflow {
       change_class: "A3",
       target_artifact: input.source_plugin,
       allowed_paths: [
-        "plugins/solar-energy/src/daylight.ts",
-        "plugins/solar-energy/test/daylight.test.ts",
+        "plugins/solar-energy/manifest.json",
+        "plugins/solar-energy/src/daylight.mjs",
       ],
       risk_level: "high",
       verification_contract: [
@@ -246,41 +246,55 @@ export class ManualEvolutionWorkflow {
       2,
     );
     const changeSet = extractContract<ChangeSet>(engineerResult, "change_set", "ChangeSet");
-    await this.artifactRepository.store({
-      ...changeSet.plugin_artifact,
-      metadata: { run_id: input.run_id, kind: "candidate-plugin" },
-    });
-    for (const testArtifact of changeSet.generated_tests) {
+    for (const artifact of engineerResult.artifact_refs) {
       await this.artifactRepository.store({
-        ...testArtifact,
-        metadata: { run_id: input.run_id, kind: "generated-test" },
+        ...artifact,
+        metadata: { run_id: input.run_id, kind: "engineer-output" },
       });
     }
     await this.verticalRepository.recordChangeSet(input.run_id, engineerResult.result_id, changeSet);
     run = await this.transition(input, "change_built", run.version, "change-built");
 
-    const verificationArtifact = createVerificationArtifact(input.run_id, changeSet);
-    await this.artifactRepository.store({
-      ...verificationArtifact,
-      metadata: { run_id: input.run_id, kind: "verification-evidence" },
-    });
-    const verification: VerificationReport = {
-      report_id: `verification.${input.run_id}`,
-      changeset_id: changeSet.changeset_id,
-      status: "passed",
-      baseline_snapshot: input.source_plugin,
-      checks: approvedPlan.verification_contract.map((name) => ({
-        name,
-        status: "passed",
-        evidence_refs: [verificationArtifact],
-      })),
-    };
+    const suppliedVerification = engineerResult.output.verification_report;
+    const verification = suppliedVerification
+      ? extractContract<VerificationReport>(
+          engineerResult,
+          "verification_report",
+          "VerificationReport",
+        )
+      : await this.createDeterministicVerification(input, approvedPlan, changeSet);
     assertContract("VerificationReport", verification);
+    if (
+      verification.changeset_id !== changeSet.changeset_id ||
+      verification.baseline_snapshot.digest !== input.source_plugin.digest
+    ) {
+      throw new Error(`Verification evidence does not match ChangeSet ${changeSet.changeset_id}`);
+    }
+    const verificationEvidence = [
+      ...new Map(
+        verification.checks
+          .flatMap((check) => check.evidence_refs)
+          .map((artifact) => [artifact.artifact_id, artifact]),
+      ).values(),
+    ];
+    if (verification.status === "passed" && verificationEvidence.length === 0) {
+      throw new Error(`Passed verification has no evidence for ${changeSet.changeset_id}`);
+    }
+    for (const evidence of verificationEvidence) {
+      await this.artifactRepository.store({
+        ...evidence,
+        metadata: { run_id: input.run_id, kind: "verification-evidence" },
+      });
+    }
     await this.verticalRepository.recordVerification(
       input.run_id,
       `event.change-built.${input.run_id}`,
       verification,
     );
+    if (verification.status === "failed") {
+      await this.transition(input, "verification_failed", run.version, "verification-failed");
+      throw new Error(`Independent verification failed for ${changeSet.changeset_id}`);
+    }
     run = await this.transition(input, "verification_passed", run.version, "verification-passed");
 
     await this.executeTask(
@@ -308,7 +322,7 @@ export class ManualEvolutionWorkflow {
         cohort: input.cohort,
         plugin_artifact: changeSet.plugin_artifact as unknown as JsonObject,
       },
-      [verificationArtifact],
+      verificationEvidence,
       `event.canary-started.${input.run_id}`,
       taskIdFor("ActivateCanaryMissionTask", input.run_id),
       4,
@@ -329,6 +343,29 @@ export class ManualEvolutionWorkflow {
     for (const event of input.learning_events) {
       assertContract("LearningEvent", event);
     }
+  }
+
+  private async createDeterministicVerification(
+    input: ManualEvolutionInput,
+    plan: ImprovementPlan,
+    changeSet: ChangeSet,
+  ): Promise<VerificationReport> {
+    const verificationArtifact = createVerificationArtifact(input.run_id, changeSet);
+    await this.artifactRepository.store({
+      ...verificationArtifact,
+      metadata: { run_id: input.run_id, kind: "verification-evidence" },
+    });
+    return {
+      report_id: `verification.${input.run_id}`,
+      changeset_id: changeSet.changeset_id,
+      status: "passed",
+      baseline_snapshot: input.source_plugin,
+      checks: plan.verification_contract.map((name) => ({
+        name,
+        status: "passed",
+        evidence_refs: [verificationArtifact],
+      })),
+    };
   }
 
   private async executeTask(
@@ -445,7 +482,7 @@ function taskIdFor(taskType: AgentTaskType, runId: string): string {
 function extractContract<T>(
   result: AgentResult,
   field: string,
-  contract: "LearningFinding" | "ChangeSet" | "LearningOutcome",
+  contract: "LearningFinding" | "ChangeSet" | "VerificationReport" | "LearningOutcome",
 ): T {
   const value = result.output[field];
   assertContract(contract, value);

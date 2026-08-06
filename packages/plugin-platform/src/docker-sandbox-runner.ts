@@ -37,6 +37,40 @@ export interface SandboxExecutionResult {
   readonly checks: readonly SandboxCheckResult[];
 }
 
+export interface SandboxReleaseEvidence {
+  readonly status: "passed" | "failed";
+  readonly runner: "docker";
+  readonly image: string;
+  readonly network: "none";
+  readonly read_only: true;
+  readonly limits: SandboxLimits;
+  readonly checks: readonly {
+    readonly name: string;
+    readonly status: "passed" | "failed";
+    readonly exit_code: number;
+    readonly evidence: ArtifactRef;
+  }[];
+}
+
+export function toSandboxReleaseEvidence(
+  result: SandboxExecutionResult,
+): SandboxReleaseEvidence {
+  return {
+    status: result.status,
+    runner: result.runner,
+    image: result.image,
+    network: result.network,
+    read_only: result.read_only,
+    limits: result.limits,
+    checks: result.checks.map((check) => ({
+      name: check.name,
+      status: check.status,
+      exit_code: check.exit_code,
+      evidence: check.evidence,
+    })),
+  };
+}
+
 export class UnpinnedSandboxImageError extends Error {
   constructor(image: string) {
     super(`Sandbox image must be pinned by sha256 digest: ${image}`);
@@ -62,6 +96,7 @@ export class DockerSandboxRunner {
     readonly owner_id: string;
     readonly checks: readonly SandboxCheck[];
     readonly limits?: SandboxLimits;
+    readonly signal?: AbortSignal;
   }): Promise<SandboxExecutionResult> {
     const limits = input.limits ?? {
       timeout_ms: 30_000,
@@ -108,10 +143,14 @@ export class DockerSandboxRunner {
           timeout: limits.timeout_ms,
           windowsHide: true,
           maxBuffer: 1024 * 1024,
+          ...(input.signal ? { signal: input.signal } : {}),
         });
         stdout = result.stdout;
         stderr = result.stderr;
       } catch (error) {
+        if (input.signal?.aborted) {
+          throw error;
+        }
         const failure = error as Error & { code?: number | string; stdout?: string; stderr?: string };
         exitCode = typeof failure.code === "number" ? failure.code : 1;
         stdout = failure.stdout ?? "";

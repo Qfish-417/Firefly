@@ -149,6 +149,25 @@ const validContracts: Record<ContractName, unknown> = {
     approved_by: "teacher.01",
     approved_at: "2026-08-05T10:10:00Z",
   },
+  PatchProposal: {
+    proposal_id: "patch-proposal.contract-test",
+    plan_id: "plan.contract-test",
+    source_snapshot: pluginArtifact,
+    proposal_artifact: {
+      ...pluginArtifact,
+      artifact_id: "artifact.patch-proposal.contract-test",
+      uri: "urn:firefly:patch-proposal:contract-test",
+      lineage_ids: [pluginArtifact.artifact_id],
+    },
+    files: [
+      {
+        path: "plugins/solar-energy/src/daylight.mjs",
+        content_digest: `sha256:${"d".repeat(64)}`,
+        byte_length: 512,
+      },
+    ],
+    risk_declaration: ["physics-behavior-change"],
+  },
   ChangeSet: {
     changeset_id: "changeset.01",
     plan_id: "plan.01",

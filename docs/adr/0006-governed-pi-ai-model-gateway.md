@@ -21,7 +21,7 @@ Model-enable Agents incrementally:
 
 - Learning Scientist uses the model only to interpret authorized evidence. Trusted code binds finding identity, scope, evidence references and no-harm constraints, then validates the `LearningFinding` contract.
 - Learning Director uses the model only for guidance within five trusted mission stages. Trusted code binds mission identity, plugin exposure and stage order. Canary assignment remains deterministic.
-- Experience Engineer remains deterministic in M4.1. Its model proposal must be integrated with authorized source reads, Git worktree lifetime and Sandbox execution as one governed use case; a model-generated fake commit is not acceptable.
+- Experience Engineer remained deterministic in M4.1. ADR 0007 completes its authorized source, model proposal, Git worktree and Sandbox lifecycle without accepting model-generated commits.
 
 The default workflow remains zero-budget deterministic mode. Real calls require explicit model Workers, non-zero task budgets and a `FIREFLY_MODEL_ROUTES` configuration. Model usage, route and latency are persisted inside the versioned Agent result.
 
@@ -31,4 +31,4 @@ The default workflow remains zero-budget deterministic mode. Real calls require 
 - Missing routes, zero budgets and unsupported capabilities fail closed before network calls.
 - API keys stay in provider-supported environment or credential stores; they never enter Task payloads, snapshots, logs or the repository.
 - Model output cannot activate a release, approve a plan, execute a tool or alter evidence identity.
-- M4.2 must join the Engineer's patch proposal to M3 worktree and Sandbox lifecycle before the three-Agent model milestone is complete.
+- ADR 0007 fulfills the remaining Engineer consequence and completes the three-Agent model milestone.

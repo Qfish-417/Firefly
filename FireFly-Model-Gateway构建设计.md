@@ -1,6 +1,6 @@
 # FireFly Model Gateway 构建设计
 
-> 状态：M4.1 已实现（2026-08-05）。本文是后续编码事实源；架构决策见 `docs/adr/0006-governed-pi-ai-model-gateway.md`。
+> 状态：M4 已实现（2026-08-06）。本文是后续编码事实源；架构决策见 ADR 0006 与 ADR 0007。
 
 ## 1. 目标与边界
 
@@ -50,14 +50,16 @@ Agent Task（含预算、deadline、artifact_refs）
 | `packages/model-gateway/src/configuration.ts` | 显式 workload 路由和稳定策略快照 |
 | `agents/learning-scientist/src/model-agent.ts` | 证据解释与可信 Finding 绑定 |
 | `agents/learning-director/src/model-agent.ts` | Mission 阶段指导与可信计划绑定 |
-| `packages/control-plane/src/model-workers.ts` | M4.1 组合入口；Engineer 暂用 Stub |
+| `packages/plugin-platform/src/plugin-engineering-tool.ts` | 授权 Git 读取、真实 worktree、Sandbox 与清理 |
+| `agents/experience-engineer/src/model-agent.ts` | 严格 PatchProposal 与受控工程工具调用 |
+| `packages/control-plane/src/model-workers.ts` | Stub、模型辅助和三个真实 Agent 组合入口 |
 
 ## 3. 配置和凭据
 
 路由是 JSON workload map：
 
 ```powershell
-$env:FIREFLY_MODEL_ROUTES = '{"learning-scientist.analyze":[{"provider":"<provider>","model":"<model>"}],"learning-director.mission-plan":[{"provider":"<provider>","model":"<model>"}]}'
+$env:FIREFLY_MODEL_ROUTES = '{"learning-scientist.analyze":[{"provider":"<provider>","model":"<model>"}],"learning-director.mission-plan":[{"provider":"<provider>","model":"<model>"}],"experience-engineer.patch":[{"provider":"<provider>","model":"<model>"}]}'
 ```
 
 主模型写在数组前面，后备模型依次排列。模型名称必须来自 pi-ai 当前 catalog。Provider 凭据使用 pi-ai 支持的环境变量或凭据存储，不写入 `FIREFLY_MODEL_ROUTES`，也不写进代码、Task、快照、日志或 Git。
@@ -96,9 +98,9 @@ const execution = {
 
 模型返回必须是严格 JSON。Markdown fenced JSON、截断输出、未知枚举、非法数值或缺失必填字段均在进入工作流状态机前失败。
 
-## 6. Engineer M4.2 建造脉络
+## 6. Engineer 工程生命周期
 
-Engineer 不应直接获得任意文件系统或 Git 工具。后续按一个完整用例实现：
+Engineer 不直接获得任意文件系统或 Git 工具。当前实现按一个完整用例运行：
 
 ```text
 Approved BuildPluginChangeTask
@@ -114,21 +116,24 @@ Approved BuildPluginChangeTask
 
 worktree 的创建、模型提议、Commit、Sandbox 和 cleanup 必须由同一 Control Plane 用例管理。不能让 Agent 返回伪造 `patch_commit`，也不能先清理 worktree 再要求发布流程运行 Sandbox。
 
-## 7. M4.1 验收与 M4.2 待办
+## 7. M4 验收与后续
 
-M4.1 已验收：
+M4 已验收：
 
 - 维护中的 pi-ai 包已固定版本；
 - 主备路由、重试、超时、取消、预算和流式失败语义有测试；
 - 模型工具调用被拒绝；
 - Director 与 Scientist 的模型输出不能覆盖可信字段；
+- Engineer 的模型输出只能包含批准路径，不能提供 Commit、Digest、命令或门禁结论；
+- Git source digest 在模型调用前校验，符号链接、路径逃逸、超限源码和补丁均被拒绝；
+- worktree、真实 Commit、固定镜像 Sandbox 与 cleanup 位于同一工具调用；
+- Control Plane 消费真实门禁报告，失败终止 EvolutionRun，通过后才允许进入发布审批；
 - Stub 仍是默认与离线后备；
 - embedding/rerank 未配置时显式失败。
 
-M4.2 待办：
+后续进入 M5：
 
-- 建 `PatchProposal` 契约与 Artifact；
-- 实现授权源码读取端口；
-- 将 Engineer 模型提议与 M3 worktree/Sandbox 合并；
 - 把实际模型 invocation 做成可聚合查询的 PostgreSQL 投影；
+- 实现公共、Agent 私有、用户私有记忆的授权检索与删除传播；
+- 实现聚合索引、混合检索、结构化记忆与多层压缩；
 - 增加使用真实 Provider 凭据的 opt-in 集成测试，不在 CI 默认消耗额度。

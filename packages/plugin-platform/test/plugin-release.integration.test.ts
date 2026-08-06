@@ -19,6 +19,7 @@ import { fingerprintTask } from "@firefly/governance";
 import {
   DockerSandboxRunner,
   GitWorktreeBuilder,
+  IsolatedPluginEngineeringTool,
   digestFiles,
 } from "@firefly/plugin-platform";
 import {
@@ -39,7 +40,7 @@ const connectionString = process.env.TEST_DATABASE_URL;
 const sandboxImage = process.env.TEST_SANDBOX_IMAGE;
 
 test(
-  "governed plugin release builds in a worktree, passes isolated gates and rolls back by digest",
+  "model Engineer evidence reaches governed release and rolls back by digest",
   { skip: connectionString && sandboxImage ? false : "TEST_DATABASE_URL and TEST_SANDBOX_IMAGE are required" },
   async () => {
     assert.ok(connectionString);
@@ -99,25 +100,20 @@ test(
         authorized_subjects: [],
         subject_prefixes: ["synthetic."],
       } as const;
-      const workflow = new PluginReleaseWorkflow(
-        db,
-        new GitWorktreeBuilder(fixtureRoot),
-        new DockerSandboxRunner(sandboxImage),
-      );
-      const prepared = await workflow.prepare({
-        release_id: releaseId,
-        run_id: runId,
+      const builder = new GitWorktreeBuilder(fixtureRoot);
+      const sandbox = new DockerSandboxRunner(sandboxImage);
+      const engineering = new IsolatedPluginEngineeringTool(builder, sandbox, {
         repository_path: repositoryPath,
         base_ref: "HEAD",
         plugin_id: "solar-energy",
-        candidate_version_id: "plugin-version.solar-energy.1.3.0",
         candidate_version: "1.3.0",
-        rollback_version_id: "plugin-version.solar-energy.1.2.0",
-        baseline_version: "1.2.0",
-        baseline_source_commit: sourceCommit,
-        authorized_task_id: task.message_id,
-        canary_policy: canaryPolicy,
+        artifact_paths: artifactPaths,
+        generated_test_paths: ["plugins/solar-energy/test/gate.mjs"],
+        owner_id: ownerId,
         checks,
+      });
+      const candidate = await engineering.buildAndVerify({
+        run_id: runId,
         plan,
         patch_files: [
           {
@@ -129,9 +125,23 @@ test(
             content: await readFile(join(process.cwd(), "plugins/solar-energy/candidates/1.3.0/daylight.mjs"), "utf8"),
           },
         ],
-        artifact_paths: artifactPaths,
-        generated_test_paths: ["plugins/solar-energy/test/gate.mjs"],
-        owner_id: ownerId,
+      });
+      const workflow = new PluginReleaseWorkflow(db);
+      const prepared = await workflow.prepareVerified({
+        release_id: releaseId,
+        run_id: runId,
+        plugin_id: "solar-energy",
+        candidate_version_id: "plugin-version.solar-energy.1.3.0",
+        candidate_version: "1.3.0",
+        rollback_version_id: "plugin-version.solar-energy.1.2.0",
+        baseline_version: "1.2.0",
+        baseline_source_commit: sourceCommit,
+        authorized_task_id: task.message_id,
+        canary_policy: canaryPolicy,
+        plan,
+        change_set: candidate.change_set,
+        verification: candidate.verification,
+        sandbox: candidate.sandbox,
       });
       assert.equal(prepared.release.state, "awaiting_approval");
       assert.equal(prepared.sandbox.status, "passed");

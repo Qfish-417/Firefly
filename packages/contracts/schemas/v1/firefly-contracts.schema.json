@@ -388,6 +388,44 @@
         }
       ]
     },
+    "PatchProposalFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_digest", "byte_length"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "content_digest": { "$ref": "#/$defs/Digest" },
+        "byte_length": { "type": "integer", "minimum": 0, "maximum": 1048576 }
+      }
+    },
+    "PatchProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_id",
+        "plan_id",
+        "source_snapshot",
+        "proposal_artifact",
+        "files",
+        "risk_declaration"
+      ],
+      "properties": {
+        "proposal_id": { "$ref": "#/$defs/Identifier" },
+        "plan_id": { "$ref": "#/$defs/Identifier" },
+        "source_snapshot": { "$ref": "#/$defs/ArtifactRef" },
+        "proposal_artifact": { "$ref": "#/$defs/ArtifactRef" },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/PatchProposalFile" }
+        },
+        "risk_declaration": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    },
     "ChangeSet": {
       "type": "object",
       "additionalProperties": false,

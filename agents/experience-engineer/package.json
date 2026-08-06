@@ -8,6 +8,8 @@
   },
   "dependencies": {
     "@firefly/agent-kernel": "0.1.0",
-    "@firefly/contracts": "0.1.0"
+    "@firefly/contracts": "0.1.0",
+    "@firefly/model-gateway": "0.1.0",
+    "@firefly/plugin-platform": "0.1.0"
   }
 }

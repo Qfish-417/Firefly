@@ -1,6 +1,7 @@
 import type {
   ArtifactRef,
   ChangeSet,
+  ImprovementPlan,
   JsonObject,
   VerificationReport,
 } from "@firefly/contracts";
@@ -15,7 +16,7 @@ import {
   type CanaryResolution,
   type PluginWorktreeBuild,
   type SandboxCheck,
-  type SandboxExecutionResult,
+  type SandboxReleaseEvidence,
 } from "@firefly/plugin-platform";
 import {
   ApprovalRepository,
@@ -43,7 +44,26 @@ export interface PreparedPluginRelease {
   readonly approval_id?: string;
   readonly change_set: ChangeSet;
   readonly verification: VerificationReport;
-  readonly sandbox: SandboxExecutionResult;
+  readonly sandbox: SandboxReleaseEvidence;
+}
+
+export interface PrepareVerifiedPluginReleaseInput {
+  readonly release_id: string;
+  readonly run_id: string;
+  readonly plugin_id: string;
+  readonly candidate_version_id: string;
+  readonly candidate_version: string;
+  readonly rollback_version_id: string;
+  readonly baseline_version: string;
+  readonly baseline_source_commit: string;
+  readonly authorized_task_id: string;
+  readonly canary_policy: CanaryPolicy;
+  readonly plan: ImprovementPlan;
+  readonly change_set: ChangeSet;
+  readonly verification: VerificationReport;
+  readonly sandbox: SandboxReleaseEvidence;
+  readonly sandbox_started_at?: Date;
+  readonly completed_at?: Date;
 }
 
 export interface CanaryEvaluationInput {
@@ -62,14 +82,14 @@ export class PluginReleaseWorkflow {
   private readonly artifacts: ArtifactRepository;
   private readonly releases: PluginReleaseRepository;
   private readonly vertical: VerticalSliceRepository;
-  private readonly builder: GitWorktreeBuilder;
-  private readonly sandbox: DockerSandboxRunner;
+  private readonly builder: GitWorktreeBuilder | undefined;
+  private readonly sandbox: DockerSandboxRunner | undefined;
   private readonly now: () => Date;
 
   constructor(
     db: Kysely<QuestLabDatabase>,
-    builder: GitWorktreeBuilder,
-    sandbox: DockerSandboxRunner,
+    builder?: GitWorktreeBuilder,
+    sandbox?: DockerSandboxRunner,
     now: () => Date = () => new Date(),
   ) {
     this.approvals = new ApprovalRepository(db);
@@ -83,9 +103,14 @@ export class PluginReleaseWorkflow {
 
   async prepare(input: PreparePluginReleaseInput): Promise<PreparedPluginRelease> {
     this.assertPreparation(input);
+    const builder = this.builder;
+    const sandboxRunner = this.sandbox;
+    if (!builder || !sandboxRunner) {
+      throw new Error("Direct release preparation requires Git and Docker adapters");
+    }
     let build: PluginWorktreeBuild | undefined;
     try {
-      build = await this.builder.build(input);
+      build = await builder.build(input);
       assertContract("ChangeSet", build.change_set);
       await this.storeBuildArtifacts(input.run_id, build.change_set);
       await this.vertical.recordChangeSet(
@@ -115,97 +140,72 @@ export class PluginReleaseWorkflow {
       });
 
       const startedAt = this.now();
-      const sandbox = await this.sandbox.run({
+      const sandbox = await sandboxRunner.run({
         run_id: input.run_id,
         worktree_path: build.worktree_path,
         owner_id: input.owner_id,
         checks: input.checks,
       });
       const completedAt = this.now();
-      for (const check of sandbox.checks) {
-        await this.artifacts.store({
-          ...check.evidence,
-          lineage_ids: [build.change_set.plugin_artifact.artifact_id],
-          metadata: { run_id: input.run_id, kind: "sandbox-evidence", check: check.name },
-        });
-      }
       const verification = createVerificationReport({
         run_id: input.run_id,
         change_set: build.change_set,
         sandbox,
       });
-      assertContract("VerificationReport", verification);
-      await this.vertical.recordVerification(
-        input.run_id,
-        `event.sandbox-completed.${input.run_id}`,
-        verification,
-      );
-      await this.releases.recordSandboxRun({
-        sandbox_run_id: `sandbox.${input.run_id}`,
+      return await this.completePreparedRelease({
         release_id: input.release_id,
-        status: sandbox.status,
-        image: sandbox.image,
-        limits: sandbox.limits as unknown as JsonObject,
-        checks: sandbox.checks.map((check) => ({
-          name: check.name,
-          status: check.status,
-          evidence_id: check.evidence.artifact_id,
-        })),
-        started_at: startedAt,
-        completed_at: completedAt,
-      });
-
-      if (sandbox.status !== "passed") {
-        const release = (
-          await this.releases.transition(input.release_id, {
-            event_id: `event.plugin-release.sandbox-failed.${input.run_id}`,
-            event: "sandbox_failed",
-            expected_version: 0,
-            occurred_at: completedAt,
-          })
-        ).release;
-        return { release, change_set: build.change_set, verification, sandbox };
-      }
-
-      await this.releases.transition(input.release_id, {
-        event_id: `event.plugin-release.sandbox-passed.${input.run_id}`,
-        event: "sandbox_passed",
-        expected_version: 0,
-        occurred_at: completedAt,
-      });
-      await this.releases.transition(input.release_id, {
-        event_id: `event.plugin-release.verification-passed.${input.run_id}`,
-        event: "verification_passed",
-        expected_version: 1,
-        occurred_at: completedAt,
-        verification_report_id: verification.report_id,
-      });
-      const release = (
-        await this.releases.transition(input.release_id, {
-          event_id: `event.plugin-release.approval-requested.${input.run_id}`,
-          event: "request_approval",
-          expected_version: 2,
-          occurred_at: completedAt,
-        })
-      ).release;
-      const approvalId = `approval.${input.release_id}`;
-      await this.approvals.request({
-        id: approvalId,
         run_id: input.run_id,
-        subject_type: "PluginRelease",
-        subject_id: input.release_id,
-        requested_by: "plugin-platform",
-      });
-      return {
-        release,
-        approval_id: approvalId,
         change_set: build.change_set,
         verification,
         sandbox,
-      };
+        started_at: startedAt,
+        completed_at: completedAt,
+      });
     } finally {
       await build?.cleanup();
     }
+  }
+
+  async prepareVerified(
+    input: PrepareVerifiedPluginReleaseInput,
+  ): Promise<PreparedPluginRelease> {
+    this.assertVerifiedPreparation(input);
+    await this.storeBuildArtifacts(input.run_id, input.change_set);
+    await this.vertical.recordChangeSet(
+      input.run_id,
+      `result.${input.authorized_task_id}`,
+      input.change_set,
+    );
+    await this.releases.registerBaseline({
+      plugin_id: input.plugin_id,
+      version_id: input.rollback_version_id,
+      version: input.baseline_version,
+      artifact: input.plan.rollback_target,
+      source_commit: input.baseline_source_commit,
+    });
+    await this.releases.propose({
+      release_id: input.release_id,
+      run_id: input.run_id,
+      plugin_id: input.plugin_id,
+      candidate_version_id: input.candidate_version_id,
+      candidate_version: input.candidate_version,
+      candidate_artifact: input.change_set.plugin_artifact,
+      source_commit: input.change_set.patch_commit,
+      rollback_version_id: input.rollback_version_id,
+      change_set: input.change_set,
+      authorized_task_id: input.authorized_task_id,
+      canary_policy: input.canary_policy as unknown as JsonObject,
+    });
+    const completedAt = input.completed_at ?? this.now();
+    return await this.completePreparedRelease({
+      release_id: input.release_id,
+      run_id: input.run_id,
+      change_set: input.change_set,
+      verification: input.verification,
+      sandbox: input.sandbox,
+      started_at: input.sandbox_started_at ?? completedAt,
+      completed_at: completedAt,
+    });
   }
 
   async approveRelease(
@@ -288,10 +288,149 @@ export class PluginReleaseWorkflow {
     ) {
       throw new Error("Plugin release requires an approved plan with an immutable rollback target");
     }
-    const providedChecks = new Set(input.checks.map((check) => check.name));
-    if (input.plan.verification_contract.some((name) => !providedChecks.has(name))) {
-      throw new Error("Sandbox checks do not satisfy the approved verification contract");
+    if (!sameNames(input.plan.verification_contract, input.checks.map((check) => check.name))) {
+      throw new Error("Sandbox checks do not exactly match the approved verification contract");
     }
+  }
+
+  private assertVerifiedPreparation(input: PrepareVerifiedPluginReleaseInput): void {
+    assertContract("ImprovementPlan", input.plan);
+    assertContract("ChangeSet", input.change_set);
+    assertContract("VerificationReport", input.verification);
+    if (
+      input.plan.status !== "approved" ||
+      input.plan.rollback_target.digest !== input.plan.target_artifact.digest ||
+      input.change_set.plan_id !== input.plan.plan_id ||
+      input.change_set.source_snapshot.digest !== input.plan.target_artifact.digest ||
+      input.verification.changeset_id !== input.change_set.changeset_id ||
+      input.verification.baseline_snapshot.digest !== input.plan.target_artifact.digest ||
+      input.verification.status !== input.sandbox.status
+    ) {
+      throw new Error("Verified release evidence is inconsistent with the approved plan");
+    }
+    if (
+      input.sandbox.runner !== "docker" ||
+      input.sandbox.network !== "none" ||
+      input.sandbox.read_only !== true ||
+      !/@sha256:[a-f0-9]{64}$/.test(input.sandbox.image) ||
+      Object.values(input.sandbox.limits).some(
+        (value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0,
+      ) ||
+      input.change_set.changed_paths.some((path) => !input.plan.allowed_paths.includes(path))
+    ) {
+      throw new Error("Verified release violates the approved execution boundary");
+    }
+    const checks = new Map(input.sandbox.checks.map((check) => [check.name, check]));
+    if (
+      !sameNames(input.plan.verification_contract, input.sandbox.checks.map((check) => check.name)) ||
+      !sameNames(input.plan.verification_contract, input.verification.checks.map((check) => check.name)) ||
+      input.verification.checks.some((check) => {
+        const sandboxCheck = checks.get(check.name);
+        return (
+          !sandboxCheck ||
+          sandboxCheck.status !== check.status ||
+          !check.evidence_refs.some(
+            (artifact) =>
+              artifact.artifact_id === sandboxCheck.evidence.artifact_id &&
+              artifact.digest === sandboxCheck.evidence.digest,
+          )
+        );
+      })
+    ) {
+      throw new Error("Verified release checks do not match the Sandbox evidence");
+    }
+  }
+
+  private async completePreparedRelease(input: {
+    readonly release_id: string;
+    readonly run_id: string;
+    readonly change_set: ChangeSet;
+    readonly verification: VerificationReport;
+    readonly sandbox: SandboxReleaseEvidence;
+    readonly started_at: Date;
+    readonly completed_at: Date;
+  }): Promise<PreparedPluginRelease> {
+    assertContract("VerificationReport", input.verification);
+    for (const check of input.sandbox.checks) {
+      await this.artifacts.store({
+        ...check.evidence,
+        lineage_ids: [input.change_set.plugin_artifact.artifact_id],
+        metadata: { run_id: input.run_id, kind: "sandbox-evidence", check: check.name },
+      });
+    }
+    await this.vertical.recordVerification(
+      input.run_id,
+      `event.sandbox-completed.${input.run_id}`,
+      input.verification,
+    );
+    await this.releases.recordSandboxRun({
+      sandbox_run_id: `sandbox.${input.run_id}`,
+      release_id: input.release_id,
+      status: input.sandbox.status,
+      image: input.sandbox.image,
+      limits: input.sandbox.limits as unknown as JsonObject,
+      checks: input.sandbox.checks.map((check) => ({
+        name: check.name,
+        status: check.status,
+        evidence_id: check.evidence.artifact_id,
+      })),
+      started_at: input.started_at,
+      completed_at: input.completed_at,
+    });
+
+    if (input.sandbox.status !== "passed") {
+      const release = (
+        await this.releases.transition(input.release_id, {
+          event_id: `event.plugin-release.sandbox-failed.${input.run_id}`,
+          event: "sandbox_failed",
+          expected_version: 0,
+          occurred_at: input.completed_at,
+        })
+      ).release;
+      return {
+        release,
+        change_set: input.change_set,
+        verification: input.verification,
+        sandbox: input.sandbox,
+      };
+    }
+
+    await this.releases.transition(input.release_id, {
+      event_id: `event.plugin-release.sandbox-passed.${input.run_id}`,
+      event: "sandbox_passed",
+      expected_version: 0,
+      occurred_at: input.completed_at,
+    });
+    await this.releases.transition(input.release_id, {
+      event_id: `event.plugin-release.verification-passed.${input.run_id}`,
+      event: "verification_passed",
+      expected_version: 1,
+      occurred_at: input.completed_at,
+      verification_report_id: input.verification.report_id,
+    });
+    const release = (
+      await this.releases.transition(input.release_id, {
+        event_id: `event.plugin-release.approval-requested.${input.run_id}`,
+        event: "request_approval",
+        expected_version: 2,
+        occurred_at: input.completed_at,
+      })
+    ).release;
+    const approvalId = `approval.${input.release_id}`;
+    await this.approvals.request({
+      id: approvalId,
+      run_id: input.run_id,
+      subject_type: "PluginRelease",
+      subject_id: input.release_id,
+      requested_by: "plugin-platform",
+    });
+    return {
+      release,
+      approval_id: approvalId,
+      change_set: input.change_set,
+      verification: input.verification,
+      sandbox: input.sandbox,
+    };
   }
 
   private async storeBuildArtifacts(runId: string, changeSet: ChangeSet): Promise<void> {
@@ -317,4 +456,13 @@ export class PluginReleaseWorkflow {
     }
     return release;
   }
+}
+
+function sameNames(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
 }

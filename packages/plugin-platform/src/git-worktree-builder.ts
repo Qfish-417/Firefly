@@ -25,6 +25,7 @@ export interface BuildPluginChangeInput {
   readonly artifact_paths: readonly string[];
   readonly generated_test_paths: readonly string[];
   readonly owner_id: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface PluginWorktreeBuild {
@@ -75,7 +76,11 @@ export class GitWorktreeBuilder {
     const worktreePath = join(sessionRoot, "worktree");
     let attached = false;
     try {
-      await git(input.repository_path, ["worktree", "add", "--detach", worktreePath, input.base_ref]);
+      await git(
+        input.repository_path,
+        ["worktree", "add", "--detach", worktreePath, input.base_ref],
+        input.signal,
+      );
       attached = true;
       const baselineDigest = await digestFiles(worktreePath, input.artifact_paths);
       if (baselineDigest !== input.plan.target_artifact.digest) {
@@ -88,12 +93,12 @@ export class GitWorktreeBuilder {
         await mkdir(dirname(target), { recursive: true });
         await writeFile(target, file.content, "utf8");
       }
-      const changedPaths = await listChangedPaths(worktreePath);
+      const changedPaths = await listChangedPaths(worktreePath, input.signal);
       if (changedPaths.length === 0 || changedPaths.some((path) => !allowed.has(path))) {
         throw new WorktreePolicyError("the resulting Git diff is empty or escapes approved paths");
       }
 
-      await git(worktreePath, ["add", "--", ...changedPaths]);
+      await git(worktreePath, ["add", "--", ...changedPaths], input.signal);
       await git(worktreePath, [
         "-c",
         "user.name=FireFly Experience Engineer",
@@ -102,8 +107,8 @@ export class GitWorktreeBuilder {
         "commit",
         "-m",
         `plugin(${input.plugin_id}): build ${input.candidate_version}`,
-      ]);
-      const patchCommit = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
+      ], input.signal);
+      const patchCommit = (await git(worktreePath, ["rev-parse", "HEAD"], input.signal)).trim();
       const manifest = JSON.parse(
         await readFile(resolveInside(worktreePath, `${pluginRoot}manifest.json`), "utf8"),
       ) as { plugin_id?: unknown; version?: unknown };
@@ -132,7 +137,7 @@ export class GitWorktreeBuilder {
         })),
       );
       const auditRef = `refs/firefly/changes/${createHash("sha256").update(input.run_id).digest("hex").slice(0, 32)}`;
-      await git(input.repository_path, ["update-ref", auditRef, patchCommit]);
+      await git(input.repository_path, ["update-ref", auditRef, patchCommit], input.signal);
       const changeSet: ChangeSet = {
         changeset_id: `changeset.${input.run_id}`,
         plan_id: input.plan.plan_id,
@@ -163,13 +168,36 @@ export async function digestFiles(
   root: string,
   repositoryPaths: readonly string[],
 ): Promise<`sha256:${string}`> {
+  const entries = await Promise.all(
+    [...repositoryPaths].map(async (path) => ({
+      path,
+      content: await (async () => {
+        await assertNoSymlink(root, path);
+        return readFile(resolveInside(root, path));
+      })(),
+    })),
+  );
+  return digestFileContents(entries);
+}
+
+export function digestFileContents(
+  entries: readonly { readonly path: string; readonly content: string | Uint8Array }[],
+): `sha256:${string}` {
   const hash = createHash("sha256");
-  for (const path of [...repositoryPaths].map(normalizeRepositoryPath).sort()) {
-    await assertNoSymlink(root, path);
+  const sorted = [...entries].sort((left, right) =>
+    normalizeRepositoryPath(left.path).localeCompare(normalizeRepositoryPath(right.path)),
+  );
+  for (const entry of sorted) {
+    const path = normalizeRepositoryPath(entry.path);
     hash.update(path);
     hash.update("\0");
-    const content = await readFile(resolveInside(root, path));
-    hash.update(isTextArtifact(path) ? content.toString("utf8").replaceAll("\r\n", "\n") : content);
+    const content =
+      typeof entry.content === "string"
+        ? entry.content
+        : Buffer.from(entry.content).toString("utf8");
+    hash.update(
+      isTextArtifact(path) ? content.replaceAll("\r\n", "\n") : Buffer.from(entry.content),
+    );
     hash.update("\0");
   }
   return `sha256:${hash.digest("hex")}`;
@@ -197,8 +225,8 @@ function isTextArtifact(path: string): boolean {
   return /\.(?:json|mjs|cjs|js|ts|tsx|md|txt|ya?ml)$/i.test(path);
 }
 
-async function listChangedPaths(worktreePath: string): Promise<string[]> {
-  const output = await git(worktreePath, ["status", "--porcelain=v1", "-z"]);
+async function listChangedPaths(worktreePath: string, signal?: AbortSignal): Promise<string[]> {
+  const output = await git(worktreePath, ["status", "--porcelain=v1", "-z"], signal);
   return output
     .split("\0")
     .filter(Boolean)
@@ -206,7 +234,7 @@ async function listChangedPaths(worktreePath: string): Promise<string[]> {
     .sort();
 }
 
-function normalizeRepositoryPath(path: string): string {
+export function normalizeRepositoryPath(path: string): string {
   const normalized = path.replaceAll("\\", "/").replace(/^\.\//, "");
   if (
     normalized.length === 0 ||
@@ -237,12 +265,13 @@ async function cleanupWorktree(repositoryPath: string, worktreePath: string, ses
   }
 }
 
-async function git(cwd: string, args: readonly string[]): Promise<string> {
+async function git(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string> {
   const result = await executeFile("git", args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
     maxBuffer: 1024 * 1024,
+    ...(signal ? { signal } : {}),
   });
   return result.stdout;
 }

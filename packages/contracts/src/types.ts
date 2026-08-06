@@ -178,6 +178,19 @@ export interface ChangeSet {
   readonly risk_declaration: readonly string[];
 }
 
+export interface PatchProposal {
+  readonly proposal_id: string;
+  readonly plan_id: string;
+  readonly source_snapshot: ArtifactRef;
+  readonly proposal_artifact: ArtifactRef;
+  readonly files: readonly {
+    readonly path: string;
+    readonly content_digest: `sha256:${string}`;
+    readonly byte_length: number;
+  }[];
+  readonly risk_declaration: readonly string[];
+}
+
 export interface VerificationReport {
   readonly report_id: string;
   readonly changeset_id: string;
@@ -213,6 +226,7 @@ export type ContractName =
   | "LearningEvent"
   | "LearningFinding"
   | "ImprovementPlan"
+  | "PatchProposal"
   | "ChangeSet"
   | "VerificationReport"
   | "LearningOutcome";
