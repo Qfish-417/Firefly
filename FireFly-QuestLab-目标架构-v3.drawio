@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="12">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="13">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -332,6 +332,29 @@
         <mxCell id="p12-e1" value="capture" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p12-1" source="p12-write" target="p12-gateway"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p12-e2" value="authorized evidence" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p12-1" source="p12-gateway" target="p12-aggregate"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p12-e3" value="EvidencePack" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p12-1" source="p12-aggregate" target="p12-boundary"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-retrieval-gateway" name="13-M5受治理检索与EvidencePack">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p13-0"/><mxCell id="p13-1" parent="p13-0"/>
+        <mxCell id="p13-title" value="M5 Governed Retrieval Gateway: parallel recall, final ACL, bounded EvidencePack" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p13-1"><mxGeometry x="120" y="25" width="1360" height="55" as="geometry"/></mxCell>
+        <mxCell id="p13-request" value="RetrievalRequest&#xa;query + intent + principal + purpose&#xa;Agent + token budget + filters" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=13;fontStyle=1;" vertex="1" parent="p13-1"><mxGeometry x="65" y="150" width="280" height="130" as="geometry"/></mxCell>
+        <mxCell id="p13-plan" value="Dynamic QueryPlan&#xa;candidate / fusion / rerank / context K&#xa;structured_query_required&#xa;coverage + stop thresholds" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;" vertex="1" parent="p13-1"><mxGeometry x="410" y="150" width="300" height="130" as="geometry"/></mxCell>
+        <mxCell id="p13-retrievers" value="Parallel Retriever Ports&#xa;Lexical / Vector / Graph&#xa;Temporal / Multimodal&#xa;provider failures are traced" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p13-1"><mxGeometry x="790" y="115" width="350" height="205" as="geometry"/></mxCell>
+        <mxCell id="p13-rrf" value="Independent rank lists&#xa;RRF + dedupe&#xa;immutable ID conflict fails closed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p13-retrievers"><mxGeometry x="35" y="75" width="280" height="95" as="geometry"/></mxCell>
+        <mxCell id="p13-aggregate" value="Structured Aggregator&#xa;required for count / comparison&#xa;temporal / multi-hop&#xa;value + included IDs + conflicts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p13-1"><mxGeometry x="1210" y="150" width="320" height="130" as="geometry"/></mxCell>
+        <mxCell id="p13-auth" value="Mandatory final authorization&#xa;tenant / user / Agent / session / purpose&#xa;index filtering is never trusted alone" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p13-1"><mxGeometry x="500" y="430" width="350" height="135" as="geometry"/></mxCell>
+        <mxCell id="p13-select" value="Evidence selection&#xa;score floor / diversity / token cap&#xa;minimum coverage / citations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;" vertex="1" parent="p13-1"><mxGeometry x="930" y="430" width="330" height="135" as="geometry"/></mxCell>
+        <mxCell id="p13-pack" value="EvidencePack&#xa;structured_result + untrusted_content&#xa;digest-bound citations + trace&#xa;sufficient | insufficient&#xa;generation_allowed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p13-1"><mxGeometry x="620" y="690" width="430" height="155" as="geometry"/></mxCell>
+        <mxCell id="p13-e1" value="understand" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p13-1" source="p13-request" target="p13-plan"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p13-e2" value="parallel recall" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p13-1" source="p13-plan" target="p13-retrievers"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p13-e3" value="structured path" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p13-1" source="p13-plan" target="p13-aggregate"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p13-e4" value="fused candidates" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p13-1" source="p13-retrievers" target="p13-auth"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p13-e5" value="authorized" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p13-1" source="p13-auth" target="p13-select"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p13-e6" value="bounded evidence" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p13-1" source="p13-select" target="p13-pack"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p13-e7" value="deterministic result" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p13-1" source="p13-aggregate" target="p13-pack"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>
