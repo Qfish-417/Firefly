@@ -6,6 +6,8 @@ import type { EmbeddingPort } from "@firefly/model-gateway";
 import {
   MemoryPolicyError,
   MemoryRepository,
+  RetrievalIndexPolicyError,
+  RetrievalIndexRepository,
   createDatabase,
   migrateToLatest,
 } from "@firefly/persistence";
@@ -17,6 +19,7 @@ import {
   PostgresLexicalRetriever,
   PostgresMemoryAuthorization,
   PostgresMemoryIndexer,
+  PostgresRetrievalPolicyError,
   PostgresVectorRetriever,
 } from "../src/index.ts";
 
@@ -36,10 +39,12 @@ test(
         TRUNCATE TABLE
           questlab.outbox_event,
           questlab.structured_event,
+          questlab.retrieval_index_version,
           questlab.memory_record
         RESTART IDENTITY CASCADE
       `.execute(db);
       const memories = new MemoryRepository(db);
+      const indexes = new RetrievalIndexRepository(db);
       const indexer = new PostgresMemoryIndexer(db);
       const principal = { tenant_id: "tenant.retrieval", user_id: "user.retrieval.01" };
 
@@ -82,6 +87,23 @@ test(
         sensitivity: "private",
         status: "active",
       });
+      await memories.capture({
+        memory_id: "memory.retrieval.foreign-public",
+        tenant_id: "tenant.other",
+        owner_type: "platform",
+        owner_id: "platform",
+        scope: "public",
+        stage: "structured",
+        kind: "document",
+        content_digest: digest("4"),
+        confidence: 1,
+        sensitivity: "public",
+        status: "active",
+      });
+
+      const buildV1 = indexBuild("v1", "tenant.retrieval", "watermark.01");
+      const buildReplays = await Promise.all([indexes.createBuild(buildV1), indexes.createBuild(buildV1)]);
+      assert.deepEqual(buildReplays.map((version) => version.index_version_id), [buildV1.index_version_id, buildV1.index_version_id]);
 
       await indexer.index(chunk("public", "memory.retrieval.public", "Solar output changes with daylight.", [1, 0, 0]));
       const privateChunk = chunk(
@@ -93,7 +115,26 @@ test(
       await indexer.index(privateChunk);
       await indexer.index(privateChunk);
       await indexer.index(chunk("secret", "memory.retrieval.other", "Secret solar output record.", [1, 0, 0]));
-      await indexer.index(chunk("other-dimension", "memory.retrieval.public", "Unrelated dimension probe.", [1, 0], 1));
+      await assert.rejects(
+        indexer.index(chunk("other-dimension", "memory.retrieval.public", "Unrelated dimension probe.", [1, 0], 1)),
+        (error: unknown) => error instanceof PostgresRetrievalPolicyError,
+      );
+      const foreignBuild = indexBuild("foreign", "tenant.other", "watermark.foreign");
+      await indexes.createBuild(foreignBuild);
+      await assert.rejects(
+        indexer.index(chunk("foreign", "memory.retrieval.public", "Cross tenant chunk.", [1, 0, 0], 1, foreignBuild.index_version_id)),
+        (error: unknown) => error instanceof PostgresRetrievalPolicyError,
+      );
+      await indexer.index(chunk(
+        "foreign-public",
+        "memory.retrieval.foreign-public",
+        "Public solar output reference from another tenant.",
+        [1, 0, 0],
+        0,
+        foreignBuild.index_version_id,
+      ));
+      await indexes.completeBuild(indexBuildResult(foreignBuild, "ready", 1, 1));
+      await indexes.activate(foreignBuild.index_version_id, new Date("2026-08-10T09:00:00Z"));
       const changedPrivateContent = "Changed content under an existing Chunk ID.";
       await assert.rejects(
         indexer.index({
@@ -103,6 +144,9 @@ test(
         }),
         (error: unknown) => error instanceof ChunkIdentityConflictError,
       );
+      await indexes.completeBuild(indexBuildResult(buildV1, "ready", 3, 3));
+      await indexes.activate(buildV1.index_version_id, new Date("2026-08-10T09:00:00Z"));
+      assert.equal((await indexes.getActive("tenant.retrieval", "memory.hybrid"))?.index_version_id, buildV1.index_version_id);
 
       const lexical = new PostgresLexicalRetriever(db);
       const embeddings: EmbeddingPort = {
@@ -134,9 +178,9 @@ test(
       } as const;
 
       const lexicalHits = await lexical.retrieve(call);
-      assert.deepEqual(lexicalHits.map((hit) => hit.id).sort(), ["chunk.private", "chunk.public"]);
+      assert.deepEqual(lexicalHits.map((hit) => hit.id).sort(), ["chunk.foreign-public", "chunk.private", "chunk.public"]);
       const vectorHits = await vector.retrieve(call);
-      assert.deepEqual(vectorHits.map((hit) => hit.id).sort(), ["chunk.private", "chunk.public"]);
+      assert.deepEqual(vectorHits.map((hit) => hit.id).sort(), ["chunk.foreign-public", "chunk.private", "chunk.public"]);
       assert.equal(await authorization.canRead({ principal, purpose: call.purpose, hit: secretHit() }), false);
       const publicHit = lexicalHits.find((hit) => hit.id === "chunk.public");
       assert.ok(publicHit);
@@ -165,7 +209,36 @@ test(
         require_citations: true,
       });
       assert.equal(pack.status, "sufficient");
-      assert.deepEqual(pack.evidence.map((item) => item.evidence_id).sort(), ["chunk.private", "chunk.public"]);
+      assert.deepEqual(pack.evidence.map((item) => item.evidence_id).sort(), ["chunk.foreign-public", "chunk.private"]);
+
+      const buildV2 = indexBuild("v2", "tenant.retrieval", "watermark.02");
+      await indexes.createBuild(buildV2);
+      await indexer.index(chunk(
+        "public.v2",
+        "memory.retrieval.public",
+        "Solar output changes with daylight in the active revision.",
+        [1, 0, 0],
+        0,
+        buildV2.index_version_id,
+      ));
+      assert.deepEqual((await lexical.retrieve(call)).map((hit) => hit.id).sort(), ["chunk.foreign-public", "chunk.private", "chunk.public"]);
+      await indexes.completeBuild(indexBuildResult(buildV2, "ready", 1, 1));
+      await indexes.activate(buildV2.index_version_id, new Date("2026-08-10T11:00:00Z"));
+      assert.deepEqual((await lexical.retrieve(call)).map((hit) => hit.id).sort(), ["chunk.foreign-public", "chunk.public.v2"]);
+      const versions = await db
+        .selectFrom("questlab.retrieval_index_version")
+        .select(["index_version_id", "status"])
+        .where("tenant_id", "=", principal.tenant_id)
+        .where("logical_name", "=", "memory.hybrid")
+        .execute();
+      assert.deepEqual(
+        Object.fromEntries(versions.map((version) => [version.index_version_id, version.status])),
+        { "index.memory.v1": "retired", "index.memory.v2": "active" },
+      );
+      await assert.rejects(
+        indexes.completeBuild({ ...indexBuildResult(buildV2, "ready", 2, 2), chunk_count: 2 }),
+        (error: unknown) => error instanceof RetrievalIndexPolicyError,
+      );
 
       await memories.recordEvent({
         event_id: "event.retrieval.private",
@@ -187,6 +260,7 @@ test(
           principal: { tenant_id: principal.tenant_id, user_id: "user.retrieval.02" },
           requested_by: "user.retrieval.02",
           reason: "unauthorized test",
+          propagation_targets: ["object_store", "cache"],
         }),
         (error: unknown) => error instanceof MemoryPolicyError,
       );
@@ -197,21 +271,70 @@ test(
         principal,
         requested_by: principal.user_id,
         reason: "user requested erasure",
+        propagation_targets: ["object_store", "cache"],
         occurred_at: new Date("2026-08-10T12:00:00Z"),
       });
       assert.equal(receipt.removed_chunk_count, 1);
       assert.equal(receipt.invalidated_event_count, 1);
+      assert.equal(receipt.propagation_status, "pending");
+      assert.equal(receipt.propagation_completed_at, null);
+
+      let deletionStatus = await memories.acknowledgeDeletion({
+        schema_version: 1,
+        ack_id: "ack.deletion.cache.01",
+        deletion_id: receipt.deletion_id,
+        target: "cache",
+        status: "failed",
+        attempt: 1,
+        occurred_at: "2026-08-10T12:01:00.000Z",
+        evidence_refs: [],
+        error: { code: "cache.timeout", message: "Cache deletion timed out", retryable: true },
+      });
+      assert.equal(deletionStatus.receipt.propagation_status, "failed");
+      deletionStatus = await memories.acknowledgeDeletion({
+        schema_version: 1,
+        ack_id: "ack.deletion.object-store.01",
+        deletion_id: receipt.deletion_id,
+        target: "object_store",
+        status: "completed",
+        attempt: 1,
+        occurred_at: "2026-08-10T12:02:00.000Z",
+        evidence_refs: [],
+      });
+      assert.equal(deletionStatus.receipt.propagation_status, "failed");
+      const cacheRetry = {
+        schema_version: 1,
+        ack_id: "ack.deletion.cache.02",
+        deletion_id: receipt.deletion_id,
+        target: "cache",
+        status: "completed",
+        attempt: 2,
+        occurred_at: "2026-08-10T12:03:00.000Z",
+        evidence_refs: [],
+      } as const;
+      deletionStatus = await memories.acknowledgeDeletion(cacheRetry);
+      assert.equal(deletionStatus.receipt.propagation_status, "completed");
+      assert.equal(deletionStatus.receipt.propagation_completed_at?.toISOString(), cacheRetry.occurred_at);
+      const acknowledgementReplay = await memories.acknowledgeDeletion(cacheRetry);
+      assert.equal(acknowledgementReplay.receipt.propagation_status, "completed");
+      await assert.rejects(
+        memories.acknowledgeDeletion({ ...cacheRetry, occurred_at: "2026-08-10T12:04:00.000Z" }),
+        (error: unknown) => error instanceof MemoryPolicyError,
+      );
+
       const replay = await memories.deleteMemory({
         deletion_id: "deletion.retrieval.replay",
         memory_id: privateChunk.memory_id,
         principal,
         requested_by: principal.user_id,
         reason: "retry",
+        propagation_targets: ["cache", "object_store"],
       });
       assert.equal(replay.deletion_id, receipt.deletion_id);
+      assert.equal(replay.propagation_status, "completed");
 
       const afterDeletion = await lexical.retrieve(call);
-      assert.deepEqual(afterDeletion.map((hit) => hit.id), ["chunk.public"]);
+      assert.deepEqual(afterDeletion.map((hit) => hit.id).sort(), ["chunk.foreign-public", "chunk.public.v2"]);
       const aggregate = await memories.aggregateReadableEvents(principal, {
         subject_id: principal.user_id,
         event_type: "solar_observation",
@@ -224,6 +347,19 @@ test(
         .execute();
       assert.equal(deletionEvents.length, 1);
       assert.equal(deletionEvents[0]?.payload.memory_id, privateChunk.memory_id);
+      const propagationEvents = await db
+        .selectFrom("questlab.outbox_event")
+        .select(["event_type", "payload"])
+        .where("event_type", "=", "MemoryDeletionPropagationRequested")
+        .execute();
+      assert.equal(propagationEvents.length, 2);
+      assert.deepEqual(propagationEvents.map((event) => event.payload.target).sort(), ["cache", "object_store"]);
+      const completedEvents = await db
+        .selectFrom("questlab.outbox_event")
+        .select("event_id")
+        .where("event_type", "=", "MemoryDeletionPropagationCompleted")
+        .execute();
+      assert.equal(completedEvents.length, 1);
     } finally {
       await db.destroy();
     }
@@ -236,10 +372,12 @@ function chunk(
   content: string,
   embedding: readonly number[],
   ordinal = 0,
+  indexVersionId = "index.memory.v1",
 ) {
   return {
     chunk_id: `chunk.${suffix}`,
     memory_id: memoryId,
+    index_version_id: indexVersionId,
     ordinal,
     content,
     chunk_digest: contentDigest(content),
@@ -254,6 +392,44 @@ function chunk(
     },
     embedding,
     embedding_model: "embedding.integration.v1",
+  } as const;
+}
+
+function indexBuild(suffix: string, tenantId: string, watermark: string) {
+  return {
+    schema_version: 1,
+    build_id: `build.memory.${suffix}`,
+    index_version_id: `index.memory.${suffix}`,
+    tenant_id: tenantId,
+    logical_name: "memory.hybrid",
+    index_kind: "hybrid",
+    provider: "postgres",
+    source_watermark: watermark,
+    configuration_digest: digest("a"),
+    embedding_model: "embedding.integration.v1",
+    embedding_dimensions: 3,
+    requested_at: "2026-08-10T08:00:00.000Z",
+  } as const;
+}
+
+function indexBuildResult(
+  build: ReturnType<typeof indexBuild>,
+  status: "ready" | "failed",
+  documentCount: number,
+  chunkCount: number,
+) {
+  return {
+    schema_version: 1,
+    build_id: build.build_id,
+    index_version_id: build.index_version_id,
+    status,
+    document_count: documentCount,
+    chunk_count: chunkCount,
+    source_watermark: build.source_watermark,
+    completed_at: "2026-08-10T08:30:00.000Z",
+    ...(status === "failed"
+      ? { error: { code: "build.failed", message: "Index build failed", retryable: true } }
+      : {}),
   } as const;
 }
 

@@ -15,6 +15,7 @@ import { sql, type Kysely, type RawBuilder } from "kysely";
 export interface IndexMemoryChunkInput {
   readonly chunk_id: string;
   readonly memory_id: string;
+  readonly index_version_id: string;
   readonly ordinal: number;
   readonly content: string;
   readonly chunk_digest: `sha256:${string}`;
@@ -31,6 +32,7 @@ export interface PostgresVectorRetrieverOptions {
   readonly embeddings: EmbeddingPort;
   readonly embedding_model: string;
   readonly embedding_budget: ModelBudget;
+  readonly logical_name?: string;
   readonly id?: string;
 }
 
@@ -75,11 +77,28 @@ export class PostgresMemoryIndexer {
     validateChunk(input);
     const memory = await this.db
       .selectFrom("questlab.memory_record")
-      .select(["memory_id", "status"])
+      .select(["memory_id", "tenant_id", "status"])
       .where("memory_id", "=", input.memory_id)
       .executeTakeFirst();
     if (!memory || memory.status !== "active") {
       throw new PostgresRetrievalPolicyError("Only an active source memory may be indexed");
+    }
+    const version = await this.db
+      .selectFrom("questlab.retrieval_index_version")
+      .select(["tenant_id", "status", "embedding_model", "embedding_dimensions"])
+      .where("index_version_id", "=", input.index_version_id)
+      .executeTakeFirst();
+    if (!version || (version.status !== "building" && version.status !== "active")) {
+      throw new PostgresRetrievalPolicyError("Chunks may only be written to a building or active index version");
+    }
+    if (version.tenant_id !== memory.tenant_id) {
+      throw new PostgresRetrievalPolicyError("Index version and source memory must belong to the same tenant");
+    }
+    if (
+      version.embedding_model !== (input.embedding_model ?? null) ||
+      version.embedding_dimensions !== (input.embedding?.length ?? null)
+    ) {
+      throw new PostgresRetrievalPolicyError("Chunk embedding snapshot does not match its index version");
     }
 
     const embedding = input.embedding
@@ -90,6 +109,7 @@ export class PostgresMemoryIndexer {
       .values({
         chunk_id: input.chunk_id,
         memory_id: input.memory_id,
+        index_version_id: input.index_version_id,
         ordinal: input.ordinal,
         content: input.content,
         chunk_digest: input.chunk_digest,
@@ -113,6 +133,7 @@ export class PostgresMemoryIndexer {
       .selectFrom("questlab.memory_chunk")
       .select([
         "memory_id",
+        "index_version_id",
         "ordinal",
         "content",
         "chunk_digest",
@@ -131,6 +152,7 @@ export class PostgresMemoryIndexer {
       .executeTakeFirstOrThrow();
     if (
       existing.memory_id !== input.memory_id ||
+      existing.index_version_id !== input.index_version_id ||
       existing.ordinal !== input.ordinal ||
       existing.content !== input.content ||
       existing.chunk_digest !== input.chunk_digest ||
@@ -154,13 +176,16 @@ export class PostgresLexicalRetriever implements Retriever {
   readonly id: string;
   readonly stage = "lexical" as const;
   private readonly db: Kysely<QuestLabDatabase>;
+  private readonly logicalName: string;
 
   constructor(
     db: Kysely<QuestLabDatabase>,
     id = "postgres.fts.simple.v1",
+    logicalName = "memory.hybrid",
   ) {
     this.db = db;
     this.id = id;
+    this.logicalName = logicalName;
   }
 
   async retrieve(call: RetrieverCall): Promise<readonly RetrievalHit[]> {
@@ -182,8 +207,13 @@ export class PostgresLexicalRetriever implements Retriever {
         ts_rank_cd(chunk.search_vector, query.value)::double precision AS score
       FROM questlab.memory_chunk AS chunk
       JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
+      JOIN questlab.retrieval_index_version AS index_version
+        ON index_version.index_version_id = chunk.index_version_id
       CROSS JOIN query
       WHERE memory.status = 'active'
+        AND index_version.status = 'active'
+        AND (memory.scope = 'public' OR index_version.tenant_id = ${call.principal.tenant_id})
+        AND index_version.logical_name = ${this.logicalName}
         AND chunk.search_vector @@ query.value
         AND ${access}
         AND ${filters}
@@ -238,7 +268,12 @@ export class PostgresVectorRetriever implements Retriever {
           chunk.embedding
         FROM questlab.memory_chunk AS chunk
         JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
+        JOIN questlab.retrieval_index_version AS index_version
+          ON index_version.index_version_id = chunk.index_version_id
         WHERE memory.status = 'active'
+          AND index_version.status = 'active'
+          AND (memory.scope = 'public' OR index_version.tenant_id = ${call.principal.tenant_id})
+          AND index_version.logical_name = ${this.options.logical_name ?? "memory.hybrid"}
           AND chunk.embedding IS NOT NULL
           AND chunk.embedding_model = ${this.options.embedding_model}
           AND chunk.embedding_dimensions = ${vector.length}
@@ -267,9 +302,11 @@ export class PostgresVectorRetriever implements Retriever {
 
 export class PostgresMemoryAuthorization implements RetrievalAuthorizationPort {
   private readonly db: Kysely<QuestLabDatabase>;
+  private readonly logicalName: string;
 
-  constructor(db: Kysely<QuestLabDatabase>) {
+  constructor(db: Kysely<QuestLabDatabase>, logicalName = "memory.hybrid") {
     this.db = db;
+    this.logicalName = logicalName;
   }
 
   async canRead(input: {
@@ -282,11 +319,16 @@ export class PostgresMemoryAuthorization implements RetrievalAuthorizationPort {
       SELECT chunk.chunk_id
       FROM questlab.memory_chunk AS chunk
       JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
+      JOIN questlab.retrieval_index_version AS index_version
+        ON index_version.index_version_id = chunk.index_version_id
       WHERE chunk.chunk_id = ${input.hit.id}
         AND chunk.citation_artifact_id = ${input.hit.citation.artifact_id}
         AND chunk.citation_uri = ${input.hit.citation.uri}
         AND chunk.citation_digest = ${input.hit.citation.digest}
         AND memory.status = 'active'
+        AND index_version.status = 'active'
+        AND (memory.scope = 'public' OR index_version.tenant_id = ${input.principal.tenant_id})
+        AND index_version.logical_name = ${this.logicalName}
         AND ${readableMemoryPredicate(input.principal)}
       LIMIT 1
     `.execute(this.db);
@@ -378,7 +420,7 @@ function toHit(row: MemorySearchRow, score: number): RetrievalHit {
 }
 
 function validateChunk(input: IndexMemoryChunkInput): void {
-  if (!input.chunk_id || !input.memory_id || !input.content.trim() || !input.source_type) {
+  if (!input.chunk_id || !input.memory_id || !input.index_version_id || !input.content.trim() || !input.source_type) {
     throw new PostgresRetrievalPolicyError("Chunk identity, memory, content and source type are required");
   }
   if (!Number.isInteger(input.ordinal) || input.ordinal < 0 || !Number.isInteger(input.token_count) || input.token_count <= 0) {

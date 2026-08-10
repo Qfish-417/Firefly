@@ -311,8 +311,10 @@ learning_finding / improvement_plan / verification_report / learning_outcome
 
 M5 starts with the model invocation projection (`questlab.model_invocation`) so model budget, retry and provider health are observable before enabling durable memory writes. See [ADR 0008](./docs/adr/0008-model-invocation-projection.md).
 
-- 先做授权、结构化聚合、文本混合检索和引用。
-- 再做长期记忆分类、压缩、多模态和动态工具发现。
+- 已完成授权记忆事实层、确定性聚合、动态 TopK、版本化 EvidencePack、PostgreSQL FTS/pgvector 混合检索和双重 ACL。
+- 已完成版本化索引构建合同、Chunk 版本绑定、单 active 原子切换，以及外部删除逐目标任务/Ack 和全局完成判定。
+- 下一步实现索引构建 Worker、质量门禁、旧版本回收和第一个真实对象存储删除消费者，再接生产 BM25/ANN。
+- 之后做长期记忆压缩、多模态派生索引和动态工具发现。
 - 动态加载只加载描述与受控 Provider，不把未知代码装入 Agent 主进程。
 
 ## 7. 第一个纵向切片
@@ -341,7 +343,7 @@ M5 starts with the model invocation projection (`questlab.model_invocation`) so 
 | M2.1 治理哨兵 | 规范、预算、因果图、Loop Sentinel、隔离 | 循环、风暴、自委派和预算耗尽均被确定性阻断 |
 | M3 插件闭环（完成） | Worktree、Docker Sandbox、门禁、Canary、Rollback | 缺陷基线被拒绝；候选四门禁通过；故障注入恢复指定 Digest |
 | M4 模型闭环（完成） | pi-ai Gateway、三个真实 Agent、Stub 后备、Engineer 隔离构建 | Provider 可替换；模型输出可追溯；真实 Commit、门禁失败和发布证据均受治理 |
-| M5 记忆工具 | 授权检索、聚合、异步工具 | 越权测试、删除传播和长任务恢复通过 |
+| M5 记忆工具（进行中） | 授权检索、聚合、版本索引、删除 Ack、异步工具 | 当前索引切换与删除确认已通过；完整 Worker、真实外部消费者和长任务恢复待补齐 |
 
 不满足以下条件，不称为“自闭环”：
 

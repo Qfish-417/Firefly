@@ -5,6 +5,7 @@ export * from "./event-repositories.ts";
 export * from "./evolution-run-repository.ts";
 export * from "./governance-repositories.ts";
 export * from "./plugin-release-repository.ts";
+export * from "./retrieval-index-repository.ts";
 export * from "./migrate.ts";
 export * from "./memory-repository.ts";
 export * from "./model-invocation-repository.ts";

@@ -97,6 +97,53 @@ const validEvidencePack = {
   },
 } satisfies EvidencePack;
 
+const validIndexBuildTask = {
+  schema_version: 1,
+  build_id: "index-build.contract.01",
+  index_version_id: "index-version.contract.01",
+  tenant_id: "tenant.questlab",
+  logical_name: "memory.hybrid",
+  index_kind: "hybrid",
+  provider: "postgres.pgvector",
+  source_watermark: "memory-version:42",
+  configuration_digest: digest,
+  embedding_model: "embedding.contract.v1",
+  embedding_dimensions: 3,
+  requested_at: "2026-08-10T12:00:00Z",
+} as const;
+
+const validIndexBuildResult = {
+  schema_version: 1,
+  build_id: "index-build.contract.01",
+  index_version_id: "index-version.contract.01",
+  status: "ready",
+  document_count: 3,
+  chunk_count: 8,
+  source_watermark: "memory-version:42",
+  completed_at: "2026-08-10T12:05:00Z",
+} as const;
+
+const validDeletionTask = {
+  schema_version: 1,
+  deletion_id: "deletion.contract.01",
+  memory_id: "memory.contract.01",
+  tenant_id: "tenant.questlab",
+  target: "external_vector",
+  content_digest: digest,
+  requested_at: "2026-08-10T12:00:00Z",
+} as const;
+
+const validDeletionAck = {
+  schema_version: 1,
+  ack_id: "deletion-ack.contract.01",
+  deletion_id: "deletion.contract.01",
+  target: "external_vector",
+  status: "completed",
+  attempt: 1,
+  occurred_at: "2026-08-10T12:01:00Z",
+  evidence_refs: [evidenceArtifact],
+} as const;
+
 const validContracts: Record<ContractName, unknown> = {
   ArtifactRef: evidenceArtifact,
   TaskEnvelope: {
@@ -282,6 +329,10 @@ const validContracts: Record<ContractName, unknown> = {
   StructuredResult: validStructuredResult,
   EvidenceItem: validEvidenceItem,
   EvidencePack: validEvidencePack,
+  IndexBuildTask: validIndexBuildTask,
+  IndexBuildResult: validIndexBuildResult,
+  DeletionPropagationTask: validDeletionTask,
+  DeletionPropagationAck: validDeletionAck,
 };
 
 test("all v1 contract examples pass their JSON Schema", () => {
@@ -390,4 +441,44 @@ test("a structured EvidencePack requires its deterministic result", () => {
   const result = validateContract("EvidencePack", pack);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((error) => error.params.missingProperty === "structured_result"));
+});
+
+test("vector index builds require immutable embedding shape", () => {
+  const task = {
+    ...validIndexBuildTask,
+    index_kind: "vector",
+    embedding_model: undefined,
+    embedding_dimensions: undefined,
+  };
+
+  assert.equal(validateContract("IndexBuildTask", task).valid, false);
+});
+
+test("failed index builds require a structured error", () => {
+  const result = validateContract("IndexBuildResult", {
+    ...validIndexBuildResult,
+    status: "failed",
+  });
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((error) => error.params.missingProperty === "error"));
+});
+
+test("deletion propagation targets are allowlisted", () => {
+  const result = validateContract("DeletionPropagationTask", {
+    ...validDeletionTask,
+    target: "arbitrary_bucket",
+  });
+
+  assert.equal(result.valid, false);
+});
+
+test("failed deletion acknowledgements require retry semantics", () => {
+  const result = validateContract("DeletionPropagationAck", {
+    ...validDeletionAck,
+    status: "failed",
+  });
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((error) => error.params.missingProperty === "error"));
 });

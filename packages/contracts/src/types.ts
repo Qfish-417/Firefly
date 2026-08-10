@@ -307,6 +307,74 @@ export interface EvidencePack {
   };
 }
 
+export type RetrievalIndexKind = "lexical" | "vector" | "hybrid" | "multimodal";
+
+export interface IndexBuildTask {
+  readonly schema_version: 1;
+  readonly build_id: string;
+  readonly index_version_id: string;
+  readonly tenant_id: string;
+  readonly logical_name: string;
+  readonly index_kind: RetrievalIndexKind;
+  readonly provider: string;
+  readonly source_watermark: string;
+  readonly configuration_digest: `sha256:${string}`;
+  readonly embedding_model?: string;
+  readonly embedding_dimensions?: number;
+  readonly requested_at: string;
+}
+
+export interface IndexBuildResult {
+  readonly schema_version: 1;
+  readonly build_id: string;
+  readonly index_version_id: string;
+  readonly status: "ready" | "failed";
+  readonly document_count: number;
+  readonly chunk_count: number;
+  readonly source_watermark: string;
+  readonly completed_at: string;
+  readonly error?: {
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+  };
+}
+
+export type DeletionPropagationTarget =
+  | "object_store"
+  | "external_lexical"
+  | "external_vector"
+  | "multimodal_index"
+  | "cache"
+  | "summary"
+  | "evaluation";
+
+export interface DeletionPropagationTask {
+  readonly schema_version: 1;
+  readonly deletion_id: string;
+  readonly memory_id: string;
+  readonly tenant_id: string;
+  readonly target: DeletionPropagationTarget;
+  readonly content_digest: `sha256:${string}`;
+  readonly requested_at: string;
+}
+
+export interface DeletionPropagationAck {
+  readonly schema_version: 1;
+  readonly ack_id: string;
+  readonly deletion_id: string;
+  readonly target: DeletionPropagationTarget;
+  readonly status: "completed" | "failed";
+  readonly attempt: number;
+  readonly occurred_at: string;
+  readonly evidence_refs: readonly ArtifactRef[];
+  readonly error?: {
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+  };
+}
+
 export type ContractName =
   | "ArtifactRef"
   | "TaskEnvelope"
@@ -323,4 +391,8 @@ export type ContractName =
   | "EvidenceCitation"
   | "StructuredResult"
   | "EvidenceItem"
-  | "EvidencePack";
+  | "EvidencePack"
+  | "IndexBuildTask"
+  | "IndexBuildResult"
+  | "DeletionPropagationTask"
+  | "DeletionPropagationAck";

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="13">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="16">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -413,6 +413,37 @@
         <mxCell id="p15-e7" value="commit" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p15-1" source="p15-delete" target="p15-receipt"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p15-e8" value="propagate" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p15-1" source="p15-receipt" target="p15-outbox"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p15-e9" value="ranked hits" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p15-1" source="p15-ports" target="p15-final-auth"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-index-activation-deletion-ack" name="16-M5索引原子切换与删除完成确认">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p16-0"/><mxCell id="p16-1" parent="p16-0"/>
+        <mxCell id="p16-title" value="M5 Atomic Index Activation and Verifiable Deletion Completion" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p16-1"><mxGeometry x="120" y="20" width="1360" height="55" as="geometry"/></mxCell>
+        <mxCell id="p16-index-band" value="索引版本生命周期" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p16-1"><mxGeometry x="45" y="95" width="1510" height="355" as="geometry"/></mxCell>
+        <mxCell id="p16-build" value="IndexBuildTask v1&#xa;tenant + logical_name&#xa;config Digest + watermark&#xa;Embedding snapshot" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p16-1"><mxGeometry x="80" y="165" width="245" height="125" as="geometry"/></mxCell>
+        <mxCell id="p16-building" value="Build vN+1&#xa;status = building&#xa;Indexer 写入 version-bound Chunk&#xa;跨租户/模型/维度拒绝" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;" vertex="1" parent="p16-1"><mxGeometry x="385" y="165" width="270" height="125" as="geometry"/></mxCell>
+        <mxCell id="p16-ready" value="Ready Gate&#xa;result contract + counts&#xa;watermark + quality evidence&#xa;ready | failed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p16-1"><mxGeometry x="715" y="165" width="245" height="125" as="geometry"/></mxCell>
+        <mxCell id="p16-switch" value="Atomic switch&#xa;tenant/logical advisory lock&#xa;old active -> retired&#xa;new ready -> active" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p16-1"><mxGeometry x="1020" y="165" width="245" height="125" as="geometry"/></mxCell>
+        <mxCell id="p16-query" value="Query + final authorization&#xa;JOIN retrieval_index_version&#xa;私有同租户 active；public 可跨租户&#xa;vN+1 激活前始终读取 vN" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p16-1"><mxGeometry x="1315" y="155" width="210" height="145" as="geometry"/></mxCell>
+        <mxCell id="p16-index-note" value="单一 active 指针决定正式流量；双读只能用于离线验证。旧版 Chunk 是可重建投影，按独立保留策略回收。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=13;" vertex="1" parent="p16-1"><mxGeometry x="430" y="350" width="740" height="65" as="geometry"/></mxCell>
+        <mxCell id="p16-ie1" value="persist" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p16-1" source="p16-build" target="p16-building"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p16-ie2" value="complete" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p16-1" source="p16-building" target="p16-ready"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p16-ie3" value="activate" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p16-1" source="p16-ready" target="p16-switch"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p16-ie4" value="active only" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p16-1" source="p16-switch" target="p16-query"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="p16-delete-band" value="删除传播与完成语义" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p16-1"><mxGeometry x="45" y="495" width="1510" height="440" as="geometry"/></mxCell>
+        <mxCell id="p16-local" value="Local delete transaction&#xa;Memory tombstone&#xa;删除本地 Chunk&#xa;失效来源 Event" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p16-1"><mxGeometry x="80" y="585" width="235" height="125" as="geometry"/></mxCell>
+        <mxCell id="p16-receipt" value="Local receipt&#xa;传播目标为空 -> completed&#xa;存在外部目标 -> pending&#xa;保留本地计数与时间" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;" vertex="1" parent="p16-1"><mxGeometry x="375" y="585" width="245" height="125" as="geometry"/></mxCell>
+        <mxCell id="p16-fanout" value="Per-target Outbox fan-out&#xa;object / lexical / vector&#xa;multimodal / cache / summary / eval&#xa;每个目标独立 pending" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;" vertex="1" parent="p16-1"><mxGeometry x="680" y="575" width="275" height="145" as="geometry"/></mxCell>
+        <mxCell id="p16-ack" value="DeletionPropagationAck v1&#xa;ack_id 幂等&#xa;attempt 单调递增&#xa;failed 可由更高 attempt 重试" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p16-1"><mxGeometry x="1015" y="575" width="255" height="145" as="geometry"/></mxCell>
+        <mxCell id="p16-global" value="Aggregate status&#xa;任一 failed -> failed&#xa;仍有 pending -> pending&#xa;全部 completed -> completed event" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p16-1"><mxGeometry x="1330" y="575" width="195" height="145" as="geometry"/></mxCell>
+        <mxCell id="p16-boundary" value="安全边界：本地删除回执 != 全局删除完成。未请求目标、旧 attempt、冲突 Ack 一律 fail closed；Provider Ack 仍需证据核验与周期性 reconciliation。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p16-1"><mxGeometry x="245" y="825" width="1110" height="75" as="geometry"/></mxCell>
+        <mxCell id="p16-de1" value="commit" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p16-1" source="p16-local" target="p16-receipt"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p16-de2" value="tasks" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p16-1" source="p16-receipt" target="p16-fanout"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p16-de3" value="ack" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p16-1" source="p16-fanout" target="p16-ack"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p16-de4" value="reduce" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p16-1" source="p16-ack" target="p16-global"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

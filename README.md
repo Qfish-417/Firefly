@@ -19,7 +19,7 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 按以下顺序阅读：
 
 1. [开工架构与实施顺序](./FireFly-QuestLab-开工架构与实施顺序.md)：编码阶段的事实源，包含通信协议、模块边界、仓库结构、里程碑和 GitHub 权限。
-2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：9 页精简主图，包含独立的联邦治理、循环防护与 M4 Model Gateway 视图。
+2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：16 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换与删除确认视图。
 3. [产品与三 Agent 详细设计](./FireFly-QuestLab产品与三Agent详细设计.md)：产品、领域对象、状态机和太阳能纵向切片。
 4. [RAG 与记忆系统设计](./FireFly-RAG与记忆系统设计.md)：聚合检索、记忆分层、压缩、多模态与安全。
 5. [工具系统设计](./FireFly-工具系统设计.md)：五类工具、发现、异步、动态加载和 KV Cache。
@@ -87,6 +87,8 @@ solar-energy@1.2.0 忽略昼夜变化
 - M5 RAG 基础已落地：`packages/retrieval-planner` 动态计算 candidate/fusion/rerank/context K，`packages/persistence` 提供 Memory ACL 与 StructuredEvent 确定性聚合事实层，`packages/retrieval-service` 提供并行召回、RRF、融合后 ACL 复检、证据充分性门禁和结构化聚合边界。
 - M5 检索合同已版本化：`packages/contracts` 统一定义 `QueryPlan`、`EvidenceCitation`、`StructuredResult`、`EvidenceItem` 与 `EvidencePack` v1 类型和 JSON Schema；Gateway 在返回前强制校验，不充分、冲突或非法聚合结果均 fail closed。
 - M5 PostgreSQL 混合检索已落地：`packages/retrieval-postgres` 提供真实 FTS、pgvector、幂等 Chunk 索引和最终 ACL 复检；Memory 删除事务同步清理本地派生索引与来源事件，并通过 Outbox 继续传播到外部存储。
+- M5 索引生命周期已落地：`RetrievalIndexRepository` 保存不可变构建快照，Chunk 绑定索引版本，同一租户/逻辑索引通过事务锁和唯一约束原子切换 active 版本；Retriever 与最终授权只读取 active 版本。
+- M5 删除完成语义已落地：本地删除回执按 allowlist 目标记录 `pending/failed/completed`，每个外部目标必须提交版本化 Ack；只有全部完成才产生全局删除完成状态和事件。
 - 旧 Java/Python 原型仍在原目录，只作追溯参考，不被新 TypeScript packages 依赖。
 
 开发检查：
@@ -111,4 +113,4 @@ docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 
 Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`，响应同时包含因果边、预算、哨兵、PluginRelease、Sandbox、Canary 与当前活动 PluginVersion。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
 
-M5 的运行时决策依次记录在 [ADR 0008](./docs/adr/0008-model-invocation-projection.md)、[ADR 0009](./docs/adr/0009-memory-acl-and-structured-aggregation.md)、[ADR 0010](./docs/adr/0010-governed-retrieval-gateway.md)、[ADR 0011](./docs/adr/0011-versioned-retrieval-contracts.md) 和 [ADR 0012](./docs/adr/0012-postgresql-hybrid-retrieval-and-deletion.md)。
+M5 的运行时决策依次记录在 [ADR 0008](./docs/adr/0008-model-invocation-projection.md)、[ADR 0009](./docs/adr/0009-memory-acl-and-structured-aggregation.md)、[ADR 0010](./docs/adr/0010-governed-retrieval-gateway.md)、[ADR 0011](./docs/adr/0011-versioned-retrieval-contracts.md)、[ADR 0012](./docs/adr/0012-postgresql-hybrid-retrieval-and-deletion.md) 和 [ADR 0013](./docs/adr/0013-versioned-index-activation-and-deletion-ack.md)。

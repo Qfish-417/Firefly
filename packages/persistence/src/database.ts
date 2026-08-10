@@ -419,6 +419,7 @@ export interface StructuredEventTable {
 export interface MemoryChunkTable {
   chunk_id: string;
   memory_id: string;
+  index_version_id: string | null;
   ordinal: number;
   content: string;
   chunk_digest: string;
@@ -446,6 +447,49 @@ export interface MemoryDeletionReceiptTable {
   removed_chunk_count: number;
   invalidated_event_count: number;
   completed_at: Timestamp;
+  propagation_status: "pending" | "completed" | "failed";
+  propagation_completed_at: Timestamp | null;
+}
+
+export interface MemoryDeletionTargetTable {
+  deletion_id: string;
+  target:
+    | "object_store"
+    | "external_lexical"
+    | "external_vector"
+    | "multimodal_index"
+    | "cache"
+    | "summary"
+    | "evaluation";
+  status: "pending" | "completed" | "failed";
+  attempt: number;
+  ack_id: string | null;
+  evidence_refs: JsonList;
+  last_error: JsonDocument | null;
+  updated_at: Timestamp;
+  acknowledged_at: Timestamp | null;
+}
+
+export interface RetrievalIndexVersionTable {
+  index_version_id: string;
+  build_id: string;
+  tenant_id: string;
+  logical_name: string;
+  index_kind: "lexical" | "vector" | "hybrid" | "multimodal";
+  provider: string;
+  configuration_digest: string;
+  embedding_model: string | null;
+  embedding_dimensions: number | null;
+  source_watermark: string;
+  status: "building" | "ready" | "active" | "retired" | "failed";
+  document_count: number;
+  chunk_count: number;
+  error: JsonDocument | null;
+  requested_at: Timestamp;
+  ready_at: Timestamp | null;
+  activated_at: Timestamp | null;
+  retired_at: Timestamp | null;
+  updated_at: Timestamp;
 }
 
 export interface QuestLabDatabase {
@@ -483,6 +527,8 @@ export interface QuestLabDatabase {
   "questlab.structured_event": StructuredEventTable;
   "questlab.memory_chunk": MemoryChunkTable;
   "questlab.memory_deletion_receipt": MemoryDeletionReceiptTable;
+  "questlab.memory_deletion_target": MemoryDeletionTargetTable;
+  "questlab.retrieval_index_version": RetrievalIndexVersionTable;
 }
 
 export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {

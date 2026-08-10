@@ -509,6 +509,17 @@ Overlap 根据句法和语义跨界决定，不采用固定字符比例。列表
 - Embedding 模型版本独立记录，换模型时建立新索引并双读验证。
 - 删除或更新文档时，通过 lineage 找到所有派生 Chunk、摘要和事实。
 
+当前实现把该建议收敛为显式状态机：
+
+```text
+IndexBuildTask -> building -> ready -> active -> retired
+                              \-> failed
+```
+
+`retrieval_index_version` 保存租户、逻辑索引名、Provider、配置 Digest、来源水位以及 Embedding 模型/维度。Indexer 只向 `building` 或明确允许增量写入的 `active` 版本写 Chunk，并校验租户与 Embedding 快照完全一致。重建期间查询仍只读旧 active 版本；`RetrievalIndexRepository.activate` 在同一事务中退役旧版本并激活新版本，数据库唯一约束保证每个 `tenant_id + logical_name` 最多一个 active。私有内容只读取查询者租户的 active 版本；显式 `public` 内容可读取其所属租户的 active 版本。未绑定版本的历史 Chunk 不参与查询，必须重建后才能重新可见。
+
+上线前的 Ready Gate 不能只看“任务成功”，至少要校验文档/Chunk 数、水位、嵌入形状、ACL 抽样和离线质量回归。双读用于验证，不直接把两版结果混入用户上下文；正式流量仍由单一 active 指针决定。
+
 ## 11. 多模态设计
 
 ### 11.1 三层表示
@@ -564,7 +575,9 @@ Overlap 根据句法和语义跨界决定，不采用固定字符比例。列表
 - 删除传播到对象、数据库、Chunk、向量、摘要、缓存和训练/评测派生集。
 - Embedding、摘要和访问日志继承原始数据的敏感级别。
 
-当前 PostgreSQL 切片中，`deleteMemory` 在一个事务内完成 Memory tombstone、`memory_chunk` 清理、依赖 `structured_event` 失效、删除回执和 `MemoryDeleted` Outbox 写入。回执只证明 PostgreSQL 本地清理完成；MinIO、外部 BM25、缓存和评测派生集必须由消费者处理 Outbox，并在未来的全局删除任务中分别确认。
+当前 PostgreSQL 切片中，`deleteMemory` 在一个事务内完成 Memory tombstone、`memory_chunk` 清理、依赖 `structured_event` 失效、本地删除回执和 Outbox 写入。对 `object_store`、`external_lexical`、`external_vector`、`multimodal_index`、`cache`、`summary`、`evaluation` 等明确目标，每个目标都有独立任务和 `pending/failed/completed` 状态。
+
+消费者必须返回版本化 `DeletionPropagationAck`。Ack 以 `ack_id` 幂等，attempt 必须单调递增；失败可由更高 attempt 重试为完成，旧 attempt 或内容冲突拒绝。任一目标失败时全局状态为 failed，仍有待处理目标时为 pending，只有所有目标完成才写入 `propagation_completed_at` 并发出 `MemoryDeletionPropagationCompleted`。因此“本地回执 != 全局删除完成”；后续还需要 Provider 证据核验与周期性 reconciliation 防止虚假或丢失确认。
 
 ### 12.5 模型边界
 
@@ -655,7 +668,9 @@ memory_summary
 structured_fact
 structured_event
 memory_chunk
+retrieval_index_version
 memory_deletion_receipt
+memory_deletion_target
 relation_edge
 artifact
 artifact_region
@@ -708,7 +723,7 @@ rag-memory/
 
 这些模块初期可在一个服务内实现，但包边界和契约必须独立，以便后续拆分。
 
-当前代码映射：`packages/retrieval-postgres` 是 PostgreSQL 适配器，负责幂等 Chunk 索引、FTS/pgvector Retriever 和最终 ACL Authorization Port；`packages/retrieval-service` 仍保持 Provider 中立；删除事实与 Outbox 由 `packages/persistence` 所有。
+当前代码映射：`packages/retrieval-postgres` 是 PostgreSQL 适配器，负责版本绑定的幂等 Chunk 索引、只读 active 版本的 FTS/pgvector Retriever 和最终 ACL Authorization Port；`packages/retrieval-service` 仍保持 Provider 中立；索引构建/激活、删除事实、逐目标 Ack 与 Outbox 由 `packages/persistence` 所有。
 
 ## 16. 测试策略
 
@@ -757,17 +772,19 @@ rag-memory/
 - `packages/contracts` 已提供版本化 `QueryPlan`、`EvidenceCitation`、`StructuredResult`、`EvidenceItem` 与 `EvidencePack` v1 Schema；Gateway 在出站前强制运行时校验。
 - `questlab.memory_chunk`、`packages/retrieval-postgres` 和 Model Gateway `EmbeddingPort` 已形成真实 PostgreSQL FTS + pgvector 混合检索；召回前和融合后分别执行 ACL。
 - `MemoryRepository.deleteMemory` 已实现 owner/delete-ACL 授权、本地 Chunk 清理、来源事件失效、幂等删除回执与 Outbox 传播事件。
+- `IndexBuildTask/Result`、`RetrievalIndexRepository` 与 `retrieval_index_version` 已实现索引构建快照、Ready Gate 输入、Chunk 版本绑定和单 active 原子切换。
+- `DeletionPropagationTask/Ack` 与 `memory_deletion_target` 已实现 allowlist 目标扇出、逐目标失败重试和全局完成判定。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、外部删除消费者与完成确认、索引重建编排和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、真实外部删除消费者与周期性 reconciliation、完整索引构建 Worker/质量门禁、旧版本垃圾回收和多模态派生索引。
 
-- 下一批优先补齐索引版本/重建任务和外部删除确认合同，再接生产 BM25 Provider。
+- 下一批优先实现索引构建 Worker、质量门禁和一个真实对象存储删除消费者，再接生产 BM25 Provider。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 实现 Parent/Child 分块、RRF、确定性 Count 聚合和引用。
 
 ### R1：用户与 Agent 长期记忆
 
-- 加入 Purpose、同意、保留期和跨存储删除完成确认。
+- 加入 Purpose、同意、保留期，并把已有跨存储删除确认接到真实消费者与 reconciliation。
 - 实现 raw -> episodic -> structured 生命周期。
 - 增加访问统计、滚动摘要和冲突检测。
 
@@ -791,7 +808,7 @@ rag-memory/
 ### R5：高安全与规模化
 
 - 高敏租户物理隔离、独立密钥、审计与 DLP。
-- 索引版本双读、在线重建、质量回归和容量治理。
+- 在已有版本原子激活基础上补齐双读评估、在线构建 Worker、自动回滚、旧版本回收和容量治理。
 
 ## 18. 首个验收用例
 

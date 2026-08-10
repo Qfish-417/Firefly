@@ -71,6 +71,7 @@ test("chunk validation rejects duplicate entity keys before indexing", async () 
     indexer.index({
       chunk_id: "chunk.unit",
       memory_id: "memory.unit",
+      index_version_id: "index.unit.v1",
       ordinal: 0,
       content: "content",
       chunk_digest: contentDigest("content"),

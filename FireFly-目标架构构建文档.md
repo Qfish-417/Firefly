@@ -341,10 +341,12 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 
 ### R0：文本证据与确定性聚合
 
-- 建立 `MemoryRecord`、`EvidenceRef`、`QueryPlan` 和 `EvidencePack` Schema。
-- PostgreSQL 保存 ACL、Lineage、Fact/Event；对象存储保存原文。
-- 实现 Parent/Child 分块、BM25 + Vector、正确的 RRF 和引用。
-- 先完成一个 `COUNT DISTINCT` 聚合用例，禁止由 LLM 自行计数。
+- 已建立 `MemoryRecord`、`QueryPlan`、`EvidenceCitation`、`StructuredResult` 和 `EvidencePack` v1 Schema。
+- PostgreSQL 已保存 ACL、Fact/Event、Chunk 和索引版本；对象存储与完整 Lineage 仍待实现。
+- 已实现 PostgreSQL FTS 基线 + pgvector 精确检索、RRF、双重 ACL 和引用；生产 BM25、ANN 与 Parent/Child 分块待实现。
+- 已完成一个 `COUNT DISTINCT` 聚合用例，禁止由 LLM 自行计数。
+- 已实现 `building -> ready -> active -> retired/failed` 索引生命周期，正式查询只读单一 active 版本。
+- 已实现删除目标扇出和逐目标 Ack；本地回执不等于全局删除完成，真实消费者和 reconciliation 待实现。
 
 ### R1：用户与 Agent 长期记忆
 
@@ -377,6 +379,14 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 - 所有答案引用能定位到原始文档页、代码行、图片区域或音视频时间码。
 - 删除一条记忆后，原文、事实、Chunk、向量、摘要和缓存均不可检索。
 - 压缩后的 Fact Preservation、Provenance Coverage 和下游任务质量达到基线。
+
+### 当前施工顺序
+
+1. 建 Index Builder Worker，消费 `IndexBuildTask`，写入版本绑定 Chunk，并产出带计数和水位的 `IndexBuildResult`。
+2. 在激活前增加 ACL 抽样、Recall/Citation 回归、嵌入形状和完整性 Ready Gate；失败版本不可激活。
+3. 实现第一个对象存储删除消费者和 `DeletionPropagationAck`，再增加超时重试与 reconciliation 扫描。
+4. 为 retired 版本建立带保留期的垃圾回收任务，删除必须避开 active 和仍被审计引用的版本。
+5. 接入生产 BM25 Provider；pgvector 按模型/维度分区后再评估 HNSW，不把当前精确检索称为 ANN。
 
 ## 12. 工具系统建设轨道
 

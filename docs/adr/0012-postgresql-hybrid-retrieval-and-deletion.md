@@ -29,3 +29,5 @@ PostgreSQL full-text ranking is not described as BM25. Production BM25 remains a
 - Deleting a source immediately removes it from local recall and deterministic aggregates.
 - Derived Chunk text now exists in PostgreSQL and must inherit backup, encryption and retention controls from its source memory.
 - Multilingual analyzers, production BM25, ANN partitions, external deletion acknowledgements and index rebuild orchestration remain later milestones.
+
+ADR 0013 completes the next local lifecycle slice: version-bound Chunks, atomic active-index switching and persisted per-target deletion acknowledgements. External provider consumers and reconciliation remain future work.

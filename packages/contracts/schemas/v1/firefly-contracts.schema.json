@@ -818,6 +818,183 @@
           }
         }
       ]
+    },
+    "IndexBuildTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "build_id",
+        "index_version_id",
+        "tenant_id",
+        "logical_name",
+        "index_kind",
+        "provider",
+        "source_watermark",
+        "configuration_digest",
+        "requested_at"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "build_id": { "$ref": "#/$defs/Identifier" },
+        "index_version_id": { "$ref": "#/$defs/Identifier" },
+        "tenant_id": { "$ref": "#/$defs/Identifier" },
+        "logical_name": { "$ref": "#/$defs/Identifier" },
+        "index_kind": { "enum": ["lexical", "vector", "hybrid", "multimodal"] },
+        "provider": { "$ref": "#/$defs/Identifier" },
+        "source_watermark": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "configuration_digest": { "$ref": "#/$defs/Digest" },
+        "embedding_model": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "embedding_dimensions": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "requested_at": { "type": "string", "format": "date-time" }
+      },
+      "dependentRequired": {
+        "embedding_model": ["embedding_dimensions"],
+        "embedding_dimensions": ["embedding_model"]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "index_kind": { "enum": ["vector", "multimodal"] } },
+            "required": ["index_kind"]
+          },
+          "then": {
+            "required": ["embedding_model", "embedding_dimensions"],
+            "properties": {
+              "embedding_model": { "type": "string", "minLength": 1 },
+              "embedding_dimensions": { "type": "integer", "minimum": 1, "maximum": 4096 }
+            }
+          }
+        }
+      ]
+    },
+    "IndexBuildResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "build_id",
+        "index_version_id",
+        "status",
+        "document_count",
+        "chunk_count",
+        "source_watermark",
+        "completed_at"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "build_id": { "$ref": "#/$defs/Identifier" },
+        "index_version_id": { "$ref": "#/$defs/Identifier" },
+        "status": { "enum": ["ready", "failed"] },
+        "document_count": { "type": "integer", "minimum": 0 },
+        "chunk_count": { "type": "integer", "minimum": 0 },
+        "source_watermark": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "completed_at": { "type": "string", "format": "date-time" },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "$ref": "#/$defs/Identifier" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 2048 },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "failed" } },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["error"],
+            "properties": { "error": { "$ref": "#/$defs/IndexBuildResult/properties/error" } }
+          }
+        }
+      ]
+    },
+    "DeletionPropagationTarget": {
+      "enum": [
+        "object_store",
+        "external_lexical",
+        "external_vector",
+        "multimodal_index",
+        "cache",
+        "summary",
+        "evaluation"
+      ]
+    },
+    "DeletionPropagationTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "deletion_id",
+        "memory_id",
+        "tenant_id",
+        "target",
+        "content_digest",
+        "requested_at"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "deletion_id": { "$ref": "#/$defs/Identifier" },
+        "memory_id": { "$ref": "#/$defs/Identifier" },
+        "tenant_id": { "$ref": "#/$defs/Identifier" },
+        "target": { "$ref": "#/$defs/DeletionPropagationTarget" },
+        "content_digest": { "$ref": "#/$defs/Digest" },
+        "requested_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "DeletionPropagationAck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "ack_id",
+        "deletion_id",
+        "target",
+        "status",
+        "attempt",
+        "occurred_at",
+        "evidence_refs"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "ack_id": { "$ref": "#/$defs/Identifier" },
+        "deletion_id": { "$ref": "#/$defs/Identifier" },
+        "target": { "$ref": "#/$defs/DeletionPropagationTarget" },
+        "status": { "enum": ["completed", "failed"] },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "occurred_at": { "type": "string", "format": "date-time" },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "$ref": "#/$defs/Identifier" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 2048 },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "failed" } },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["error"],
+            "properties": { "error": { "$ref": "#/$defs/DeletionPropagationAck/properties/error" } }
+          }
+        }
+      ]
     }
   }
 }

@@ -1,8 +1,15 @@
-import type { JsonObject } from "@firefly/contracts";
+import {
+  assertContract,
+  type DeletionPropagationAck,
+  type DeletionPropagationTarget,
+  type DeletionPropagationTask,
+  type JsonObject,
+} from "@firefly/contracts";
 import { sql, type Kysely, type Selectable } from "kysely";
 
 import type {
   MemoryDeletionReceiptTable,
+  MemoryDeletionTargetTable,
   MemoryAclTable,
   MemoryRecordTable,
   QuestLabDatabase,
@@ -13,6 +20,7 @@ import { enqueueOutbox } from "./event-repositories.ts";
 export type MemoryRecord = Selectable<MemoryRecordTable>;
 export type StructuredEvent = Selectable<StructuredEventTable>;
 export type MemoryDeletionReceipt = Selectable<MemoryDeletionReceiptTable>;
+export type MemoryDeletionTarget = Selectable<MemoryDeletionTargetTable>;
 
 export interface MemoryPrincipal {
   readonly tenant_id: string;
@@ -62,7 +70,13 @@ export interface DeleteMemoryInput {
   readonly principal: MemoryPrincipal;
   readonly requested_by: string;
   readonly reason: string;
+  readonly propagation_targets: readonly DeletionPropagationTarget[];
   readonly occurred_at?: Date;
+}
+
+export interface MemoryDeletionStatus {
+  readonly receipt: MemoryDeletionReceipt;
+  readonly targets: readonly MemoryDeletionTarget[];
 }
 
 export class MemoryPolicyError extends Error {
@@ -252,6 +266,9 @@ export class MemoryRepository {
   }
 
   async deleteMemory(input: DeleteMemoryInput): Promise<MemoryDeletionReceipt> {
+    if (new Set(input.propagation_targets).size !== input.propagation_targets.length) {
+      throw new MemoryPolicyError("Deletion propagation targets must be unique");
+    }
     return this.db.transaction().execute(async (trx) => {
       const memory = await trx
         .selectFrom("questlab.memory_record")
@@ -269,7 +286,19 @@ export class MemoryRepository {
         .selectAll()
         .where("memory_id", "=", input.memory_id)
         .executeTakeFirst();
-      if (priorReceipt) return priorReceipt;
+      if (priorReceipt) {
+        const existingTargets = await trx
+          .selectFrom("questlab.memory_deletion_target")
+          .select("target")
+          .where("deletion_id", "=", priorReceipt.deletion_id)
+          .orderBy("target")
+          .execute();
+        const requestedTargets = [...input.propagation_targets].sort();
+        if (!sameStrings(existingTargets.map((row) => row.target), requestedTargets)) {
+          throw new MemoryPolicyError("Deletion replay changed its propagation target set");
+        }
+        return priorReceipt;
+      }
 
       const occurredAt = input.occurred_at ?? new Date();
       const removedChunks = await trx
@@ -302,9 +331,48 @@ export class MemoryRepository {
           removed_chunk_count: Number(removedChunks.numDeletedRows),
           invalidated_event_count: Number(invalidatedEvents.numDeletedRows),
           completed_at: occurredAt,
+          propagation_status: input.propagation_targets.length > 0 ? "pending" : "completed",
+          propagation_completed_at: input.propagation_targets.length > 0 ? null : occurredAt,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      for (const target of input.propagation_targets) {
+        const task: DeletionPropagationTask = {
+          schema_version: 1,
+          deletion_id: input.deletion_id,
+          memory_id: input.memory_id,
+          tenant_id: memory.tenant_id,
+          target,
+          content_digest: memory.content_digest as `sha256:${string}`,
+          requested_at: occurredAt.toISOString(),
+        };
+        assertContract("DeletionPropagationTask", task);
+        await trx
+          .insertInto("questlab.memory_deletion_target")
+          .values({
+            deletion_id: input.deletion_id,
+            target,
+            status: "pending",
+            attempt: 0,
+            ack_id: null,
+            evidence_refs: JSON.stringify([]),
+            last_error: null,
+            updated_at: occurredAt,
+            acknowledged_at: null,
+          })
+          .execute();
+        await enqueueOutbox(trx, {
+          event_id: `event.memory-deletion-propagation.${input.deletion_id}.${target}`,
+          event_type: "MemoryDeletionPropagationRequested",
+          correlation_id: input.deletion_id,
+          trace_id: input.deletion_id,
+          producer: "memory-repository",
+          idempotency_key: `memory-delete-propagate:${input.deletion_id}:${target}`,
+          occurred_at: occurredAt,
+          payload: task as unknown as JsonObject,
+          artifact_refs: [],
+        });
+      }
       await enqueueOutbox(trx, {
         event_id: `event.memory-deleted.${input.deletion_id}`,
         event_type: "MemoryDeleted",
@@ -325,6 +393,140 @@ export class MemoryRepository {
       });
       return receipt;
     });
+  }
+
+  async acknowledgeDeletion(ack: DeletionPropagationAck): Promise<MemoryDeletionStatus> {
+    assertContract("DeletionPropagationAck", ack);
+    return this.db.transaction().execute(async (trx) => {
+      const receipt = await trx
+        .selectFrom("questlab.memory_deletion_receipt")
+        .selectAll()
+        .where("deletion_id", "=", ack.deletion_id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!receipt) throw new MemoryPolicyError(`Deletion does not exist: ${ack.deletion_id}`);
+      const target = await trx
+        .selectFrom("questlab.memory_deletion_target")
+        .selectAll()
+        .where("deletion_id", "=", ack.deletion_id)
+        .where("target", "=", ack.target)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!target) throw new MemoryPolicyError(`Deletion target was not requested: ${ack.target}`);
+
+      if (target.ack_id === ack.ack_id) {
+        if (!sameDeletionAck(target, ack)) {
+          throw new MemoryPolicyError("Deletion acknowledgement ID was reused with different content");
+        }
+        return this.getDeletionStatusWith(trx, ack.deletion_id);
+      }
+      if (target.status === "completed") {
+        throw new MemoryPolicyError("A completed deletion target cannot accept a different acknowledgement");
+      }
+      if (ack.attempt <= target.attempt) {
+        throw new MemoryPolicyError("Deletion acknowledgement attempt must increase monotonically");
+      }
+
+      const occurredAt = new Date(ack.occurred_at);
+      await trx
+        .updateTable("questlab.memory_deletion_target")
+        .set({
+          status: ack.status,
+          attempt: ack.attempt,
+          ack_id: ack.ack_id,
+          evidence_refs: JSON.stringify(ack.evidence_refs),
+          last_error: ack.error ? (ack.error as JsonObject) : null,
+          updated_at: occurredAt,
+          acknowledged_at: occurredAt,
+        })
+        .where("deletion_id", "=", ack.deletion_id)
+        .where("target", "=", ack.target)
+        .executeTakeFirstOrThrow();
+
+      const targets = await trx
+        .selectFrom("questlab.memory_deletion_target")
+        .selectAll()
+        .where("deletion_id", "=", ack.deletion_id)
+        .orderBy("target")
+        .execute();
+      const propagationStatus = targets.some((item) => item.status === "failed")
+        ? "failed"
+        : targets.some((item) => item.status === "pending")
+          ? "pending"
+          : "completed";
+      await trx
+        .updateTable("questlab.memory_deletion_receipt")
+        .set({
+          propagation_status: propagationStatus,
+          propagation_completed_at: propagationStatus === "completed" ? occurredAt : null,
+        })
+        .where("deletion_id", "=", ack.deletion_id)
+        .executeTakeFirstOrThrow();
+      await enqueueOutbox(trx, {
+        event_id: `event.memory-deletion-ack.${ack.ack_id}`,
+        event_type: "MemoryDeletionPropagationAcknowledged",
+        correlation_id: ack.deletion_id,
+        trace_id: ack.deletion_id,
+        producer: "memory-repository",
+        idempotency_key: `memory-delete-ack:${ack.ack_id}`,
+        occurred_at: occurredAt,
+        payload: ack as unknown as JsonObject,
+        artifact_refs: ack.evidence_refs as unknown as readonly JsonObject[],
+      });
+      if (propagationStatus === "completed") {
+        await enqueueOutbox(trx, {
+          event_id: `event.memory-deletion-completed.${ack.deletion_id}`,
+          event_type: "MemoryDeletionPropagationCompleted",
+          correlation_id: ack.deletion_id,
+          trace_id: ack.deletion_id,
+          producer: "memory-repository",
+          idempotency_key: `memory-delete-complete:${ack.deletion_id}`,
+          occurred_at: occurredAt,
+          payload: {
+            deletion_id: ack.deletion_id,
+            memory_id: receipt.memory_id,
+            tenant_id: receipt.tenant_id,
+            propagation_completed_at: occurredAt.toISOString(),
+          },
+          artifact_refs: [],
+        });
+      }
+      return this.getDeletionStatusWith(trx, ack.deletion_id);
+    });
+  }
+
+  async getDeletionStatus(deletionId: string): Promise<MemoryDeletionStatus | undefined> {
+    const receipt = await this.db
+      .selectFrom("questlab.memory_deletion_receipt")
+      .selectAll()
+      .where("deletion_id", "=", deletionId)
+      .executeTakeFirst();
+    if (!receipt) return undefined;
+    const targets = await this.db
+      .selectFrom("questlab.memory_deletion_target")
+      .selectAll()
+      .where("deletion_id", "=", deletionId)
+      .orderBy("target")
+      .execute();
+    return { receipt, targets };
+  }
+
+  private async getDeletionStatusWith(
+    db: Kysely<QuestLabDatabase>,
+    deletionId: string,
+  ): Promise<MemoryDeletionStatus> {
+    const receipt = await db
+      .selectFrom("questlab.memory_deletion_receipt")
+      .selectAll()
+      .where("deletion_id", "=", deletionId)
+      .executeTakeFirstOrThrow();
+    const targets = await db
+      .selectFrom("questlab.memory_deletion_target")
+      .selectAll()
+      .where("deletion_id", "=", deletionId)
+      .orderBy("target")
+      .execute();
+    return { receipt, targets };
   }
 
   private async assertEventVisibility(input: {
@@ -418,6 +620,34 @@ export class MemoryRepository {
       excluded_conflict_count: rows.filter((event) => event.conflict_status !== "none").length,
     };
   }
+}
+
+function sameDeletionAck(target: MemoryDeletionTarget, ack: DeletionPropagationAck): boolean {
+  return target.attempt === ack.attempt &&
+    target.status === ack.status &&
+    target.acknowledged_at?.toISOString() === new Date(ack.occurred_at).toISOString() &&
+    canonicalJson(target.evidence_refs) === canonicalJson(ack.evidence_refs) &&
+    canonicalJson(target.last_error) === canonicalJson(ack.error ?? null);
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(normalizeJson(value));
+}
+
+function normalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, normalizeJson(item)]),
+    );
+  }
+  return value;
 }
 
 async function canDeleteMemory(
