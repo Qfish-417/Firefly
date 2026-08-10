@@ -19,4 +19,4 @@ Event visibility fields are copied from source visibility at write time. A futur
 
 - Exact counts and provenance remain restart-safe and independent of vector index freshness.
 - ACL checks are testable against real PostgreSQL and reusable by retrieval services.
-- Full-text, vector and deletion propagation remain separate M5 work and must consume these fact-layer boundaries.
+- PostgreSQL full-text, pgvector and local deletion propagation consume these fact-layer boundaries as defined by [ADR 0012](./0012-postgresql-hybrid-retrieval-and-deletion.md).

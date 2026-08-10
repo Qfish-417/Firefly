@@ -1,15 +1,18 @@
 import type { JsonObject } from "@firefly/contracts";
-import type { Kysely, Selectable } from "kysely";
+import { sql, type Kysely, type Selectable } from "kysely";
 
 import type {
+  MemoryDeletionReceiptTable,
   MemoryAclTable,
   MemoryRecordTable,
   QuestLabDatabase,
   StructuredEventTable,
 } from "./database.ts";
+import { enqueueOutbox } from "./event-repositories.ts";
 
 export type MemoryRecord = Selectable<MemoryRecordTable>;
 export type StructuredEvent = Selectable<StructuredEventTable>;
+export type MemoryDeletionReceipt = Selectable<MemoryDeletionReceiptTable>;
 
 export interface MemoryPrincipal {
   readonly tenant_id: string;
@@ -51,6 +54,15 @@ export interface EventAggregate {
   readonly value: number;
   readonly included_event_ids: readonly string[];
   readonly excluded_conflict_count: number;
+}
+
+export interface DeleteMemoryInput {
+  readonly deletion_id: string;
+  readonly memory_id: string;
+  readonly principal: MemoryPrincipal;
+  readonly requested_by: string;
+  readonly reason: string;
+  readonly occurred_at?: Date;
 }
 
 export class MemoryPolicyError extends Error {
@@ -239,6 +251,82 @@ export class MemoryRepository {
       .executeTakeFirstOrThrow();
   }
 
+  async deleteMemory(input: DeleteMemoryInput): Promise<MemoryDeletionReceipt> {
+    return this.db.transaction().execute(async (trx) => {
+      const memory = await trx
+        .selectFrom("questlab.memory_record")
+        .selectAll()
+        .where("memory_id", "=", input.memory_id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!memory) throw new MemoryPolicyError(`Memory does not exist: ${input.memory_id}`);
+      if (!(await canDeleteMemory(trx, memory, input.principal))) {
+        throw new MemoryPolicyError("Principal is not authorized to delete this memory");
+      }
+
+      const priorReceipt = await trx
+        .selectFrom("questlab.memory_deletion_receipt")
+        .selectAll()
+        .where("memory_id", "=", input.memory_id)
+        .executeTakeFirst();
+      if (priorReceipt) return priorReceipt;
+
+      const occurredAt = input.occurred_at ?? new Date();
+      const removedChunks = await trx
+        .deleteFrom("questlab.memory_chunk")
+        .where("memory_id", "=", input.memory_id)
+        .executeTakeFirst();
+      const invalidatedEvents = await trx
+        .deleteFrom("questlab.structured_event")
+        .where(sql<boolean>`source_memory_ids @> ${JSON.stringify([input.memory_id])}::jsonb`)
+        .executeTakeFirst();
+      await trx
+        .updateTable("questlab.memory_record")
+        .set({
+          status: "deleted",
+          deleted_at: occurredAt,
+          updated_at: occurredAt,
+          version: sql<number>`version + 1`,
+        })
+        .where("memory_id", "=", input.memory_id)
+        .executeTakeFirstOrThrow();
+
+      const receipt = await trx
+        .insertInto("questlab.memory_deletion_receipt")
+        .values({
+          deletion_id: input.deletion_id,
+          memory_id: input.memory_id,
+          tenant_id: memory.tenant_id,
+          requested_by: input.requested_by,
+          reason: input.reason,
+          removed_chunk_count: Number(removedChunks.numDeletedRows),
+          invalidated_event_count: Number(invalidatedEvents.numDeletedRows),
+          completed_at: occurredAt,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await enqueueOutbox(trx, {
+        event_id: `event.memory-deleted.${input.deletion_id}`,
+        event_type: "MemoryDeleted",
+        correlation_id: input.deletion_id,
+        trace_id: input.deletion_id,
+        producer: "memory-repository",
+        idempotency_key: `memory-delete:${input.memory_id}`,
+        occurred_at: occurredAt,
+        payload: {
+          deletion_id: input.deletion_id,
+          memory_id: input.memory_id,
+          tenant_id: memory.tenant_id,
+          content_digest: memory.content_digest,
+          removed_chunk_count: receipt.removed_chunk_count,
+          invalidated_event_count: receipt.invalidated_event_count,
+        },
+        artifact_refs: [],
+      });
+      return receipt;
+    });
+  }
+
   private async assertEventVisibility(input: {
     readonly tenant_id: string;
     readonly scope: StructuredEventTable["scope"];
@@ -330,4 +418,51 @@ export class MemoryRepository {
       excluded_conflict_count: rows.filter((event) => event.conflict_status !== "none").length,
     };
   }
+}
+
+async function canDeleteMemory(
+  db: Kysely<QuestLabDatabase>,
+  memory: MemoryRecord,
+  principal: MemoryPrincipal,
+): Promise<boolean> {
+  if (memory.scope !== "public" && memory.tenant_id !== principal.tenant_id) return false;
+  const ownerAllowed =
+    (memory.scope === "tenant" && memory.owner_id === principal.tenant_id) ||
+    (memory.scope === "user_private" && memory.owner_id === principal.user_id) ||
+    (memory.scope === "agent_private" && memory.owner_id === principal.agent_id) ||
+    (memory.scope === "session" && memory.owner_id === principal.session_id);
+  if (ownerAllowed) return true;
+  const identities = principalIdentities(principal);
+  if (identities.length === 0) return false;
+  const grant = await db
+    .selectFrom("questlab.memory_acl")
+    .select("memory_id")
+    .where("memory_id", "=", memory.memory_id)
+    .where("permission", "=", "delete")
+    .where((expression) =>
+      expression.or(
+        identities.map((identity) =>
+          expression.and([
+            expression("principal_type", "=", identity.type),
+            expression("principal_id", "=", identity.id),
+          ]),
+        ),
+      ),
+    )
+    .executeTakeFirst();
+  return Boolean(grant);
+}
+
+function principalIdentities(
+  principal: MemoryPrincipal,
+): readonly { readonly type: MemoryAclTable["principal_type"]; readonly id: string }[] {
+  return [
+    principal.user_id ? { type: "user" as const, id: principal.user_id } : undefined,
+    principal.agent_id ? { type: "agent" as const, id: principal.agent_id } : undefined,
+    principal.session_id ? { type: "session" as const, id: principal.session_id } : undefined,
+    ...(principal.role_ids ?? []).map((id) => ({ type: "role" as const, id })),
+    { type: "tenant" as const, id: principal.tenant_id },
+  ].filter(
+    (identity): identity is { type: MemoryAclTable["principal_type"]; id: string } => Boolean(identity),
+  );
 }

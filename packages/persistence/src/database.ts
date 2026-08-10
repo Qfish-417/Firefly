@@ -1,4 +1,4 @@
-import { Kysely, PostgresDialect, type Generated, type JSONColumnType } from "kysely";
+import { Kysely, PostgresDialect, type ColumnType, type Generated, type JSONColumnType } from "kysely";
 import { Pool } from "pg";
 
 import type { ArtifactScope, JsonObject } from "@firefly/contracts";
@@ -416,6 +416,38 @@ export interface StructuredEventTable {
   created_at: Generated<Timestamp>;
 }
 
+export interface MemoryChunkTable {
+  chunk_id: string;
+  memory_id: string;
+  ordinal: number;
+  content: string;
+  chunk_digest: string;
+  token_count: number;
+  source_type: string;
+  entity_keys: readonly string[];
+  citation_artifact_id: string;
+  citation_uri: string;
+  citation_digest: string;
+  citation_locator: JsonDocument;
+  embedding: ColumnType<string | null, string | null, string | null>;
+  embedding_model: string | null;
+  embedding_dimensions: number | null;
+  search_vector: Generated<string>;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface MemoryDeletionReceiptTable {
+  deletion_id: string;
+  memory_id: string;
+  tenant_id: string;
+  requested_by: string;
+  reason: string;
+  removed_chunk_count: number;
+  invalidated_event_count: number;
+  completed_at: Timestamp;
+}
+
 export interface QuestLabDatabase {
   "questlab.evolution_run": EvolutionRunTable;
   "questlab.evolution_transition": EvolutionTransitionTable;
@@ -449,6 +481,8 @@ export interface QuestLabDatabase {
   "questlab.memory_record": MemoryRecordTable;
   "questlab.memory_acl": MemoryAclTable;
   "questlab.structured_event": StructuredEventTable;
+  "questlab.memory_chunk": MemoryChunkTable;
+  "questlab.memory_deletion_receipt": MemoryDeletionReceiptTable;
 }
 
 export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {

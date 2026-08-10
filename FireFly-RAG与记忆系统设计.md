@@ -564,6 +564,8 @@ Overlap 根据句法和语义跨界决定，不采用固定字符比例。列表
 - 删除传播到对象、数据库、Chunk、向量、摘要、缓存和训练/评测派生集。
 - Embedding、摘要和访问日志继承原始数据的敏感级别。
 
+当前 PostgreSQL 切片中，`deleteMemory` 在一个事务内完成 Memory tombstone、`memory_chunk` 清理、依赖 `structured_event` 失效、删除回执和 `MemoryDeleted` Outbox 写入。回执只证明 PostgreSQL 本地清理完成；MinIO、外部 BM25、缓存和评测派生集必须由消费者处理 Outbox，并在未来的全局删除任务中分别确认。
+
 ### 12.5 模型边界
 
 - 检索 Policy 输出允许的 Provider、地域和数据脱敏方式。
@@ -640,6 +642,8 @@ MVP 建议：
 | 异步任务和索引事件 | Outbox/Inbox + MQ |
 | 热查询缓存 | Redis，必须权限感知且非事实源 |
 
+当前可运行基线使用同一 PostgreSQL 实例中的 `memory_chunk`：生成列 `tsvector` 提供全文检索，可选 `vector` 列提供按 Embedding 模型与维度路由的精确余弦检索。`ts_rank_cd` 是 PostgreSQL FTS 排序，不等于 BM25；只有接入 Elasticsearch、OpenSearch 或 ParadeDB 对应 Retriever 后才能宣称 BM25 已落地。变量维度向量暂不建立共享 HNSW，生产阶段应按模型与维度分区后再创建 ANN 索引。
+
 建议增加的核心表：
 
 ```text
@@ -650,6 +654,8 @@ memory_access_stat
 memory_summary
 structured_fact
 structured_event
+memory_chunk
+memory_deletion_receipt
 relation_edge
 artifact
 artifact_region
@@ -702,6 +708,8 @@ rag-memory/
 
 这些模块初期可在一个服务内实现，但包边界和契约必须独立，以便后续拆分。
 
+当前代码映射：`packages/retrieval-postgres` 是 PostgreSQL 适配器，负责幂等 Chunk 索引、FTS/pgvector Retriever 和最终 ACL Authorization Port；`packages/retrieval-service` 仍保持 Provider 中立；删除事实与 Outbox 由 `packages/persistence` 所有。
+
 ## 16. 测试策略
 
 ### 16.1 正确性
@@ -747,17 +755,19 @@ rag-memory/
 - `MemoryRepository.listReadable` 执行 Scope/Owner/ACL 过滤；`recordEvent` 拒绝来源记忆到事件 Scope 的权限扩大；`aggregateReadableEvents` 返回确定性去重计数和参与计算的事件 ID。
 - `packages/retrieval-service` 已实现并行 Retriever 端口、独立列表 RRF、融合后 ACL 复检、不可变 Evidence ID 校验、动态证据选择和 `EvidencePack` 充分性门禁；结构化意图缺少 Aggregator 时 fail closed。
 - `packages/contracts` 已提供版本化 `QueryPlan`、`EvidenceCitation`、`StructuredResult`、`EvidenceItem` 与 `EvidencePack` v1 Schema；Gateway 在出站前强制运行时校验。
+- `questlab.memory_chunk`、`packages/retrieval-postgres` 和 Model Gateway `EmbeddingPort` 已形成真实 PostgreSQL FTS + pgvector 混合检索；召回前和融合后分别执行 ACL。
+- `MemoryRepository.deleteMemory` 已实现 owner/delete-ACL 授权、本地 Chunk 清理、来源事件失效、幂等删除回执与 Outbox 传播事件。
 
-尚未完成：实际 BM25/Vector Provider、索引构建、删除传播任务和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、外部删除消费者与完成确认、索引重建编排和多模态派生索引。
 
-- 下一批补齐 MemoryRecord、EvidenceRef 与删除传播任务合同。
+- 下一批优先补齐索引版本/重建任务和外部删除确认合同，再接生产 BM25 Provider。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 实现 Parent/Child 分块、RRF、确定性 Count 聚合和引用。
 
 ### R1：用户与 Agent 长期记忆
 
-- 加入 Scope、Purpose、同意、保留期和删除传播。
+- 加入 Purpose、同意、保留期和跨存储删除完成确认。
 - 实现 raw -> episodic -> structured 生命周期。
 - 增加访问统计、滚动摘要和冲突检测。
 
