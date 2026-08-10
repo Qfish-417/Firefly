@@ -206,6 +206,14 @@ export class RetrievalIndexRepository {
       .where("status", "=", "active")
       .executeTakeFirst();
   }
+
+  async getById(indexVersionId: string): Promise<RetrievalIndexVersion | undefined> {
+    return this.db
+      .selectFrom("questlab.retrieval_index_version")
+      .selectAll()
+      .where("index_version_id", "=", indexVersionId)
+      .executeTakeFirst();
+  }
 }
 
 function sameBuildIdentity(version: RetrievalIndexVersion, task: IndexBuildTask): boolean {

@@ -518,7 +518,9 @@ IndexBuildTask -> building -> ready -> active -> retired
 
 `retrieval_index_version` 保存租户、逻辑索引名、Provider、配置 Digest、来源水位以及 Embedding 模型/维度。Indexer 只向 `building` 或明确允许增量写入的 `active` 版本写 Chunk，并校验租户与 Embedding 快照完全一致。重建期间查询仍只读旧 active 版本；`RetrievalIndexRepository.activate` 在同一事务中退役旧版本并激活新版本，数据库唯一约束保证每个 `tenant_id + logical_name` 最多一个 active。私有内容只读取查询者租户的 active 版本；显式 `public` 内容可读取其所属租户的 active 版本。未绑定版本的历史 Chunk 不参与查询，必须重建后才能重新可见。
 
-上线前的 Ready Gate 不能只看“任务成功”，至少要校验文档/Chunk 数、水位、嵌入形状、ACL 抽样和离线质量回归。双读用于验证，不直接把两版结果混入用户上下文；正式流量仍由单一 active 指针决定。
+上线前的 Ready Gate 不能只看“任务成功”。当前 `DefaultIndexReadyGate` 已校验非空文档、每文档至少一个 Chunk、Chunk ID 唯一和 Embedding 形状一致；生产放行还必须加入来源水位、ACL 抽样以及 Recall/Citation 离线质量回归。双读用于验证，不直接把两版结果混入用户上下文；正式流量仍由单一 active 指针决定。
+
+`packages/memory-workers` 已实现 `RetrievalIndexBuildWorker`：它按事件类型领取带租约的 `RetrievalIndexBuildRequested`，通过 `IndexSourcePort` 加载来源、确定性分块、调用独立 `EmbeddingPort`、幂等写入版本绑定 Chunk，通过 Ready Gate 后完成并可原子激活。Worker 重启时按持久状态恢复：`building` 继续构建，`ready` 只补激活，`active/retired` 视为完成，`failed` 不重复构建。可重试故障指数退避，超过 attempt 上限后把版本和 Outbox 事件置为可审计终态。
 
 ## 11. 多模态设计
 
@@ -577,7 +579,9 @@ IndexBuildTask -> building -> ready -> active -> retired
 
 当前 PostgreSQL 切片中，`deleteMemory` 在一个事务内完成 Memory tombstone、`memory_chunk` 清理、依赖 `structured_event` 失效、本地删除回执和 Outbox 写入。对 `object_store`、`external_lexical`、`external_vector`、`multimodal_index`、`cache`、`summary`、`evaluation` 等明确目标，每个目标都有独立任务和 `pending/failed/completed` 状态。
 
-消费者必须返回版本化 `DeletionPropagationAck`。Ack 以 `ack_id` 幂等，attempt 必须单调递增；失败可由更高 attempt 重试为完成，旧 attempt 或内容冲突拒绝。任一目标失败时全局状态为 failed，仍有待处理目标时为 pending，只有所有目标完成才写入 `propagation_completed_at` 并发出 `MemoryDeletionPropagationCompleted`。因此“本地回执 != 全局删除完成”；后续还需要 Provider 证据核验与周期性 reconciliation 防止虚假或丢失确认。
+消费者必须返回版本化 `DeletionPropagationAck`。Ack 以 `ack_id` 幂等，attempt 必须单调递增；失败可由更高 attempt 重试为完成，旧 attempt 或内容冲突拒绝。任一目标失败时全局状态为 failed，仍有待处理目标时为 pending，只有所有目标完成才写入 `propagation_completed_at` 并发出 `MemoryDeletionPropagationCompleted`。因此“本地回执 != 全局删除完成”。
+
+当前 `DeletionPropagationWorker` 按 `payload.target` 定向领取任务，不允许不同目标的消费者互相抢占。`ObjectStoreDeletionConsumer` 使用任务中的 `ArtifactRef` 定位并去重 `s3://bucket/key`，由官方 AWS S3 SDK 删除 MinIO/S3 对象；缺少对象引用时 fail closed。Provider 删除失败才写 failed Ack 并退避重试；Ack、数据库或 `markPublished` 失败不伪装成 Provider 失败。若 completed Ack 已提交但发布标记失败，重放识别目标已完成后只补发布。超过 attempt 上限的事件进入 discarded 终态，`reconcileFailedDeletionTargets` 对超时 failed 目标加行锁复核并创建幂等的新任务。Provider 证据真实性核验和 reconciliation 的周期调度器仍待实现。
 
 ### 12.5 模型边界
 
@@ -723,7 +727,7 @@ rag-memory/
 
 这些模块初期可在一个服务内实现，但包边界和契约必须独立，以便后续拆分。
 
-当前代码映射：`packages/retrieval-postgres` 是 PostgreSQL 适配器，负责版本绑定的幂等 Chunk 索引、只读 active 版本的 FTS/pgvector Retriever 和最终 ACL Authorization Port；`packages/retrieval-service` 仍保持 Provider 中立；索引构建/激活、删除事实、逐目标 Ack 与 Outbox 由 `packages/persistence` 所有。
+当前代码映射：`packages/retrieval-postgres` 是 PostgreSQL 适配器，负责版本绑定的幂等 Chunk 索引、只读 active 版本的 FTS/pgvector Retriever 和最终 ACL Authorization Port；`packages/retrieval-service` 仍保持 Provider 中立；索引构建/激活、删除事实、逐目标 Ack 与 Outbox 由 `packages/persistence` 所有；`packages/memory-workers` 负责可恢复索引构建、Ready Gate、目标定向删除消费和 S3/MinIO 适配器。
 
 ## 16. 测试策略
 
@@ -774,17 +778,19 @@ rag-memory/
 - `MemoryRepository.deleteMemory` 已实现 owner/delete-ACL 授权、本地 Chunk 清理、来源事件失效、幂等删除回执与 Outbox 传播事件。
 - `IndexBuildTask/Result`、`RetrievalIndexRepository` 与 `retrieval_index_version` 已实现索引构建快照、Ready Gate 输入、Chunk 版本绑定和单 active 原子切换。
 - `DeletionPropagationTask/Ack` 与 `memory_deletion_target` 已实现 allowlist 目标扇出、逐目标失败重试和全局完成判定。
+- `packages/memory-workers` 已实现租约式索引构建 Worker、基础 Ready Gate、Embedding 维度校验和崩溃恢复。
+- 对象存储删除消费者已通过官方 AWS S3 SDK 接入真实 MinIO；目标定向领取、指数退避、attempt 耗尽终态及 failed 目标 reconciliation 已通过 PostgreSQL/MinIO 集成测试。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、真实外部删除消费者与周期性 reconciliation、完整索引构建 Worker/质量门禁、旧版本垃圾回收和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、ACL/Recall/Citation 高级质量门禁、Parent/Child 结构化分块、retired 索引垃圾回收、reconciliation 周期调度器、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
 
-- 下一批优先实现索引构建 Worker、质量门禁和一个真实对象存储删除消费者，再接生产 BM25 Provider。
+- 下一批优先补齐 ACL/Recall/Citation 质量门禁、Parent/Child 分块、retired 版本回收和 reconciliation 调度，再接生产 BM25/ANN Provider。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 实现 Parent/Child 分块、RRF、确定性 Count 聚合和引用。
 
 ### R1：用户与 Agent 长期记忆
 
-- 加入 Purpose、同意、保留期，并把已有跨存储删除确认接到真实消费者与 reconciliation。
+- 加入 Purpose、同意、保留期，并把其他跨存储删除目标接到真实消费者和统一 reconciliation 调度。
 - 实现 raw -> episodic -> structured 生命周期。
 - 增加访问统计、滚动摘要和冲突检测。
 

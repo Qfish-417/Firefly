@@ -1,0 +1,16 @@
+{
+  "name": "@firefly/memory-workers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1048.0",
+    "@firefly/contracts": "0.1.0",
+    "@firefly/model-gateway": "0.1.0",
+    "@firefly/persistence": "0.1.0",
+    "@firefly/retrieval-postgres": "0.1.0"
+  }
+}

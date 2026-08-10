@@ -130,6 +130,7 @@ const validDeletionTask = {
   tenant_id: "tenant.questlab",
   target: "external_vector",
   content_digest: digest,
+  resource_refs: [evidenceArtifact],
   requested_at: "2026-08-10T12:00:00Z",
 } as const;
 
@@ -468,6 +469,15 @@ test("deletion propagation targets are allowlisted", () => {
   const result = validateContract("DeletionPropagationTask", {
     ...validDeletionTask,
     target: "arbitrary_bucket",
+  });
+
+  assert.equal(result.valid, false);
+});
+
+test("deletion propagation carries immutable resource identities", () => {
+  const result = validateContract("DeletionPropagationTask", {
+    ...validDeletionTask,
+    resource_refs: [{ ...evidenceArtifact, digest: "latest" }],
   });
 
   assert.equal(result.valid, false);

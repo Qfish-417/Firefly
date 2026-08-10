@@ -19,7 +19,7 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 按以下顺序阅读：
 
 1. [开工架构与实施顺序](./FireFly-QuestLab-开工架构与实施顺序.md)：编码阶段的事实源，包含通信协议、模块边界、仓库结构、里程碑和 GitHub 权限。
-2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：16 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换与删除确认视图。
+2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：17 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、删除确认与后台 Worker 闭环视图。
 3. [产品与三 Agent 详细设计](./FireFly-QuestLab产品与三Agent详细设计.md)：产品、领域对象、状态机和太阳能纵向切片。
 4. [RAG 与记忆系统设计](./FireFly-RAG与记忆系统设计.md)：聚合检索、记忆分层、压缩、多模态与安全。
 5. [工具系统设计](./FireFly-工具系统设计.md)：五类工具、发现、异步、动态加载和 KV Cache。
@@ -89,6 +89,8 @@ solar-energy@1.2.0 忽略昼夜变化
 - M5 PostgreSQL 混合检索已落地：`packages/retrieval-postgres` 提供真实 FTS、pgvector、幂等 Chunk 索引和最终 ACL 复检；Memory 删除事务同步清理本地派生索引与来源事件，并通过 Outbox 继续传播到外部存储。
 - M5 索引生命周期已落地：`RetrievalIndexRepository` 保存不可变构建快照，Chunk 绑定索引版本，同一租户/逻辑索引通过事务锁和唯一约束原子切换 active 版本；Retriever 与最终授权只读取 active 版本。
 - M5 删除完成语义已落地：本地删除回执按 allowlist 目标记录 `pending/failed/completed`，每个外部目标必须提交版本化 Ack；只有全部完成才产生全局删除完成状态和事件。
+- M5.1 后台执行闭环已落地：`packages/memory-workers` 通过定向 Outbox 租约运行索引构建与删除消费者；索引 Worker 支持确定性分块、Embedding 形状校验、基础 Ready Gate、崩溃恢复和可选原子激活；对象删除通过官方 AWS S3 SDK 兼容 MinIO/S3，失败按指数退避并可由 reconciliation 重新排队。
+- M5.1 明确区分 Provider 删除失败与 Ack/数据库/Outbox 发布失败：只有 Provider 失败才写 failed Ack；若 completed Ack 已提交而发布标记失败，重放只补齐发布，不重复改变删除事实。
 - 旧 Java/Python 原型仍在原目录，只作追溯参考，不被新 TypeScript packages 依赖。
 
 开发检查：
@@ -105,6 +107,9 @@ docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml up -d
 $env:DATABASE_URL = "postgresql://questlab:questlab@127.0.0.1:55432/questlab"
 npm run db:migrate
 $env:TEST_DATABASE_URL = $env:DATABASE_URL
+$env:TEST_S3_ENDPOINT = "http://127.0.0.1:59000"
+$env:TEST_S3_ACCESS_KEY = "minioadmin"
+$env:TEST_S3_SECRET_KEY = "minioadmin"
 $env:TEST_SANDBOX_IMAGE = "node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43"
 npm run test:integration
 npm run admin:start
@@ -113,4 +118,4 @@ docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 
 Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`，响应同时包含因果边、预算、哨兵、PluginRelease、Sandbox、Canary 与当前活动 PluginVersion。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
 
-M5 的运行时决策依次记录在 [ADR 0008](./docs/adr/0008-model-invocation-projection.md)、[ADR 0009](./docs/adr/0009-memory-acl-and-structured-aggregation.md)、[ADR 0010](./docs/adr/0010-governed-retrieval-gateway.md)、[ADR 0011](./docs/adr/0011-versioned-retrieval-contracts.md)、[ADR 0012](./docs/adr/0012-postgresql-hybrid-retrieval-and-deletion.md) 和 [ADR 0013](./docs/adr/0013-versioned-index-activation-and-deletion-ack.md)。
+M5 的运行时决策依次记录在 [ADR 0008](./docs/adr/0008-model-invocation-projection.md)、[ADR 0009](./docs/adr/0009-memory-acl-and-structured-aggregation.md)、[ADR 0010](./docs/adr/0010-governed-retrieval-gateway.md)、[ADR 0011](./docs/adr/0011-versioned-retrieval-contracts.md)、[ADR 0012](./docs/adr/0012-postgresql-hybrid-retrieval-and-deletion.md)、[ADR 0013](./docs/adr/0013-versioned-index-activation-and-deletion-ack.md) 和 [ADR 0014](./docs/adr/0014-durable-index-and-deletion-workers.md)。

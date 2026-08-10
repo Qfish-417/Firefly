@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="16">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="17">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -444,6 +444,46 @@
         <mxCell id="p16-de2" value="tasks" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p16-1" source="p16-receipt" target="p16-fanout"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p16-de3" value="ack" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p16-1" source="p16-fanout" target="p16-ack"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p16-de4" value="reduce" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p16-1" source="p16-ack" target="p16-global"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-memory-background-workers" name="17-M5.1后台Worker与MinIO删除闭环">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p17-0"/><mxCell id="p17-1" parent="p17-0"/>
+        <mxCell id="p17-title" value="M5.1 Durable Background Workers: Index Build and MinIO/S3 Deletion" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p17-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+
+        <mxCell id="p17-index-band" value="索引构建泳道" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p17-1"><mxGeometry x="45" y="85" width="1510" height="330" as="geometry"/></mxCell>
+        <mxCell id="p17-index-outbox" value="RetrievalIndexBuildRequested&#xa;Outbox 定向领取&#xa;lease + bounded attempt" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p17-1"><mxGeometry x="75" y="155" width="235" height="115" as="geometry"/></mxCell>
+        <mxCell id="p17-source" value="IndexSourcePort&#xa;加载版本化文档&#xa;Citation + source Digest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p17-1"><mxGeometry x="360" y="155" width="225" height="115" as="geometry"/></mxCell>
+        <mxCell id="p17-chunker" value="Deterministic Chunker&#xa;stable Chunk ID&#xa;paragraph baseline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p17-1"><mxGeometry x="635" y="155" width="215" height="115" as="geometry"/></mxCell>
+        <mxCell id="p17-embed" value="EmbeddingPort&#xa;Model Gateway 独立端口&#xa;count + dimension check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;" vertex="1" parent="p17-1"><mxGeometry x="900" y="155" width="220" height="115" as="geometry"/></mxCell>
+        <mxCell id="p17-indexer" value="PostgresMemoryIndexer&#xa;幂等写 version-bound Chunk&#xa;building 版本不可见" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;" vertex="1" parent="p17-1"><mxGeometry x="1170" y="155" width="245" height="115" as="geometry"/></mxCell>
+        <mxCell id="p17-ready" value="Ready Gate + atomic activate&#xa;结构完整才 ready&#xa;旧 active 在切换前继续服务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p17-1"><mxGeometry x="1125" y="315" width="335" height="75" as="geometry"/></mxCell>
+        <mxCell id="p17-recovery" value="状态恢复：building 继续；ready 补激活；active/retired 完成；failed 停止。可重试错误指数退避，耗尽后记录 failed + discarded。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=13;" vertex="1" parent="p17-1"><mxGeometry x="220" y="315" width="760" height="75" as="geometry"/></mxCell>
+        <mxCell id="p17-ie1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p17-1" source="p17-index-outbox" target="p17-source"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-ie2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p17-1" source="p17-source" target="p17-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-ie3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p17-1" source="p17-chunker" target="p17-embed"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-ie4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p17-1" source="p17-embed" target="p17-indexer"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-ie5" value="complete" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p17-1" source="p17-indexer" target="p17-ready"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="p17-delete-band" value="对象删除与修复泳道" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p17-1"><mxGeometry x="45" y="445" width="1510" height="505" as="geometry"/></mxCell>
+        <mxCell id="p17-delete-outbox" value="DeletionPropagationTask&#xa;resource_refs + target&#xa;按 target 定向领取" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p17-1"><mxGeometry x="75" y="525" width="235" height="120" as="geometry"/></mxCell>
+        <mxCell id="p17-delete-worker" value="DeletionPropagationWorker&#xa;校验 tenant/memory/target&#xa;attempt 单调递增" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p17-1"><mxGeometry x="370" y="525" width="245" height="120" as="geometry"/></mxCell>
+        <mxCell id="p17-s3-adapter" value="ObjectStoreDeletionConsumer&#xa;仅接受 s3:// 引用&#xa;bucket/key 去重 + AWS SDK" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;" vertex="1" parent="p17-1"><mxGeometry x="675" y="525" width="260" height="120" as="geometry"/></mxCell>
+        <mxCell id="p17-minio" value="MinIO / S3&#xa;DeleteObject&#xa;Provider side effect" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p17-1"><mxGeometry x="1000" y="525" width="210" height="120" as="geometry"/></mxCell>
+        <mxCell id="p17-ack" value="DeletionPropagationAck&#xa;completed | failed&#xa;全目标完成才全局完成" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p17-1"><mxGeometry x="1270" y="525" width="240" height="120" as="geometry"/></mxCell>
+        <mxCell id="p17-backoff" value="Provider 失败&#xa;failed Ack + exponential backoff&#xa;attempt 耗尽 -> discarded" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;" vertex="1" parent="p17-1"><mxGeometry x="260" y="710" width="315" height="105" as="geometry"/></mxCell>
+        <mxCell id="p17-reconcile" value="Reconciliation&#xa;扫描 stale failed target&#xa;行锁复核 + 幂等新任务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p17-1"><mxGeometry x="650" y="710" width="300" height="105" as="geometry"/></mxCell>
+        <mxCell id="p17-boundary" value="关键崩溃边界：Provider 删除失败 != Ack / 数据库 / markPublished 失败。completed Ack 已提交但发布失败时，重放只补发布；不得反写 failed Ack，也不得篡改已经完成的删除事实。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p17-1"><mxGeometry x="1010" y="700" width="500" height="125" as="geometry"/></mxCell>
+        <mxCell id="p17-next" value="后续：reconciliation 周期调度与告警、Provider 证据核验、其他删除目标、retired index GC、ACL/Recall/Citation 高级 Ready Gate。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=13;" vertex="1" parent="p17-1"><mxGeometry x="285" y="865" width="1030" height="60" as="geometry"/></mxCell>
+        <mxCell id="p17-de1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p17-1" source="p17-delete-outbox" target="p17-delete-worker"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-de2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p17-1" source="p17-delete-worker" target="p17-s3-adapter"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-de3" value="delete" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p17-1" source="p17-s3-adapter" target="p17-minio"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-de4" value="evidence" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p17-1" source="p17-minio" target="p17-ack"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-de5" value="retryable" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;dashed=1;" edge="1" parent="p17-1" source="p17-delete-worker" target="p17-backoff"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-de6" value="stale failed" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;dashed=1;" edge="1" parent="p17-1" source="p17-backoff" target="p17-reconcile"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p17-de7" value="fresh task" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;dashed=1;" edge="1" parent="p17-1" source="p17-reconcile" target="p17-delete-outbox"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

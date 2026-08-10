@@ -3,6 +3,7 @@ import {
   type DeletionPropagationAck,
   type DeletionPropagationTarget,
   type DeletionPropagationTask,
+  type ArtifactRef,
   type JsonObject,
 } from "@firefly/contracts";
 import { sql, type Kysely, type Selectable } from "kysely";
@@ -39,7 +40,7 @@ export interface CaptureMemoryInput {
   readonly stage: MemoryRecordTable["stage"];
   readonly kind: string;
   readonly content_digest: string;
-  readonly source_refs?: readonly JsonObject[];
+  readonly source_refs?: readonly ArtifactRef[];
   readonly metadata?: JsonObject;
   readonly confidence: number;
   readonly sensitivity: MemoryRecordTable["sensitivity"];
@@ -104,6 +105,7 @@ export class MemoryRepository {
   }
 
   async capture(input: CaptureMemoryInput): Promise<MemoryRecord> {
+    for (const sourceRef of input.source_refs ?? []) assertContract("ArtifactRef", sourceRef);
     const row = {
       memory_id: input.memory_id,
       tenant_id: input.tenant_id,
@@ -344,6 +346,7 @@ export class MemoryRepository {
           tenant_id: memory.tenant_id,
           target,
           content_digest: memory.content_digest as `sha256:${string}`,
+          resource_refs: memory.source_refs as unknown as readonly ArtifactRef[],
           requested_at: occurredAt.toISOString(),
         };
         assertContract("DeletionPropagationTask", task);
@@ -509,6 +512,102 @@ export class MemoryRepository {
       .orderBy("target")
       .execute();
     return { receipt, targets };
+  }
+
+  async reconcileFailedDeletionTargets(input: {
+    readonly stale_before: Date;
+    readonly limit: number;
+    readonly now?: Date;
+  }): Promise<number> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 1_000) {
+      throw new MemoryPolicyError("Deletion reconciliation limit must be between 1 and 1000");
+    }
+    const candidates = await this.db
+      .selectFrom("questlab.memory_deletion_target")
+      .select(["deletion_id", "target"])
+      .where("status", "=", "failed")
+      .where("updated_at", "<=", input.stale_before)
+      .orderBy("updated_at")
+      .limit(input.limit)
+      .execute();
+    let requeued = 0;
+    for (const candidate of candidates) {
+      if (await this.requeueDeletionTarget(candidate.deletion_id, candidate.target, input.now ?? new Date())) {
+        requeued += 1;
+      }
+    }
+    return requeued;
+  }
+
+  private async requeueDeletionTarget(
+    deletionId: string,
+    targetName: DeletionPropagationTarget,
+    now: Date,
+  ): Promise<boolean> {
+    return this.db.transaction().execute(async (trx) => {
+      const target = await trx
+        .selectFrom("questlab.memory_deletion_target")
+        .selectAll()
+        .where("deletion_id", "=", deletionId)
+        .where("target", "=", targetName)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!target || target.status !== "failed") return false;
+      const receipt = await trx
+        .selectFrom("questlab.memory_deletion_receipt")
+        .innerJoin("questlab.memory_record", "questlab.memory_record.memory_id", "questlab.memory_deletion_receipt.memory_id")
+        .select([
+          "questlab.memory_deletion_receipt.memory_id",
+          "questlab.memory_deletion_receipt.tenant_id",
+          "questlab.memory_record.content_digest",
+          "questlab.memory_record.source_refs",
+        ])
+        .where("questlab.memory_deletion_receipt.deletion_id", "=", deletionId)
+        .executeTakeFirstOrThrow();
+      const task: DeletionPropagationTask = {
+        schema_version: 1,
+        deletion_id: deletionId,
+        memory_id: receipt.memory_id,
+        tenant_id: receipt.tenant_id,
+        target: targetName,
+        content_digest: receipt.content_digest as `sha256:${string}`,
+        resource_refs: receipt.source_refs as unknown as readonly ArtifactRef[],
+        requested_at: now.toISOString(),
+      };
+      assertContract("DeletionPropagationTask", task);
+      await enqueueOutbox(trx, {
+        event_id: `event.memory-deletion-retry.${deletionId}.${targetName}.${target.attempt + 1}`,
+        event_type: "MemoryDeletionPropagationRequested",
+        correlation_id: deletionId,
+        trace_id: deletionId,
+        producer: "memory-repository-reconciler",
+        idempotency_key: `memory-delete-retry:${deletionId}:${targetName}:${target.attempt + 1}`,
+        occurred_at: now,
+        payload: task as unknown as JsonObject,
+        artifact_refs: task.resource_refs as unknown as readonly JsonObject[],
+      });
+      await trx
+        .updateTable("questlab.memory_deletion_target")
+        .set({ status: "pending", updated_at: now, acknowledged_at: null })
+        .where("deletion_id", "=", deletionId)
+        .where("target", "=", targetName)
+        .executeTakeFirstOrThrow();
+      const stillFailed = await trx
+        .selectFrom("questlab.memory_deletion_target")
+        .select("target")
+        .where("deletion_id", "=", deletionId)
+        .where("status", "=", "failed")
+        .executeTakeFirst();
+      await trx
+        .updateTable("questlab.memory_deletion_receipt")
+        .set({
+          propagation_status: stillFailed ? "failed" : "pending",
+          propagation_completed_at: null,
+        })
+        .where("deletion_id", "=", deletionId)
+        .executeTakeFirstOrThrow();
+      return true;
+    });
   }
 
   private async getDeletionStatusWith(

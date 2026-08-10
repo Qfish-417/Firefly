@@ -18,10 +18,54 @@ export class OutboxRepository {
     leaseDurationMs: number,
     now = new Date(),
   ): Promise<readonly OutboxEventRecord[]> {
+    return this.claimMatching(dispatcherId, limit, leaseDurationMs, now);
+  }
+
+  async claimBatchByTypes(
+    dispatcherId: string,
+    eventTypes: readonly string[],
+    limit: number,
+    leaseDurationMs: number,
+    now = new Date(),
+  ): Promise<readonly OutboxEventRecord[]> {
+    if (eventTypes.length === 0) throw new TypeError("At least one Outbox event type is required");
+    return this.claimMatching(dispatcherId, limit, leaseDurationMs, now, eventTypes);
+  }
+
+  async claimDeletionBatch(
+    dispatcherId: string,
+    target: string,
+    limit: number,
+    leaseDurationMs: number,
+    now = new Date(),
+  ): Promise<readonly OutboxEventRecord[]> {
+    if (!target.trim()) throw new TypeError("Deletion target is required");
+    return this.claimMatching(
+      dispatcherId,
+      limit,
+      leaseDurationMs,
+      now,
+      ["MemoryDeletionPropagationRequested"],
+      target,
+    );
+  }
+
+  private async claimMatching(
+    dispatcherId: string,
+    limit: number,
+    leaseDurationMs: number,
+    now: Date,
+    eventTypes?: readonly string[],
+    deletionTarget?: string,
+  ): Promise<readonly OutboxEventRecord[]> {
     return this.db.transaction().execute(async (trx) => {
       const rows = await trx
         .selectFrom("questlab.outbox_event")
         .select("event_id")
+        .$if(Boolean(eventTypes), (builder) => builder.where("event_type", "in", eventTypes!))
+        .$if(Boolean(deletionTarget), (builder) =>
+          builder.where(sql<string>`payload ->> 'target'`, "=", deletionTarget!),
+        )
         .where("published_at", "is", null)
         .where("available_at", "<=", now)
         .where((expression) =>
@@ -65,6 +109,27 @@ export class OutboxRepository {
         locked_by: null,
         locked_until: null,
         last_error: null,
+      })
+      .where("event_id", "=", eventId)
+      .where("locked_by", "=", dispatcherId)
+      .where("published_at", "is", null)
+      .executeTakeFirst();
+    return result.numUpdatedRows === 1n;
+  }
+
+  async markDiscarded(
+    eventId: string,
+    dispatcherId: string,
+    error: string,
+    now = new Date(),
+  ): Promise<boolean> {
+    const result = await this.db
+      .updateTable("questlab.outbox_event")
+      .set({
+        published_at: now,
+        locked_by: null,
+        locked_until: null,
+        last_error: error,
       })
       .where("event_id", "=", eventId)
       .where("locked_by", "=", dispatcherId)

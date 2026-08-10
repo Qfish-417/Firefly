@@ -356,6 +356,7 @@ export interface DeletionPropagationTask {
   readonly tenant_id: string;
   readonly target: DeletionPropagationTarget;
   readonly content_digest: `sha256:${string}`;
+  readonly resource_refs: readonly ArtifactRef[];
   readonly requested_at: string;
 }
 

@@ -935,6 +935,7 @@
         "tenant_id",
         "target",
         "content_digest",
+        "resource_refs",
         "requested_at"
       ],
       "properties": {
@@ -944,6 +945,11 @@
         "tenant_id": { "$ref": "#/$defs/Identifier" },
         "target": { "$ref": "#/$defs/DeletionPropagationTarget" },
         "content_digest": { "$ref": "#/$defs/Digest" },
+        "resource_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/ArtifactRef" }
+        },
         "requested_at": { "type": "string", "format": "date-time" }
       }
     },
