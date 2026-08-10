@@ -1,10 +1,25 @@
 import {
+  assertContract,
+  type EvidenceCitation,
+  type EvidenceItem,
+  type EvidencePack,
+  type QueryPlan,
+  type StructuredResult,
+} from "@firefly/contracts";
+import {
   planRetrieval,
   selectEvidence,
   type QueryIntent,
-  type RetrievalPlan,
   type RetrievalStage,
 } from "@firefly/retrieval-planner";
+
+export type {
+  EvidenceCitation,
+  EvidenceItem,
+  EvidencePack,
+  QueryPlan,
+  StructuredResult,
+} from "@firefly/contracts";
 
 export type SearchStage = Exclude<RetrievalStage, "structured">;
 
@@ -31,13 +46,6 @@ export interface RetrievalRequest {
   readonly filters?: Readonly<Record<string, string | number | boolean>>;
 }
 
-export interface ArtifactCitation {
-  readonly artifact_id: string;
-  readonly uri: string;
-  readonly digest: string;
-  readonly locator?: Readonly<Record<string, string | number>>;
-}
-
 export interface RetrievalHit {
   readonly id: string;
   readonly content: string;
@@ -45,7 +53,7 @@ export interface RetrievalHit {
   readonly token_count: number;
   readonly source_type: string;
   readonly entity_keys?: readonly string[];
-  readonly citation: ArtifactCitation;
+  readonly citation: EvidenceCitation;
 }
 
 export interface RetrieverCall {
@@ -72,55 +80,11 @@ export interface RetrievalAuthorizationPort {
   }): boolean | Promise<boolean>;
 }
 
-export interface StructuredResult {
-  readonly operation: "count_distinct" | "group_by" | "comparison" | "path" | "temporal";
-  readonly value: string | number | boolean | null;
-  readonly included_ids: readonly string[];
-  readonly excluded_reasons: readonly string[];
-  readonly conflicts: readonly string[];
-}
-
 export interface StructuredAggregatorPort {
   aggregate(input: {
     readonly request: RetrievalRequest;
     readonly signal?: AbortSignal;
   }): Promise<StructuredResult>;
-}
-
-export interface EvidenceItem {
-  readonly evidence_id: string;
-  readonly untrusted_content: string;
-  readonly score: number;
-  readonly source_type: string;
-  readonly entity_keys: readonly string[];
-  readonly citation: ArtifactCitation;
-}
-
-export interface EvidencePack {
-  readonly query_id: string;
-  readonly original_query: string;
-  readonly status: "sufficient" | "insufficient";
-  readonly plan: RetrievalPlan;
-  readonly structured_result?: StructuredResult;
-  readonly evidence: readonly EvidenceItem[];
-  readonly conflicts: readonly string[];
-  readonly coverage: number;
-  readonly citation_required: boolean;
-  readonly allowed_usage: string;
-  readonly generation_allowed: boolean;
-  readonly trace: {
-    readonly retrievers: readonly {
-      readonly id: string;
-      readonly stage: SearchStage;
-      readonly returned: number;
-      readonly failed: boolean;
-    }[];
-    readonly fused: number;
-    readonly authorized: number;
-    readonly denied: number;
-    readonly selected: number;
-    readonly stop_reason: "context_k" | "token_budget" | "score_floor" | "exhausted";
-  };
 }
 
 export interface RetrievalGatewayOptions {
@@ -157,7 +121,7 @@ export class RetrievalGateway {
   async retrieve(request: RetrievalRequest, signal?: AbortSignal): Promise<EvidencePack> {
     validateRequest(request, signal);
     const searchStages = [...this.retrievers.keys()];
-    const plan = planRetrieval({
+    const plannedRetrieval = planRetrieval({
       intent: request.intent,
       agent_id: request.agent_id,
       token_budget: request.token_budget,
@@ -171,6 +135,11 @@ export class RetrievalGateway {
         ? {}
         : { evidence_coverage_target: request.evidence_coverage_target }),
     });
+    const plan: QueryPlan = {
+      schema_version: 1,
+      query_id: request.query_id,
+      ...plannedRetrieval,
+    };
     if (plan.structured_query_required && !this.aggregator) {
       throw new RetrievalPolicyError(`Intent ${request.intent} requires a structured aggregator`);
     }
@@ -268,7 +237,8 @@ export class RetrievalGateway {
       evidence.length >= plan.min_context_k &&
       coverage >= plan.evidence_coverage_target;
     const conflicts = structuredResult?.conflicts ?? [];
-    return {
+    const pack: EvidencePack = {
+      schema_version: 1,
       query_id: request.query_id,
       original_query: request.original_query,
       status: sufficient ? "sufficient" : "insufficient",
@@ -289,6 +259,8 @@ export class RetrievalGateway {
         stop_reason: selected.stopped_by,
       },
     };
+    assertContract("EvidencePack", pack);
+    return pack;
   }
 }
 

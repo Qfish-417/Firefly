@@ -6,6 +6,8 @@ import {
   validateContract,
   type ArtifactRef,
   type ContractName,
+  type EvidencePack,
+  type QueryPlan,
 } from "../src/index.ts";
 
 const digest = `sha256:${"a".repeat(64)}` as const;
@@ -29,6 +31,71 @@ const pluginArtifact = {
   owner_id: "tenant.questlab",
   lineage_ids: ["changeset.01"],
 } satisfies ArtifactRef;
+
+const validQueryPlan = {
+  schema_version: 1,
+  query_id: "query.contract.01",
+  intent: "count_events",
+  structured_query_required: true,
+  answer_source: "structured_plus_evidence",
+  stages: ["structured", "lexical", "temporal"],
+  candidate_k: 24,
+  fusion_k: 40,
+  rerank_k: 16,
+  context_k: 8,
+  min_context_k: 3,
+  max_context_tokens: 1_400,
+  score_floor: 0.35,
+  marginal_gain_floor: 0.02,
+  evidence_coverage_target: 0.95,
+} satisfies QueryPlan;
+
+const validEvidenceCitation = {
+  artifact_id: "artifact.retrieval.01",
+  uri: "s3://questlab/evidence/retrieval.01",
+  digest,
+  locator: { page: 3, section: "result" },
+} as const;
+
+const validStructuredResult = {
+  operation: "count_distinct",
+  value: 3,
+  included_ids: ["event.trip.01", "event.trip.02", "event.trip.03"],
+  excluded_reasons: ["duplicate source evidence was excluded"],
+  conflicts: [],
+} as const;
+
+const validEvidenceItem = {
+  evidence_id: "evidence.trip.01",
+  untrusted_content: "The user described the first authorized trip.",
+  score: 0.92,
+  source_type: "memory.event",
+  entity_keys: ["trip.01"],
+  citation: validEvidenceCitation,
+} as const;
+
+const validEvidencePack = {
+  schema_version: 1,
+  query_id: "query.contract.01",
+  original_query: "How many distinct trips did the user describe?",
+  status: "sufficient",
+  plan: validQueryPlan,
+  structured_result: validStructuredResult,
+  evidence: [validEvidenceItem],
+  conflicts: [],
+  coverage: 1,
+  citation_required: true,
+  allowed_usage: "answer_current_user",
+  generation_allowed: true,
+  trace: {
+    retrievers: [{ id: "lexical.primary", stage: "lexical", returned: 3, failed: false }],
+    fused: 3,
+    authorized: 3,
+    denied: 0,
+    selected: 1,
+    stop_reason: "context_k",
+  },
+} satisfies EvidencePack;
 
 const validContracts: Record<ContractName, unknown> = {
   ArtifactRef: evidenceArtifact,
@@ -210,6 +277,11 @@ const validContracts: Record<ContractName, unknown> = {
     decision: "recommend_activate",
     evidence_refs: [evidenceArtifact],
   },
+  QueryPlan: validQueryPlan,
+  EvidenceCitation: validEvidenceCitation,
+  StructuredResult: validStructuredResult,
+  EvidenceItem: validEvidenceItem,
+  EvidencePack: validEvidencePack,
 };
 
 test("all v1 contract examples pass their JSON Schema", () => {
@@ -256,4 +328,66 @@ test("artifact digests must be immutable SHA-256 references", () => {
   });
 
   assert.equal(result.valid, false);
+});
+
+test("evidence citations require an immutable SHA-256 digest", () => {
+  const result = validateContract("EvidenceCitation", {
+    ...validEvidenceCitation,
+    digest: "sha256:not-a-digest",
+  });
+
+  assert.equal(result.valid, false);
+});
+
+test("structured query intents cannot masquerade as plain RAG", () => {
+  const result = validateContract("QueryPlan", {
+    ...validQueryPlan,
+    structured_query_required: false,
+    answer_source: "rag",
+    stages: ["lexical", "temporal"],
+  });
+
+  assert.equal(result.valid, false);
+});
+
+test("structured aggregation results reject duplicate participating IDs", () => {
+  const result = validateContract("StructuredResult", {
+    ...validStructuredResult,
+    included_ids: ["event.trip.01", "event.trip.01"],
+  });
+
+  assert.equal(result.valid, false);
+});
+
+test("insufficient evidence can never authorize generation", () => {
+  const result = validateContract("EvidencePack", {
+    ...validEvidencePack,
+    status: "insufficient",
+    generation_allowed: true,
+  });
+
+  assert.equal(result.valid, false);
+});
+
+test("a hidden structured conflict can never authorize generation", () => {
+  const result = validateContract("EvidencePack", {
+    ...validEvidencePack,
+    structured_result: {
+      ...validStructuredResult,
+      conflicts: ["two authorized sources disagree"],
+    },
+    conflicts: [],
+    generation_allowed: true,
+  });
+
+  assert.equal(result.valid, false);
+});
+
+test("a structured EvidencePack requires its deterministic result", () => {
+  const pack = { ...validEvidencePack } as Record<string, unknown>;
+  delete pack.structured_result;
+
+  const result = validateContract("EvidencePack", pack);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((error) => error.params.missingProperty === "structured_result"));
 });

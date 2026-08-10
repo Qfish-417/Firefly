@@ -374,21 +374,93 @@ Agent 不直接接收散乱 Chunk，而接收统一证据包：
 
 ```json
 {
+  "schema_version": 1,
   "query_id": "q_01",
   "original_query": "用户去过几次美国？",
-  "plan": {"intent": "count_events"},
+  "status": "sufficient",
+  "plan": {
+    "schema_version": 1,
+    "query_id": "q_01",
+    "intent": "count_events",
+    "structured_query_required": true,
+    "answer_source": "structured_plus_evidence",
+    "stages": ["structured", "lexical", "temporal"],
+    "candidate_k": 24,
+    "fusion_k": 40,
+    "rerank_k": 16,
+    "context_k": 8,
+    "min_context_k": 3,
+    "max_context_tokens": 1400,
+    "score_floor": 0.35,
+    "marginal_gain_floor": 0.02,
+    "evidence_coverage_target": 0.95
+  },
   "structured_result": {
     "value": 3,
     "operation": "count_distinct",
-    "included_event_ids": ["trip_1", "trip_2", "trip_3"]
+    "included_ids": ["trip_1", "trip_2", "trip_3"],
+    "excluded_reasons": [],
+    "conflicts": []
   },
-  "evidence": [],
+  "evidence": [
+    {
+      "evidence_id": "evidence_trip_1",
+      "untrusted_content": "用户在来源材料中描述了该次旅行。",
+      "score": 0.92,
+      "source_type": "memory_event",
+      "entity_keys": ["trip_1"],
+      "citation": {
+        "artifact_id": "artifact_trip_1",
+        "uri": "s3://firefly-private/user_01/trip_1.json",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "evidence_id": "evidence_trip_2",
+      "untrusted_content": "第二次旅行的授权来源证据。",
+      "score": 0.88,
+      "source_type": "memory_event",
+      "entity_keys": ["trip_2"],
+      "citation": {
+        "artifact_id": "artifact_trip_2",
+        "uri": "s3://firefly-private/user_01/trip_2.json",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "evidence_id": "evidence_trip_3",
+      "untrusted_content": "第三次旅行的授权来源证据。",
+      "score": 0.84,
+      "source_type": "memory_event",
+      "entity_keys": ["trip_3"],
+      "citation": {
+        "artifact_id": "artifact_trip_3",
+        "uri": "s3://firefly-private/user_01/trip_3.json",
+        "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  ],
   "conflicts": [],
-  "coverage": 0.96,
+  "coverage": 1,
   "citation_required": true,
-  "allowed_usage": "answer_current_user_only"
+  "allowed_usage": "answer_current_user_only",
+  "generation_allowed": true,
+  "trace": {
+    "retrievers": [
+      {"id": "lexical_primary", "stage": "lexical", "returned": 3, "failed": false}
+    ],
+    "fused": 3,
+    "authorized": 3,
+    "denied": 0,
+    "selected": 3,
+    "stop_reason": "exhausted"
+  }
 }
 ```
+
+`QueryPlan`、`EvidenceCitation`、`StructuredResult`、`EvidenceItem` 和 `EvidencePack` 的 v1 TypeScript 类型与 JSON Schema 统一定义在 `packages/contracts`。`packages/retrieval-service` 在返回前执行 `assertContract("EvidencePack", pack)`；未来拆成独立服务后，生产者出站和消费者入站都必须校验，不能因为消息来自内部网络就跳过。
+
+合同层的强制不变量包括：证据不足时禁止生成；有冲突时禁止放行；结构化计划必须返回确定性结果；结构化参与 ID 不可重复；每条引用必须绑定不可变 SHA-256 Digest。外层与内层 `query_id` 一致性由 Gateway 构造保证，跨系统接收独立 `QueryPlan` 时还应执行语义一致性校验。
 
 ### 9.5 动态 TopK 与证据停止规则
 
@@ -404,7 +476,7 @@ candidate_k -> fusion_k -> rerank_k -> context_k
 
 聚合、比较、多跳和时间问题必须设置 `structured_query_required=true`。Aggregator 负责完整计算次数、去重、时间窗口和关系路径，RAG 只返回参与计算的原始证据。普通事实查询在达到最低证据量后，如果候选分数低于阈值或边际收益不足，应提前停止；不能为了填满固定 K 引入低质量片段。
 
-当前运行时实现位于 `packages/retrieval-planner`，它只生成可审计的 QueryPlan 和证据选择结果，不直接执行 SQL、向量搜索或模型调用。
+当前动态 K 计算位于 `packages/retrieval-planner`，它不直接执行 SQL、向量搜索或模型调用。`packages/retrieval-service` 为内部计划补上 `schema_version` 和 `query_id`，形成可审计、可跨进程传输的 `QueryPlan`。
 
 ## 10. 文档分块
 
@@ -674,10 +746,11 @@ rag-memory/
 - `questlab.memory_record`、`questlab.memory_acl` 和 `questlab.structured_event` 已进入 PostgreSQL 事实层。
 - `MemoryRepository.listReadable` 执行 Scope/Owner/ACL 过滤；`recordEvent` 拒绝来源记忆到事件 Scope 的权限扩大；`aggregateReadableEvents` 返回确定性去重计数和参与计算的事件 ID。
 - `packages/retrieval-service` 已实现并行 Retriever 端口、独立列表 RRF、融合后 ACL 复检、不可变 Evidence ID 校验、动态证据选择和 `EvidencePack` 充分性门禁；结构化意图缺少 Aggregator 时 fail closed。
+- `packages/contracts` 已提供版本化 `QueryPlan`、`EvidenceCitation`、`StructuredResult`、`EvidenceItem` 与 `EvidencePack` v1 Schema；Gateway 在出站前强制运行时校验。
 
-尚未完成：实际 BM25/Vector Provider、索引构建、版本化 EvidencePack JSON Schema、删除传播任务和多模态派生索引。
+尚未完成：实际 BM25/Vector Provider、索引构建、删除传播任务和多模态派生索引。
 
-- 建 MemoryRecord、EvidenceRef、QueryPlan、EvidencePack Schema。
+- 下一批补齐 MemoryRecord、EvidenceRef 与删除传播任务合同。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 实现 Parent/Child 分块、RRF、确定性 Count 聚合和引用。

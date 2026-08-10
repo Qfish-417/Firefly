@@ -218,6 +218,95 @@ export interface LearningOutcome {
   readonly evidence_refs: readonly ArtifactRef[];
 }
 
+export type QueryIntent =
+  | "fact_lookup"
+  | "count_events"
+  | "comparison"
+  | "multi_hop"
+  | "exploratory"
+  | "temporal"
+  | "multimodal";
+
+export type RetrievalStage =
+  | "structured"
+  | "lexical"
+  | "vector"
+  | "graph"
+  | "temporal"
+  | "multimodal";
+
+export type SearchStage = Exclude<RetrievalStage, "structured">;
+
+export interface QueryPlan {
+  readonly schema_version: 1;
+  readonly query_id: string;
+  readonly intent: QueryIntent;
+  readonly structured_query_required: boolean;
+  readonly answer_source: "rag" | "structured" | "structured_plus_evidence";
+  readonly stages: readonly RetrievalStage[];
+  readonly candidate_k: number;
+  readonly fusion_k: number;
+  readonly rerank_k: number;
+  readonly context_k: number;
+  readonly min_context_k: number;
+  readonly max_context_tokens: number;
+  readonly score_floor: number;
+  readonly marginal_gain_floor: number;
+  readonly evidence_coverage_target: number;
+}
+
+export interface EvidenceCitation {
+  readonly artifact_id: string;
+  readonly uri: string;
+  readonly digest: `sha256:${string}`;
+  readonly locator?: Readonly<Record<string, string | number>>;
+}
+
+export interface StructuredResult {
+  readonly operation: "count_distinct" | "group_by" | "comparison" | "path" | "temporal";
+  readonly value: string | number | boolean | null;
+  readonly included_ids: readonly string[];
+  readonly excluded_reasons: readonly string[];
+  readonly conflicts: readonly string[];
+}
+
+export interface EvidenceItem {
+  readonly evidence_id: string;
+  readonly untrusted_content: string;
+  readonly score: number;
+  readonly source_type: string;
+  readonly entity_keys: readonly string[];
+  readonly citation: EvidenceCitation;
+}
+
+export interface EvidencePack {
+  readonly schema_version: 1;
+  readonly query_id: string;
+  readonly original_query: string;
+  readonly status: "sufficient" | "insufficient";
+  readonly plan: QueryPlan;
+  readonly structured_result?: StructuredResult;
+  readonly evidence: readonly EvidenceItem[];
+  readonly conflicts: readonly string[];
+  readonly coverage: number;
+  readonly citation_required: boolean;
+  readonly allowed_usage: string;
+  readonly generation_allowed: boolean;
+  readonly trace: {
+    readonly retrievers: readonly {
+      readonly id: string;
+      readonly stage: SearchStage;
+      readonly returned: number;
+      readonly failed: boolean;
+    }[];
+    readonly fused: number;
+    readonly authorized: number;
+    readonly denied: number;
+    readonly selected: number;
+    readonly stop_reason: "context_k" | "token_budget" | "score_floor" | "exhausted";
+  };
+}
+
 export type ContractName =
   | "ArtifactRef"
   | "TaskEnvelope"
@@ -229,4 +318,9 @@ export type ContractName =
   | "PatchProposal"
   | "ChangeSet"
   | "VerificationReport"
-  | "LearningOutcome";
+  | "LearningOutcome"
+  | "QueryPlan"
+  | "EvidenceCitation"
+  | "StructuredResult"
+  | "EvidenceItem"
+  | "EvidencePack";

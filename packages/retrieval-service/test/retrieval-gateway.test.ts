@@ -25,8 +25,8 @@ test("gateway fuses independent ranks, deduplicates hits and rechecks ACL", asyn
   const calls: number[] = [];
   const gateway = new RetrievalGateway({
     retrievers: [
-      fakeRetriever("lexical", [hit("a", 10, "concept:a"), hit("shared", 8, "concept:shared"), hit("secret", 7, "secret")], calls),
-      fakeRetriever("vector", [hit("shared", 0.99, "concept:shared"), hit("b", 0.95, "concept:b")], calls),
+      fakeRetriever("lexical", [hit("ev.a", 10, "concept:a"), hit("shared", 8, "concept:shared"), hit("secret", 7, "secret")], calls),
+      fakeRetriever("vector", [hit("shared", 0.99, "concept:shared"), hit("ev.b", 0.95, "concept:b")], calls),
     ],
     authorization: { canRead: ({ hit: candidate }) => candidate.id !== "secret" },
   });
@@ -34,6 +34,9 @@ test("gateway fuses independent ranks, deduplicates hits and rechecks ACL", asyn
   const pack = await gateway.retrieve(baseRequest);
 
   assert.equal(pack.status, "sufficient");
+  assert.equal(pack.schema_version, 1);
+  assert.equal(pack.plan.schema_version, 1);
+  assert.equal(pack.plan.query_id, baseRequest.query_id);
   assert.equal(pack.generation_allowed, true);
   assert.equal(pack.evidence[0]?.evidence_id, "shared");
   assert.equal(pack.evidence.some((item) => item.evidence_id === "secret"), false);
@@ -117,6 +120,30 @@ test("conflicting immutable evidence identities fail closed", async () => {
   await assert.rejects(
     gateway.retrieve(baseRequest),
     (error: unknown) => error instanceof RetrievalPolicyError,
+  );
+});
+
+test("invalid structured aggregator output is blocked at the contract boundary", async () => {
+  const gateway = new RetrievalGateway({
+    retrievers: [
+      fakeRetriever("lexical", [hit("event.1", 1, "trip:1"), hit("event.2", 0.9, "trip:2"), hit("event.3", 0.8, "trip:3")]),
+      fakeRetriever("temporal", [hit("event.1", 1, "trip:1"), hit("event.2", 0.9, "trip:2"), hit("event.3", 0.8, "trip:3")]),
+    ],
+    authorization: { canRead: () => true },
+    aggregator: {
+      aggregate: async () => ({
+        operation: "count_distinct",
+        value: 2,
+        included_ids: ["trip:1", "trip:1"],
+        excluded_reasons: [],
+        conflicts: [],
+      }),
+    },
+  });
+
+  await assert.rejects(
+    gateway.retrieve({ ...baseRequest, intent: "count_events", token_budget: 2_000 }),
+    (error: unknown) => error instanceof TypeError && error.message.includes("EvidencePack validation failed"),
   );
 });
 

@@ -20,4 +20,4 @@ Aggregation, comparison, temporal and multi-hop intents require a configured str
 - Elasticsearch, pgvector, Milvus and other providers can be added without changing Agent contracts.
 - A stale or permissive index filter cannot bypass the final authorization port.
 - One failed Retriever degrades traceably; conflicting immutable evidence identities terminate retrieval.
-- Versioned cross-process `QueryPlan` and `EvidencePack` JSON Schemas remain the next contract milestone.
+- Versioned cross-process `QueryPlan` and `EvidencePack` contracts are defined by [ADR 0011](./0011-versioned-retrieval-contracts.md).

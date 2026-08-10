@@ -84,6 +84,8 @@ solar-energy@1.2.0 忽略昼夜变化
 - M4 Model Gateway 已落地：`packages/model-gateway` 使用维护中的 `@earendil-works/pi-ai@0.83.0`，提供 generate/stream、主备路由、预算、重试/超时/取消、不可变快照，并显式保留独立 embed/rerank 端口。
 - 三个 Agent 均已有真实模型 Worker，并保留确定性 Stub。Director 只补充固定阶段内的指导；Scientist 只解释授权证据；Engineer 只产生批准路径内的 PatchProposal，再由受控工程工具完成真实 Git Commit、Docker Sandbox、ChangeSet 与 VerificationReport。
 - `PluginReleaseWorkflow.prepareVerified` 直接消费已完成的受治理 Engineer 任务和门禁证据，仍需独立发布审批；模型不能改写 Mission、证据身份、Canary、门禁、审批或发布状态。
+- M5 RAG 基础已落地：`packages/retrieval-planner` 动态计算 candidate/fusion/rerank/context K，`packages/persistence` 提供 Memory ACL 与 StructuredEvent 确定性聚合事实层，`packages/retrieval-service` 提供并行召回、RRF、融合后 ACL 复检、证据充分性门禁和结构化聚合边界。
+- M5 检索合同已版本化：`packages/contracts` 统一定义 `QueryPlan`、`EvidenceCitation`、`StructuredResult`、`EvidenceItem` 与 `EvidencePack` v1 类型和 JSON Schema；Gateway 在返回前强制校验，不充分、冲突或非法聚合结果均 fail closed。
 - 旧 Java/Python 原型仍在原目录，只作追溯参考，不被新 TypeScript packages 依赖。
 
 开发检查：
@@ -108,4 +110,4 @@ docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 
 Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`，响应同时包含因果边、预算、哨兵、PluginRelease、Sandbox、Canary 与当前活动 PluginVersion。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
 
-M5 首个运行时切片是 [ADR 0008](./docs/adr/0008-model-invocation-projection.md) 定义的模型调用投影：每次 Provider 尝试的重试、Token、成本、延迟和失败分类均可聚合查询，且不落原始 prompt。
+M5 的运行时决策依次记录在 [ADR 0008](./docs/adr/0008-model-invocation-projection.md)、[ADR 0009](./docs/adr/0009-memory-acl-and-structured-aggregation.md)、[ADR 0010](./docs/adr/0010-governed-retrieval-gateway.md) 和 [ADR 0011](./docs/adr/0011-versioned-retrieval-contracts.md)。
