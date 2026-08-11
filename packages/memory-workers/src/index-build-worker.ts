@@ -5,6 +5,9 @@ import {
   type EvidenceCitation,
   type IndexBuildResult,
   type IndexBuildTask,
+  type IndexQualityCheck,
+  type IndexQualityCheckName,
+  type IndexQualityReport,
 } from "@firefly/contracts";
 import type { EmbeddingPort, ModelBudget } from "@firefly/model-gateway";
 import type {
@@ -44,14 +47,25 @@ export interface IndexChunkerPort {
 export interface IndexReadyGateResult {
   readonly passed: boolean;
   readonly reasons: readonly string[];
+  readonly checks: readonly IndexQualityCheck[];
+}
+
+export interface IndexReadyGateInput {
+  readonly task: IndexBuildTask;
+  readonly documents: readonly IndexSourceDocument[];
+  readonly chunks: readonly IndexMemoryChunkInput[];
 }
 
 export interface IndexReadyGatePort {
-  evaluate(input: {
-    readonly task: IndexBuildTask;
-    readonly documents: readonly IndexSourceDocument[];
-    readonly chunks: readonly IndexMemoryChunkInput[];
-  }): Promise<IndexReadyGateResult> | IndexReadyGateResult;
+  evaluate(input: IndexReadyGateInput): Promise<IndexReadyGateResult> | IndexReadyGateResult;
+}
+
+export type AdvancedIndexQualityCheckName = Exclude<IndexQualityCheckName, "structure">;
+
+export interface IndexQualityProbe {
+  readonly name: AdvancedIndexQualityCheckName;
+  evaluate(input: IndexReadyGateInput): Promise<Omit<IndexQualityCheck, "name">> |
+    Omit<IndexQualityCheck, "name">;
 }
 
 export interface WorkerBatchResult {
@@ -86,6 +100,9 @@ export class RetrievalIndexBuildWorker {
   private readonly readyGate: IndexReadyGatePort;
 
   constructor(options: IndexBuildWorkerOptions) {
+    if (options.auto_activate && !options.ready_gate) {
+      throw new TypeError("Automatic index activation requires an explicitly configured governed Ready Gate");
+    }
     this.options = options;
     this.chunker = options.chunker ?? new PlainTextParagraphChunker();
     this.readyGate = options.ready_gate ?? new DefaultIndexReadyGate();
@@ -154,15 +171,24 @@ export class RetrievalIndexBuildWorker {
     for (const chunk of chunks) await this.options.indexer.index(chunk);
 
     const gate = await this.readyGate.evaluate({ task, documents, chunks });
+    const evaluatedAt = this.now();
+    const qualityReport = toQualityReport(task, gate, evaluatedAt);
     if (!gate.passed) {
       await this.complete(task, "failed", documents.length, chunks.length, {
-        code: "READY_GATE_FAILED",
-        message: gate.reasons.join("; ").slice(0, 2_048) || "Index Ready Gate rejected the build",
-        retryable: false,
+        quality_report: qualityReport,
+        completed_at: evaluatedAt,
+        error: {
+          code: "READY_GATE_FAILED",
+          message: gate.reasons.join("; ").slice(0, 2_048) || "Index Ready Gate rejected the build",
+          retryable: false,
+        },
       });
       return "failed";
     }
-    await this.complete(task, "ready", documents.length, chunks.length);
+    await this.complete(task, "ready", documents.length, chunks.length, {
+      quality_report: qualityReport,
+      completed_at: evaluatedAt,
+    });
     if (this.options.auto_activate) await this.options.indexes.activate(task.index_version_id, this.now());
     return "completed";
   }
@@ -202,7 +228,11 @@ export class RetrievalIndexBuildWorker {
     status: IndexBuildResult["status"],
     documentCount: number,
     chunkCount: number,
-    error?: IndexBuildResult["error"],
+    outcome: {
+      readonly error?: IndexBuildResult["error"];
+      readonly quality_report?: IndexQualityReport;
+      readonly completed_at?: Date;
+    } = {},
   ): Promise<RetrievalIndexVersion> {
     return this.options.indexes.completeBuild({
       schema_version: 1,
@@ -212,8 +242,9 @@ export class RetrievalIndexBuildWorker {
       document_count: documentCount,
       chunk_count: chunkCount,
       source_watermark: task.source_watermark,
-      completed_at: this.now().toISOString(),
-      ...(error ? { error } : {}),
+      completed_at: (outcome.completed_at ?? this.now()).toISOString(),
+      ...(outcome.quality_report ? { quality_report: outcome.quality_report } : {}),
+      ...(outcome.error ? { error: outcome.error } : {}),
     });
   }
 
@@ -221,9 +252,11 @@ export class RetrievalIndexBuildWorker {
     const version = await this.options.indexes.getById(task.index_version_id);
     if (!version || version.status !== "building") return;
     await this.complete(task, "failed", version.document_count, version.chunk_count, {
-      code: error instanceof IndexBuildWorkerError ? error.code : "INDEX_BUILD_FAILED",
-      message: errorMessage(error).slice(0, 2_048),
-      retryable,
+      error: {
+        code: error instanceof IndexBuildWorkerError ? error.code : "INDEX_BUILD_FAILED",
+        message: errorMessage(error).slice(0, 2_048),
+        retryable,
+      },
     });
   }
 
@@ -272,11 +305,7 @@ export class PlainTextParagraphChunker implements IndexChunkerPort {
 }
 
 export class DefaultIndexReadyGate implements IndexReadyGatePort {
-  evaluate(input: {
-    readonly task: IndexBuildTask;
-    readonly documents: readonly IndexSourceDocument[];
-    readonly chunks: readonly IndexMemoryChunkInput[];
-  }): IndexReadyGateResult {
+  evaluate(input: IndexReadyGateInput): IndexReadyGateResult {
     const reasons: string[] = [];
     if (input.documents.length === 0) reasons.push("no source documents were loaded");
     const chunkedMemoryIds = new Set(input.chunks.map((chunk) => chunk.memory_id));
@@ -291,13 +320,123 @@ export class DefaultIndexReadyGate implements IndexReadyGatePort {
         reasons.push("one or more Chunk embeddings violate the build dimensions");
       }
     }
-    return { passed: reasons.length === 0, reasons };
+    const passed = reasons.length === 0;
+    return {
+      passed,
+      reasons,
+      checks: [{
+        name: "structure",
+        passed,
+        score: passed ? 1 : 0,
+        threshold: 1,
+        sample_size: input.chunks.length,
+        summary: passed ? "Index structure is complete and internally consistent" : reasons.join("; "),
+        evidence_refs: [],
+      }],
+    };
+  }
+}
+
+const advancedCheckNames = ["source_watermark", "acl", "recall", "citation"] as const;
+
+export class AdvancedIndexReadyGate implements IndexReadyGatePort {
+  private readonly probes: readonly IndexQualityProbe[];
+  private readonly structural = new DefaultIndexReadyGate();
+
+  constructor(probes: readonly IndexQualityProbe[]) {
+    const names = probes.map((probe) => probe.name);
+    if (new Set(names).size !== names.length) throw new TypeError("Index quality probe names must be unique");
+    const missing = advancedCheckNames.filter((name) => !names.includes(name));
+    if (missing.length > 0) throw new TypeError(`Missing required index quality probes: ${missing.join(", ")}`);
+    this.probes = advancedCheckNames.map((name) => probes.find((probe) => probe.name === name)!);
+  }
+
+  async evaluate(input: IndexReadyGateInput): Promise<IndexReadyGateResult> {
+    const structural = this.structural.evaluate(input);
+    const probeChecks = await Promise.all(this.probes.map(async (probe) => {
+      const result = await probe.evaluate(input);
+      const check: IndexQualityCheck = { name: probe.name, ...result };
+      validateQualityCheck(check);
+      return check;
+    }));
+    const checks = [...structural.checks, ...probeChecks];
+    const reasons = [
+      ...structural.reasons,
+      ...probeChecks.filter((check) => !check.passed).map((check) => `${check.name}: ${check.summary}`),
+    ];
+    return { passed: checks.every((check) => check.passed), reasons, checks };
+  }
+}
+
+export class SourceWatermarkQualityProbe implements IndexQualityProbe {
+  readonly name = "source_watermark" as const;
+  private readonly readCurrent: (task: IndexBuildTask) => Promise<string> | string;
+
+  constructor(readCurrent: (task: IndexBuildTask) => Promise<string> | string) {
+    this.readCurrent = readCurrent;
+  }
+
+  async evaluate(input: IndexReadyGateInput): Promise<Omit<IndexQualityCheck, "name">> {
+    const observed = await this.readCurrent(input.task);
+    const passed = observed === input.task.source_watermark;
+    return {
+      passed,
+      score: passed ? 1 : 0,
+      threshold: 1,
+      sample_size: 1,
+      summary: passed
+        ? "Source watermark still matches the immutable build snapshot"
+        : `Source watermark changed from ${input.task.source_watermark} to ${observed}`,
+      evidence_refs: [],
+    };
   }
 }
 
 function parseIndexBuildTask(value: unknown): IndexBuildTask {
   assertContract("IndexBuildTask", value);
   return value as IndexBuildTask;
+}
+
+function toQualityReport(task: IndexBuildTask, gate: IndexReadyGateResult, evaluatedAt: Date): IndexQualityReport {
+  if (gate.checks.length === 0) {
+    throw new IndexBuildWorkerError("EMPTY_QUALITY_REPORT", "Index Ready Gate returned no quality checks", false);
+  }
+  const names = gate.checks.map((check) => check.name);
+  if (new Set(names).size !== names.length) {
+    throw new IndexBuildWorkerError("DUPLICATE_QUALITY_CHECK", "Index Ready Gate returned duplicate checks", false);
+  }
+  for (const check of gate.checks) validateQualityCheck(check);
+  if (gate.passed !== gate.checks.every((check) => check.passed)) {
+    throw new IndexBuildWorkerError("QUALITY_OUTCOME_MISMATCH", "Index Ready Gate outcome conflicts with its checks", false);
+  }
+  const identity = createHash("sha256")
+    .update(`${task.build_id}\n${canonicalJson(gate.checks)}`, "utf8")
+    .digest("hex");
+  const report: IndexQualityReport = {
+    schema_version: 1,
+    report_id: `quality.${identity}`,
+    build_id: task.build_id,
+    index_version_id: task.index_version_id,
+    source_watermark: task.source_watermark,
+    configuration_digest: task.configuration_digest,
+    passed: gate.passed,
+    checks: gate.checks,
+    evaluated_at: evaluatedAt.toISOString(),
+  };
+  assertContract("IndexQualityReport", report);
+  return report;
+}
+
+function validateQualityCheck(check: IndexQualityCheck): void {
+  if (
+    !Number.isFinite(check.score) || check.score < 0 || check.score > 1 ||
+    !Number.isFinite(check.threshold) || check.threshold < 0 || check.threshold > 1 ||
+    !Number.isInteger(check.sample_size) || check.sample_size < 0 ||
+    !check.summary.trim() ||
+    check.passed !== (check.score >= check.threshold)
+  ) {
+    throw new IndexBuildWorkerError("INVALID_QUALITY_CHECK", `Invalid ${check.name} quality check`, false);
+  }
 }
 
 function validateDocuments(documents: readonly IndexSourceDocument[]): void {
@@ -347,6 +486,22 @@ function splitLongBlock(block: string, maxCharacters: number): readonly string[]
 
 function contentDigest(content: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(normalizeJson(value));
+}
+
+function normalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, normalizeJson(item)]),
+    );
+  }
+  return value;
 }
 
 function retryDelay(attempt: number, options: IndexBuildWorkerOptions): number {

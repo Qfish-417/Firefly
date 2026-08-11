@@ -15,9 +15,12 @@ import { PostgresMemoryIndexer, PostgresLexicalRetriever } from "@firefly/retrie
 import { sql } from "kysely";
 
 import {
+  AdvancedIndexReadyGate,
   DeletionPropagationWorker,
   ObjectStoreDeletionConsumer,
   RetrievalIndexBuildWorker,
+  SourceWatermarkQualityProbe,
+  type IndexQualityProbe,
 } from "../src/index.ts";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -75,6 +78,12 @@ test(
         indexer,
         embeddings,
         embedding_budget: { max_tokens: 1_000, max_cost_usd: 0.01, max_duration_ms: 10_000 },
+        ready_gate: new AdvancedIndexReadyGate([
+          new SourceWatermarkQualityProbe((task) => task.source_watermark),
+          passingProbe("acl"),
+          passingProbe("recall"),
+          passingProbe("citation"),
+        ]),
         auto_activate: true,
         now: () => clock,
         source: {
@@ -90,7 +99,17 @@ test(
         },
       });
       assert.deepEqual(await buildWorker.runBatch(), { claimed: 1, completed: 1, failed: 0, released: 0 });
-      assert.equal((await indexes.getById(readyBuild.index_version_id))?.status, "active");
+      const activeVersion = await indexes.getById(readyBuild.index_version_id);
+      assert.equal(activeVersion?.status, "active");
+      const qualityReport = activeVersion?.quality_report as { passed?: boolean; checks?: readonly { name?: string }[] };
+      assert.equal(qualityReport.passed, true);
+      assert.deepEqual(qualityReport.checks?.map((check) => check.name), [
+        "structure",
+        "source_watermark",
+        "acl",
+        "recall",
+        "citation",
+      ]);
       const lexical = new PostgresLexicalRetriever(db);
       const hits = await lexical.retrieve({
         query_id: "query.worker.integration",
@@ -202,6 +221,57 @@ test(
       const reconciled = await memories.getDeletionStatus("deletion.worker.reconcile");
       assert.equal(reconciled?.receipt.propagation_status, "completed");
       assert.equal(reconciled?.targets[0]?.attempt, 2);
+
+      const mismatchedBuild = buildTask("quality-identity");
+      await indexes.createBuild(mismatchedBuild);
+      await assert.rejects(indexes.completeBuild({
+        schema_version: 1,
+        build_id: mismatchedBuild.build_id,
+        index_version_id: mismatchedBuild.index_version_id,
+        status: "ready",
+        document_count: 1,
+        chunk_count: 1,
+        source_watermark: mismatchedBuild.source_watermark,
+        completed_at: clock.toISOString(),
+        quality_report: {
+          schema_version: 1,
+          report_id: "quality.worker.mismatched",
+          build_id: mismatchedBuild.build_id,
+          index_version_id: mismatchedBuild.index_version_id,
+          source_watermark: mismatchedBuild.source_watermark,
+          configuration_digest: digest("b"),
+          passed: true,
+          checks: [{
+            name: "structure",
+            passed: true,
+            score: 1,
+            threshold: 1,
+            sample_size: 1,
+            summary: "structure passed",
+            evidence_refs: [],
+          }],
+          evaluated_at: clock.toISOString(),
+        },
+      }), /quality report does not match/);
+      assert.equal((await indexes.getById(mismatchedBuild.index_version_id))?.status, "building");
+
+      const reportlessBuild = buildTask("quality-missing");
+      await indexes.createBuild(reportlessBuild);
+      await indexes.completeBuild({
+        schema_version: 1,
+        build_id: reportlessBuild.build_id,
+        index_version_id: reportlessBuild.index_version_id,
+        status: "ready",
+        document_count: 1,
+        chunk_count: 1,
+        source_watermark: reportlessBuild.source_watermark,
+        completed_at: clock.toISOString(),
+      });
+      await assert.rejects(
+        indexes.activate(reportlessBuild.index_version_id, clock),
+        /quality report is required for activation/,
+      );
+      assert.equal((await indexes.getById(reportlessBuild.index_version_id))?.status, "ready");
     } finally {
       await db.destroy();
     }
@@ -234,5 +304,19 @@ function artifact(id: string, uri: string): ArtifactRef {
     scope: "tenant",
     owner_id: "tenant.worker",
     lineage_ids: [id.replace("artifact", "memory")],
+  };
+}
+
+function passingProbe(name: IndexQualityProbe["name"]): IndexQualityProbe {
+  return {
+    name,
+    evaluate: () => ({
+      passed: true,
+      score: 1,
+      threshold: 0.9,
+      sample_size: 10,
+      summary: `${name} integration quality passed`,
+      evidence_refs: [],
+    }),
   };
 }

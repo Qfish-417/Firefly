@@ -5,10 +5,13 @@ import type { DeletionPropagationTask, IndexBuildTask } from "@firefly/contracts
 import type { IndexMemoryChunkInput } from "@firefly/retrieval-postgres";
 
 import {
+  AdvancedIndexReadyGate,
   DefaultIndexReadyGate,
   DeletionWorkerError,
+  SourceWatermarkQualityProbe,
   ObjectStoreDeletionConsumer,
   PlainTextParagraphChunker,
+  type IndexQualityProbe,
 } from "../src/index.ts";
 
 const digest = `sha256:${"a".repeat(64)}` as const;
@@ -51,6 +54,51 @@ test("ready gate requires every source document to produce a Chunk", () => {
 
   assert.equal(result.passed, false);
   assert.deepEqual(result.reasons, ["one or more documents produced no Chunk"]);
+});
+
+test("advanced ready gate requires every governed quality probe", () => {
+  assert.throws(
+    () => new AdvancedIndexReadyGate([passingProbe("acl")]),
+    /Missing required index quality probes: source_watermark, recall, citation/,
+  );
+});
+
+test("advanced ready gate rejects a stale source watermark and preserves every check", async () => {
+  const gate = new AdvancedIndexReadyGate([
+    passingProbe("citation"),
+    passingProbe("recall"),
+    new SourceWatermarkQualityProbe(() => "watermark.worker.changed"),
+    passingProbe("acl"),
+  ]);
+  const document = {
+    memory_id: "memory.worker.unit",
+    content: "source",
+    source_type: "memory.document",
+    citation: { artifact_id: "artifact.worker.unit", uri: "s3://unit/source.txt", digest },
+  };
+  const chunk: IndexMemoryChunkInput = {
+    chunk_id: "chunk.worker.unit",
+    memory_id: document.memory_id,
+    index_version_id: "index.worker.unit",
+    ordinal: 0,
+    content: document.content,
+    chunk_digest: digest,
+    token_count: 2,
+    source_type: document.source_type,
+    citation: document.citation,
+  };
+
+  const result = await gate.evaluate({ task: indexBuildTask(), documents: [document], chunks: [chunk] });
+
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.checks.map((check) => check.name), [
+    "structure",
+    "source_watermark",
+    "acl",
+    "recall",
+    "citation",
+  ]);
+  assert.match(result.reasons[0] ?? "", /^source_watermark:/);
 });
 
 test("object deletion deduplicates S3 locations and rejects missing resources", async () => {
@@ -103,5 +151,19 @@ function indexBuildTask(): IndexBuildTask {
     source_watermark: "watermark.worker.unit",
     configuration_digest: digest,
     requested_at: "2026-08-10T12:00:00.000Z",
+  };
+}
+
+function passingProbe(name: IndexQualityProbe["name"]): IndexQualityProbe {
+  return {
+    name,
+    evaluate: () => ({
+      passed: true,
+      score: 1,
+      threshold: 0.9,
+      sample_size: 10,
+      summary: `${name} quality threshold passed`,
+      evidence_refs: [],
+    }),
   };
 }

@@ -7,6 +7,7 @@ import {
   type ArtifactRef,
   type ContractName,
   type EvidencePack,
+  type IndexQualityReport,
   type QueryPlan,
 } from "../src/index.ts";
 
@@ -112,6 +113,26 @@ const validIndexBuildTask = {
   requested_at: "2026-08-10T12:00:00Z",
 } as const;
 
+const validIndexQualityReport = {
+  schema_version: 1,
+  report_id: "index-quality.contract.01",
+  build_id: "index-build.contract.01",
+  index_version_id: "index-version.contract.01",
+  source_watermark: "memory-version:42",
+  configuration_digest: digest,
+  passed: true,
+  checks: [{
+    name: "structure",
+    passed: true,
+    score: 1,
+    threshold: 1,
+    sample_size: 8,
+    summary: "All source documents produced unique Chunks.",
+    evidence_refs: [],
+  }],
+  evaluated_at: "2026-08-10T12:04:00Z",
+} satisfies IndexQualityReport;
+
 const validIndexBuildResult = {
   schema_version: 1,
   build_id: "index-build.contract.01",
@@ -121,6 +142,7 @@ const validIndexBuildResult = {
   chunk_count: 8,
   source_watermark: "memory-version:42",
   completed_at: "2026-08-10T12:05:00Z",
+  quality_report: validIndexQualityReport,
 } as const;
 
 const validDeletionTask = {
@@ -331,6 +353,7 @@ const validContracts: Record<ContractName, unknown> = {
   EvidenceItem: validEvidenceItem,
   EvidencePack: validEvidencePack,
   IndexBuildTask: validIndexBuildTask,
+  IndexQualityReport: validIndexQualityReport,
   IndexBuildResult: validIndexBuildResult,
   DeletionPropagationTask: validDeletionTask,
   DeletionPropagationAck: validDeletionAck,
@@ -463,6 +486,28 @@ test("failed index builds require a structured error", () => {
 
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((error) => error.params.missingProperty === "error"));
+});
+
+test("a ready index cannot carry a failed quality report", () => {
+  const result = validateContract("IndexBuildResult", {
+    ...validIndexBuildResult,
+    quality_report: {
+      ...validIndexQualityReport,
+      passed: false,
+      checks: [{ ...validIndexQualityReport.checks[0], passed: false, score: 0 }],
+    },
+  });
+
+  assert.equal(result.valid, false);
+});
+
+test("a passing quality report cannot hide a failed check", () => {
+  const result = validateContract("IndexQualityReport", {
+    ...validIndexQualityReport,
+    checks: [{ ...validIndexQualityReport.checks[0], passed: false, score: 0 }],
+  });
+
+  assert.equal(result.valid, false);
 });
 
 test("deletion propagation targets are allowlisted", () => {

@@ -2,6 +2,7 @@ import {
   assertContract,
   type IndexBuildResult,
   type IndexBuildTask,
+  type IndexQualityReport,
   type JsonObject,
 } from "@firefly/contracts";
 import { sql, type Kysely, type Selectable } from "kysely";
@@ -70,6 +71,7 @@ export class RetrievalIndexRepository {
           status: "building",
           document_count: 0,
           chunk_count: 0,
+          quality_report: null,
           error: null,
           requested_at: requestedAt,
           ready_at: null,
@@ -107,6 +109,7 @@ export class RetrievalIndexRepository {
       if (version.build_id !== result.build_id || version.source_watermark !== result.source_watermark) {
         throw new RetrievalIndexPolicyError("Build result does not match its immutable build identity");
       }
+      if (result.quality_report) validateQualityIdentity(version, result);
       if (version.status !== "building") {
         if (sameBuildResult(version, result)) return version;
         throw new RetrievalIndexPolicyError(`Index build cannot complete from status ${version.status}`);
@@ -119,6 +122,7 @@ export class RetrievalIndexRepository {
           status: result.status,
           document_count: result.document_count,
           chunk_count: result.chunk_count,
+          quality_report: result.quality_report ? (result.quality_report as unknown as JsonObject) : null,
           error: result.error ? (result.error as JsonObject) : null,
           ready_at: result.status === "ready" ? completedAt : null,
           updated_at: completedAt,
@@ -162,6 +166,7 @@ export class RetrievalIndexRepository {
       if (version.status !== "ready") {
         throw new RetrievalIndexPolicyError(`Only a ready index may be activated, received ${version.status}`);
       }
+      validateActivationQuality(version);
 
       await trx
         .updateTable("questlab.retrieval_index_version")
@@ -241,7 +246,50 @@ function sameBuildResult(version: RetrievalIndexVersion, result: IndexBuildResul
   return storedCompletedAt === completedAt &&
     version.document_count === result.document_count &&
     version.chunk_count === result.chunk_count &&
+    canonicalJson(version.quality_report) === canonicalJson(result.quality_report ?? null) &&
     canonicalJson(version.error) === canonicalJson(result.error ?? null);
+}
+
+function validateQualityIdentity(version: RetrievalIndexVersion, result: IndexBuildResult): void {
+  const report = result.quality_report!;
+  if (
+    report.build_id !== result.build_id ||
+    report.index_version_id !== version.index_version_id ||
+    report.source_watermark !== version.source_watermark ||
+    report.configuration_digest !== version.configuration_digest
+  ) {
+    throw new RetrievalIndexPolicyError("Index quality report does not match its immutable build identity");
+  }
+  if (report.passed !== (result.status === "ready")) {
+    throw new RetrievalIndexPolicyError("Index quality report outcome does not match build status");
+  }
+}
+
+function validateActivationQuality(version: RetrievalIndexVersion): void {
+  if (!version.quality_report) {
+    throw new RetrievalIndexPolicyError("A passing index quality report is required for activation");
+  }
+  try {
+    assertContract("IndexQualityReport", version.quality_report);
+  } catch {
+    throw new RetrievalIndexPolicyError("Persisted index quality report is invalid");
+  }
+  const report = version.quality_report as unknown as IndexQualityReport;
+  const requiredChecks = ["structure", "source_watermark", "acl", "recall", "citation"] as const;
+  const names = report.checks.map((check) => check.name);
+  if (
+    !report.passed ||
+    report.build_id !== version.build_id ||
+    report.index_version_id !== version.index_version_id ||
+    report.source_watermark !== version.source_watermark ||
+    report.configuration_digest !== version.configuration_digest ||
+    names.length !== requiredChecks.length ||
+    new Set(names).size !== names.length ||
+    requiredChecks.some((name) => !names.includes(name)) ||
+    report.checks.some((check) => !check.passed || check.score < check.threshold)
+  ) {
+    throw new RetrievalIndexPolicyError("Persisted index quality report cannot authorize activation");
+  }
 }
 
 function parseDate(value: string, field: string): Date {

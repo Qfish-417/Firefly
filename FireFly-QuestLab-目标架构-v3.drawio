@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="17">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="18">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -484,6 +484,39 @@
         <mxCell id="p17-de5" value="retryable" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;dashed=1;" edge="1" parent="p17-1" source="p17-delete-worker" target="p17-backoff"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p17-de6" value="stale failed" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;dashed=1;" edge="1" parent="p17-1" source="p17-backoff" target="p17-reconcile"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p17-de7" value="fresh task" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;dashed=1;" edge="1" parent="p17-1" source="p17-reconcile" target="p17-delete-outbox"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-index-quality-gate" name="18-M5.2可审计索引质量门禁">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p18-0"/><mxCell id="p18-1" parent="p18-0"/>
+        <mxCell id="p18-title" value="M5.2 Auditable Index Quality Gate: evidence before activation" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p18-1"><mxGeometry x="120" y="20" width="1360" height="50" as="geometry"/></mxCell>
+
+        <mxCell id="p18-input-band" value="不可变构建输入" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="45" y="90" width="1510" height="180" as="geometry"/></mxCell>
+        <mxCell id="p18-task" value="IndexBuildTask v1&#xa;build_id + index_version_id&#xa;source_watermark&#xa;configuration Digest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="90" y="145" width="300" height="100" as="geometry"/></mxCell>
+        <mxCell id="p18-built" value="Building index projection&#xa;source documents + version-bound Chunks&#xa;Embedding snapshot" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;" vertex="1" parent="p18-1"><mxGeometry x="650" y="145" width="300" height="100" as="geometry"/></mxCell>
+        <mxCell id="p18-evidence" value="Evaluation evidence&#xa;ACL samples + fixed query set&#xa;expected citations + ArtifactRef" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;" vertex="1" parent="p18-1"><mxGeometry x="1210" y="145" width="300" height="100" as="geometry"/></mxCell>
+
+        <mxCell id="p18-gate-band" value="AdvancedIndexReadyGate：五项检查必须齐全且名称唯一" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="45" y="305" width="1510" height="310" as="geometry"/></mxCell>
+        <mxCell id="p18-structure" value="Structure&#xa;文档非空&#xa;每文档有 Chunk&#xa;ID / Embedding 一致" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="75" y="385" width="245" height="125" as="geometry"/></mxCell>
+        <mxCell id="p18-watermark" value="Source Watermark&#xa;当前水位 == 构建快照&#xa;变化即拒绝激活" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="375" y="385" width="245" height="125" as="geometry"/></mxCell>
+        <mxCell id="p18-acl" value="ACL Probe&#xa;租户 / 用户 / Agent 抽样&#xa;越权召回必须为 0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="675" y="385" width="245" height="125" as="geometry"/></mxCell>
+        <mxCell id="p18-recall" value="Recall Probe&#xa;固定评测集 + expected evidence&#xa;score &gt;= threshold" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="975" y="385" width="245" height="125" as="geometry"/></mxCell>
+        <mxCell id="p18-citation" value="Citation Probe&#xa;URI / Digest / Locator 可解析&#xa;score &gt;= threshold" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="1275" y="385" width="245" height="125" as="geometry"/></mxCell>
+        <mxCell id="p18-check-rule" value="每项输出：passed、score、threshold、sample_size、summary、evidence_refs。声明结果必须与 score/threshold 自洽；任一失败则整体失败。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=13;" vertex="1" parent="p18-1"><mxGeometry x="285" y="545" width="1030" height="50" as="geometry"/></mxCell>
+
+        <mxCell id="p18-report" value="IndexQualityReport v1&#xa;canonical checks -> stable report_id&#xa;绑定 build / version / watermark / config Digest&#xa;合同出站校验" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="145" y="680" width="360" height="145" as="geometry"/></mxCell>
+        <mxCell id="p18-db" value="questlab.retrieval_index_version&#xa;quality_report JSONB&#xa;Repository 校验身份 + 幂等重放&#xa;报告随版本长期可审计" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="620" y="680" width="350" height="145" as="geometry"/></mxCell>
+        <mxCell id="p18-activate" value="Atomic activation&#xa;report passed + build ready&#xa;old active -> retired&#xa;new version -> active" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="1085" y="680" width="330" height="145" as="geometry"/></mxCell>
+        <mxCell id="p18-boundary" value="Fail closed：缺 Probe、重复检查、非法分数、失败项、报告身份不匹配或状态矛盾均不可激活。当前已内置 Structure 与 Source Watermark；生产 ACL / Recall / Citation 适配器和固定评测集仍是部署前置条件。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p18-1"><mxGeometry x="210" y="875" width="1180" height="75" as="geometry"/></mxCell>
+
+        <mxCell id="p18-e1" value="evaluate" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p18-1" source="p18-task" target="p18-structure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p18-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p18-1" source="p18-built" target="p18-acl"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p18-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p18-1" source="p18-evidence" target="p18-citation"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p18-e4" value="aggregate" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p18-1" source="p18-check-rule" target="p18-report"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p18-e5" value="persist" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p18-1" source="p18-report" target="p18-db"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p18-e6" value="passed only" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p18-1" source="p18-db" target="p18-activate"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

@@ -518,9 +518,11 @@ IndexBuildTask -> building -> ready -> active -> retired
 
 `retrieval_index_version` 保存租户、逻辑索引名、Provider、配置 Digest、来源水位以及 Embedding 模型/维度。Indexer 只向 `building` 或明确允许增量写入的 `active` 版本写 Chunk，并校验租户与 Embedding 快照完全一致。重建期间查询仍只读旧 active 版本；`RetrievalIndexRepository.activate` 在同一事务中退役旧版本并激活新版本，数据库唯一约束保证每个 `tenant_id + logical_name` 最多一个 active。私有内容只读取查询者租户的 active 版本；显式 `public` 内容可读取其所属租户的 active 版本。未绑定版本的历史 Chunk 不参与查询，必须重建后才能重新可见。
 
-上线前的 Ready Gate 不能只看“任务成功”。当前 `DefaultIndexReadyGate` 已校验非空文档、每文档至少一个 Chunk、Chunk ID 唯一和 Embedding 形状一致；生产放行还必须加入来源水位、ACL 抽样以及 Recall/Citation 离线质量回归。双读用于验证，不直接把两版结果混入用户上下文；正式流量仍由单一 active 指针决定。
+上线前的 Ready Gate 不能只看“任务成功”。`DefaultIndexReadyGate` 校验非空文档、每文档至少一个 Chunk、Chunk ID 唯一和 Embedding 形状一致。`AdvancedIndexReadyGate` 在此基础上强制配置来源水位、ACL、Recall、Citation 四类 Probe；缺失、重复、非法分数或任一低于阈值都 fail closed。双读用于验证，不直接把两版结果混入用户上下文；正式流量仍由单一 active 指针决定。
 
-`packages/memory-workers` 已实现 `RetrievalIndexBuildWorker`：它按事件类型领取带租约的 `RetrievalIndexBuildRequested`，通过 `IndexSourcePort` 加载来源、确定性分块、调用独立 `EmbeddingPort`、幂等写入版本绑定 Chunk，通过 Ready Gate 后完成并可原子激活。Worker 重启时按持久状态恢复：`building` 继续构建，`ready` 只补激活，`active/retired` 视为完成，`failed` 不重复构建。可重试故障指数退避，超过 attempt 上限后把版本和 Outbox 事件置为可审计终态。
+`packages/memory-workers` 已实现 `RetrievalIndexBuildWorker`：它按事件类型领取带租约的 `RetrievalIndexBuildRequested`，通过 `IndexSourcePort` 加载来源、确定性分块、调用独立 `EmbeddingPort`、幂等写入版本绑定 Chunk，通过 Ready Gate 后完成并可原子激活。每次门禁生成版本化 `IndexQualityReport`，记录五类检查的 score、threshold、sample size、摘要和证据引用，并与 build ID、index version、source watermark 和 configuration Digest 绑定；PostgreSQL 持久化报告，Repository 拒绝身份不匹配或结果状态矛盾的报告。Worker 重启时按持久状态恢复：`building` 继续构建，`ready` 只补激活，`active/retired` 视为完成，`failed` 不重复构建。可重试故障指数退避，超过 attempt 上限后把版本和 Outbox 事件置为可审计终态。
+
+`SourceWatermarkQualityProbe` 已提供真实水位比较逻辑；ACL/Recall/Citation 的 Probe 合同和强制装配已经完成，但生产实现必须读取部署侧 ACL 抽样器和固定评测集，当前集成测试中的确定性 Probe 只验证编排与持久化，不代表生产检索质量已经达标。
 
 ## 11. 多模态设计
 
@@ -779,11 +781,12 @@ rag-memory/
 - `IndexBuildTask/Result`、`RetrievalIndexRepository` 与 `retrieval_index_version` 已实现索引构建快照、Ready Gate 输入、Chunk 版本绑定和单 active 原子切换。
 - `DeletionPropagationTask/Ack` 与 `memory_deletion_target` 已实现 allowlist 目标扇出、逐目标失败重试和全局完成判定。
 - `packages/memory-workers` 已实现租约式索引构建 Worker、基础 Ready Gate、Embedding 维度校验和崩溃恢复。
+- `IndexQualityReport`、迁移 009 和 `AdvancedIndexReadyGate` 已实现五类质量检查的强制装配、阈值判定、不可变身份绑定和 PostgreSQL 审计持久化。
 - 对象存储删除消费者已通过官方 AWS S3 SDK 接入真实 MinIO；目标定向领取、指数退避、attempt 耗尽终态及 failed 目标 reconciliation 已通过 PostgreSQL/MinIO 集成测试。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、ACL/Recall/Citation 高级质量门禁、Parent/Child 结构化分块、retired 索引垃圾回收、reconciliation 周期调度器、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、生产 ACL/Recall/Citation Probe 与固定评测集、Parent/Child 结构化分块、retired 索引垃圾回收、reconciliation 周期调度器、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
 
-- 下一批优先补齐 ACL/Recall/Citation 质量门禁、Parent/Child 分块、retired 版本回收和 reconciliation 调度，再接生产 BM25/ANN Provider。
+- 下一批优先实现 Parent/Child 分块和生产质量 Probe/评测集，再补 retired 版本回收与 reconciliation 调度，最后接生产 BM25/ANN Provider。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 实现 Parent/Child 分块、RRF、确定性 Count 聚合和引用。

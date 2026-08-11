@@ -347,6 +347,7 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 - 已完成一个 `COUNT DISTINCT` 聚合用例，禁止由 LLM 自行计数。
 - 已实现 `building -> ready -> active -> retired/failed` 索引生命周期，正式查询只读单一 active 版本。
 - 已实现租约式索引构建 Worker、基础 Ready Gate、确定性 Chunk/Embedding 写入、崩溃恢复与可选原子激活。
+- 已实现版本化 `IndexQualityReport` 与高级 Ready Gate：结构、来源水位、ACL、Recall、Citation 检查必须齐全，分数/阈值/样本量/证据可审计，并与构建身份和配置 Digest 绑定。生产 ACL/Recall/Citation Probe 与固定评测集待接入。
 - 已实现删除目标扇出和逐目标 Ack；对象存储消费者已用 AWS S3 SDK 对真实 MinIO 验证，支持定向领取、退避、attempt 耗尽终态和 failed 目标 reconciliation。本地回执仍不等于全局删除完成。
 
 ### R1：用户与 Agent 长期记忆
@@ -383,8 +384,8 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 
 ### 当前施工顺序
 
-1. 在已有基础 Ready Gate 上增加 ACL 抽样、Recall/Citation 回归和来源水位检查；失败版本不可激活。
-2. 将确定性段落分块升级为 Parent/Child 结构化分块，并保持稳定 ID、Locator 和来源 Digest。
+1. 将确定性段落分块升级为 Parent/Child 结构化分块，并保持稳定 ID、Locator 和来源 Digest。
+2. 为高级 Ready Gate 接入真实 ACL 抽样器、固定 Recall/Citation 评测集和证据 Artifact；失败版本不可激活。
 3. 为 `reconcileFailedDeletionTargets` 增加可观测的周期调度器，并逐个实现 lexical/vector/cache/summary/evaluation 删除 Provider 与证据核验。
 4. 为 retired 版本建立带保留期的垃圾回收任务，删除必须避开 active 和仍被审计引用的版本。
 5. 接入生产 BM25 Provider；pgvector 按模型/维度分区后再评估 HNSW，不把当前精确检索称为 ANN。

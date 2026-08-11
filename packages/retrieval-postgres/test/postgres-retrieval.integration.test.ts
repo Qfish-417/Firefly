@@ -427,6 +427,25 @@ function indexBuildResult(
     chunk_count: chunkCount,
     source_watermark: build.source_watermark,
     completed_at: "2026-08-10T08:30:00.000Z",
+    quality_report: {
+      schema_version: 1,
+      report_id: `quality.${build.build_id}`,
+      build_id: build.build_id,
+      index_version_id: build.index_version_id,
+      source_watermark: build.source_watermark,
+      configuration_digest: build.configuration_digest,
+      passed: status === "ready",
+      checks: (["structure", "source_watermark", "acl", "recall", "citation"] as const).map((name) => ({
+        name,
+        passed: status === "ready",
+        score: status === "ready" ? 1 : 0,
+        threshold: 1,
+        sample_size: chunkCount,
+        summary: status === "ready" ? `${name} passed` : `${name} failed`,
+        evidence_refs: [],
+      })),
+      evaluated_at: "2026-08-10T08:30:00.000Z",
+    },
     ...(status === "failed"
       ? { error: { code: "build.failed", message: "Index build failed", retryable: true } }
       : {}),

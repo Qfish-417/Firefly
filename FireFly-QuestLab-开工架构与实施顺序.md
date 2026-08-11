@@ -314,7 +314,8 @@ M5 starts with the model invocation projection (`questlab.model_invocation`) so 
 - 已完成授权记忆事实层、确定性聚合、动态 TopK、版本化 EvidencePack、PostgreSQL FTS/pgvector 混合检索和双重 ACL。
 - 已完成版本化索引构建合同、Chunk 版本绑定、单 active 原子切换，以及外部删除逐目标任务/Ack 和全局完成判定。
 - 已完成租约式索引构建 Worker、确定性分块、Embedding 维度校验、基础 Ready Gate 与崩溃恢复；已通过官方 AWS S3 SDK 跑通真实 MinIO 删除、退避重试、attempt 耗尽终态和 failed 目标 reconciliation。
-- 下一步补齐 ACL/Recall/Citation 高级质量门禁、Parent/Child 分块、reconciliation 定时调度和 retired 版本回收，再接生产 BM25/ANN。
+- 已完成可持久化 `IndexQualityReport` 和高级 Ready Gate 框架，强制结构、来源水位、ACL、Recall、Citation 五项检查与不可变构建身份绑定；生产 ACL/Recall/Citation Probe 和评测集待接入。
+- 下一步实现 Parent/Child 分块与生产质量 Probe，再补 reconciliation 定时调度和 retired 版本回收，最后接生产 BM25/ANN。
 - 之后做长期记忆压缩、多模态派生索引和动态工具发现。
 - 动态加载只加载描述与受控 Provider，不把未知代码装入 Agent 主进程。
 
@@ -344,7 +345,7 @@ M5 starts with the model invocation projection (`questlab.model_invocation`) so 
 | M2.1 治理哨兵 | 规范、预算、因果图、Loop Sentinel、隔离 | 循环、风暴、自委派和预算耗尽均被确定性阻断 |
 | M3 插件闭环（完成） | Worktree、Docker Sandbox、门禁、Canary、Rollback | 缺陷基线被拒绝；候选四门禁通过；故障注入恢复指定 Digest |
 | M4 模型闭环（完成） | pi-ai Gateway、三个真实 Agent、Stub 后备、Engineer 隔离构建 | Provider 可替换；模型输出可追溯；真实 Commit、门禁失败和发布证据均受治理 |
-| M5 记忆工具（进行中） | 授权检索、聚合、版本索引、后台 Worker、删除 Ack | 索引构建/激活和 MinIO 删除/退避/reconciliation 已通过；高级质量门禁、调度器、旧版 GC、生产 BM25/ANN 与多模态待补齐 |
+| M5 记忆工具（进行中） | 授权检索、聚合、版本索引、质量报告、后台 Worker、删除 Ack | 索引构建/激活、五类质量门禁框架和 MinIO 删除恢复已通过；生产评测 Probe、Parent/Child、调度器、旧版 GC、BM25/ANN 与多模态待补齐 |
 
 不满足以下条件，不称为“自闭环”：
 

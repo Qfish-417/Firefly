@@ -484,6 +484,7 @@ export interface RetrievalIndexVersionTable {
   status: "building" | "ready" | "active" | "retired" | "failed";
   document_count: number;
   chunk_count: number;
+  quality_report: JsonDocument | null;
   error: JsonDocument | null;
   requested_at: Timestamp;
   ready_at: Timestamp | null;

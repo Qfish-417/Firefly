@@ -324,6 +324,30 @@ export interface IndexBuildTask {
   readonly requested_at: string;
 }
 
+export type IndexQualityCheckName = "structure" | "source_watermark" | "acl" | "recall" | "citation";
+
+export interface IndexQualityCheck {
+  readonly name: IndexQualityCheckName;
+  readonly passed: boolean;
+  readonly score: number;
+  readonly threshold: number;
+  readonly sample_size: number;
+  readonly summary: string;
+  readonly evidence_refs: readonly ArtifactRef[];
+}
+
+export interface IndexQualityReport {
+  readonly schema_version: 1;
+  readonly report_id: string;
+  readonly build_id: string;
+  readonly index_version_id: string;
+  readonly source_watermark: string;
+  readonly configuration_digest: `sha256:${string}`;
+  readonly passed: boolean;
+  readonly checks: readonly IndexQualityCheck[];
+  readonly evaluated_at: string;
+}
+
 export interface IndexBuildResult {
   readonly schema_version: 1;
   readonly build_id: string;
@@ -333,6 +357,7 @@ export interface IndexBuildResult {
   readonly chunk_count: number;
   readonly source_watermark: string;
   readonly completed_at: string;
+  readonly quality_report?: IndexQualityReport;
   readonly error?: {
     readonly code: string;
     readonly message: string;
@@ -394,6 +419,7 @@ export type ContractName =
   | "EvidenceItem"
   | "EvidencePack"
   | "IndexBuildTask"
+  | "IndexQualityReport"
   | "IndexBuildResult"
   | "DeletionPropagationTask"
   | "DeletionPropagationAck";
