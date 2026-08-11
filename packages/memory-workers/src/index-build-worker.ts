@@ -33,6 +33,9 @@ export interface IndexSourcePort {
 export interface IndexChunkDraft {
   readonly memory_id: string;
   readonly ordinal: number;
+  readonly chunk_level?: "parent" | "child";
+  readonly parent_ordinal?: number;
+  readonly structure_path?: readonly string[];
   readonly content: string;
   readonly source_type: string;
   readonly entity_keys: readonly string[];
@@ -166,8 +169,17 @@ export class RetrievalIndexBuildWorker {
     const documents = await this.options.source.load(task);
     validateDocuments(documents);
     const drafts = documents.flatMap((document) => this.chunker.chunk(document));
-    const vectors = await this.embed(task, drafts);
-    const chunks = drafts.map((draft, index) => toIndexChunk(task, draft, vectors?.[index]));
+    validateDrafts(drafts);
+    const retrievalDrafts = drafts.filter((draft) => (draft.chunk_level ?? "child") === "child");
+    const vectors = await this.embed(task, retrievalDrafts);
+    const vectorByDraft = new Map(retrievalDrafts.map((draft, index) => [draftKey(draft), vectors?.[index]]));
+    const identityByDraft = new Map(drafts.map((draft) => [draftKey(draft), chunkIdentity(task, draft)]));
+    const chunks = drafts.map((draft) => toIndexChunk(
+      task,
+      draft,
+      identityByDraft,
+      vectorByDraft.get(draftKey(draft)),
+    ));
     for (const chunk of chunks) await this.options.indexer.index(chunk);
 
     const gate = await this.readyGate.evaluate({ task, documents, chunks });
@@ -295,6 +307,8 @@ export class PlainTextParagraphChunker implements IndexChunkerPort {
     return blocks.map((content, ordinal) => ({
       memory_id: document.memory_id,
       ordinal,
+      chunk_level: "child",
+      structure_path: [],
       content,
       source_type: document.source_type,
       entity_keys: document.entity_keys ?? [],
@@ -304,21 +318,112 @@ export class PlainTextParagraphChunker implements IndexChunkerPort {
   }
 }
 
+interface MarkdownSection {
+  readonly path: readonly string[];
+  readonly heading?: string;
+  readonly blocks: readonly string[];
+}
+
+export class MarkdownParentChildChunker implements IndexChunkerPort {
+  private readonly maxChildCharacters: number;
+  private readonly maxParentCharacters: number;
+
+  constructor(options: { readonly max_child_characters?: number; readonly max_parent_characters?: number } = {}) {
+    this.maxChildCharacters = options.max_child_characters ?? 1_200;
+    this.maxParentCharacters = options.max_parent_characters ?? 4_800;
+    if (!Number.isInteger(this.maxChildCharacters) || this.maxChildCharacters < 128) {
+      throw new TypeError("Child Chunk maximum must be an integer of at least 128 characters");
+    }
+    if (!Number.isInteger(this.maxParentCharacters) || this.maxParentCharacters < this.maxChildCharacters) {
+      throw new TypeError("Parent Chunk maximum must be an integer no smaller than the Child maximum");
+    }
+  }
+
+  chunk(document: IndexSourceDocument): readonly IndexChunkDraft[] {
+    const drafts: IndexChunkDraft[] = [];
+    let ordinal = 0;
+    for (const section of parseMarkdownSections(document.content)) {
+      const prefix = section.heading && section.heading.length < this.maxParentCharacters
+        ? `${section.heading}\n\n`
+        : "";
+      const capacity = Math.max(1, this.maxParentCharacters - prefix.length);
+      const parentGroups = groupBlocks(section.blocks, capacity);
+      for (let parentPart = 0; parentPart < parentGroups.length; parentPart += 1) {
+        const blocks = parentGroups[parentPart]!;
+        const parentOrdinal = ordinal++;
+        const path = section.path.length > 0 ? section.path : ["document"];
+        drafts.push({
+          memory_id: document.memory_id,
+          ordinal: parentOrdinal,
+          chunk_level: "parent",
+          structure_path: path,
+          content: `${prefix}${blocks.join("\n\n")}`.trim(),
+          source_type: document.source_type,
+          entity_keys: document.entity_keys ?? [],
+          citation: withStructureLocator(document.citation, path, "parent", parentPart),
+          token_count: Math.max(1, Math.ceil(`${prefix}${blocks.join("\n\n")}`.trim().length / 4)),
+        });
+        const pathLabel = path[0] === "document" ? "" : path.join(" > ");
+        const childPrefix = pathLabel.length + 2 < Math.floor(this.maxChildCharacters / 2)
+          ? `${pathLabel}\n\n`
+          : "";
+        const childCapacity = Math.max(1, this.maxChildCharacters - childPrefix.length);
+        const childBlocks = blocks.flatMap((block) => splitLongBlock(block, childCapacity));
+        for (let childPart = 0; childPart < childBlocks.length; childPart += 1) {
+          const content = `${childPrefix}${childBlocks[childPart]!}`.trim();
+          drafts.push({
+            memory_id: document.memory_id,
+            ordinal: ordinal++,
+            chunk_level: "child",
+            parent_ordinal: parentOrdinal,
+            structure_path: path,
+            content,
+            source_type: document.source_type,
+            entity_keys: document.entity_keys ?? [],
+            citation: withStructureLocator(document.citation, path, "child", parentPart, childPart),
+            token_count: Math.max(1, Math.ceil(content.length / 4)),
+          });
+        }
+      }
+    }
+    return drafts;
+  }
+}
+
 export class DefaultIndexReadyGate implements IndexReadyGatePort {
   evaluate(input: IndexReadyGateInput): IndexReadyGateResult {
     const reasons: string[] = [];
     if (input.documents.length === 0) reasons.push("no source documents were loaded");
     const chunkedMemoryIds = new Set(input.chunks.map((chunk) => chunk.memory_id));
-    if (input.documents.some((document) => !chunkedMemoryIds.has(document.memory_id))) {
+    const recalledMemoryIds = new Set(
+      input.chunks.filter((chunk) => (chunk.chunk_level ?? "child") === "child").map((chunk) => chunk.memory_id),
+    );
+    if (input.documents.some((document) => !chunkedMemoryIds.has(document.memory_id) || !recalledMemoryIds.has(document.memory_id))) {
       reasons.push("one or more documents produced no Chunk");
     }
     if (new Set(input.chunks.map((chunk) => chunk.chunk_id)).size !== input.chunks.length) {
       reasons.push("Chunk identities are not unique");
     }
     if (input.task.embedding_dimensions !== undefined) {
-      if (input.chunks.some((chunk) => chunk.embedding?.length !== input.task.embedding_dimensions)) {
+      if (input.chunks.some((chunk) =>
+        (chunk.chunk_level ?? "child") === "child" && chunk.embedding?.length !== input.task.embedding_dimensions
+      )) {
         reasons.push("one or more Chunk embeddings violate the build dimensions");
       }
+    }
+    const chunksById = new Map(input.chunks.map((chunk) => [chunk.chunk_id, chunk]));
+    if (input.chunks.some((chunk) => {
+      if ((chunk.chunk_level ?? "child") === "parent") return Boolean(chunk.parent_chunk_id || chunk.embedding);
+      if (!chunk.parent_chunk_id) return false;
+      const parent = chunksById.get(chunk.parent_chunk_id);
+      return !parent || parent.chunk_level !== "parent" || parent.memory_id !== chunk.memory_id ||
+        parent.index_version_id !== chunk.index_version_id;
+    })) {
+      reasons.push("Parent/Child Chunk relationships are inconsistent");
+    }
+    const referencedParents = new Set(input.chunks.map((chunk) => chunk.parent_chunk_id).filter(Boolean));
+    if (input.chunks.some((chunk) => chunk.chunk_level === "parent" && !referencedParents.has(chunk.chunk_id))) {
+      reasons.push("one or more Parent Chunks have no recallable Child");
     }
     const passed = reasons.length === 0;
     return {
@@ -451,27 +556,142 @@ function validateDocuments(documents: readonly IndexSourceDocument[]): void {
   }
 }
 
+function validateDrafts(drafts: readonly IndexChunkDraft[]): void {
+  const byKey = new Map<string, IndexChunkDraft>();
+  for (const draft of drafts) {
+    const key = draftKey(draft);
+    if (byKey.has(key)) {
+      throw new IndexBuildWorkerError("DUPLICATE_CHUNK_ORDINAL", "Chunk ordinals must be unique per Memory", false);
+    }
+    byKey.set(key, draft);
+    const level = draft.chunk_level ?? "child";
+    if (level === "parent" && draft.parent_ordinal !== undefined) {
+      throw new IndexBuildWorkerError("INVALID_PARENT_CHUNK", "Parent Chunk cannot reference another parent", false);
+    }
+    if ((draft.structure_path ?? []).some((part) => !part.trim())) {
+      throw new IndexBuildWorkerError("INVALID_STRUCTURE_PATH", "Chunk structure paths cannot be empty", false);
+    }
+  }
+  for (const draft of drafts) {
+    if (draft.parent_ordinal === undefined) continue;
+    const parent = byKey.get(`${draft.memory_id}\n${draft.parent_ordinal}`);
+    if (!parent || parent.chunk_level !== "parent") {
+      throw new IndexBuildWorkerError("PARENT_CHUNK_MISSING", "Child Chunk references a missing Parent", false);
+    }
+  }
+}
+
 function toIndexChunk(
   task: IndexBuildTask,
   draft: IndexChunkDraft,
+  identityByDraft: ReadonlyMap<string, string>,
   embedding: readonly number[] | undefined,
 ): IndexMemoryChunkInput {
-  const digest = contentDigest(draft.content);
-  const identity = createHash("sha256")
-    .update(`${task.index_version_id}\n${draft.memory_id}\n${draft.ordinal}\n${digest}`, "utf8")
-    .digest("hex");
+  const level = draft.chunk_level ?? "child";
+  const parentChunkId = draft.parent_ordinal === undefined
+    ? undefined
+    : identityByDraft.get(`${draft.memory_id}\n${draft.parent_ordinal}`);
   return {
-    chunk_id: `chunk.${identity}`,
+    chunk_id: identityByDraft.get(draftKey(draft))!,
     memory_id: draft.memory_id,
     index_version_id: task.index_version_id,
     ordinal: draft.ordinal,
+    chunk_level: level,
+    ...(parentChunkId ? { parent_chunk_id: parentChunkId } : {}),
+    structure_path: draft.structure_path ?? [],
     content: draft.content,
-    chunk_digest: digest,
+    chunk_digest: contentDigest(draft.content),
     token_count: draft.token_count,
     source_type: draft.source_type,
     entity_keys: draft.entity_keys,
     citation: draft.citation,
-    ...(embedding ? { embedding, embedding_model: task.embedding_model! } : {}),
+    ...(level === "child" && embedding ? { embedding, embedding_model: task.embedding_model! } : {}),
+  };
+}
+
+function chunkIdentity(task: IndexBuildTask, draft: IndexChunkDraft): string {
+  const identity = createHash("sha256")
+    .update(`${task.index_version_id}\n${draft.memory_id}\n${draft.ordinal}\n${contentDigest(draft.content)}`, "utf8")
+    .digest("hex");
+  return `chunk.${identity}`;
+}
+
+function draftKey(draft: Pick<IndexChunkDraft, "memory_id" | "ordinal">): string {
+  return `${draft.memory_id}\n${draft.ordinal}`;
+}
+
+function parseMarkdownSections(content: string): readonly MarkdownSection[] {
+  const sections: MarkdownSection[] = [];
+  const headings: string[] = [];
+  let heading: string | undefined;
+  let path: readonly string[] = ["document"];
+  let blocks: string[] = [];
+  let paragraph: string[] = [];
+  const flushParagraph = () => {
+    const value = paragraph.join("\n").trim();
+    if (value) blocks.push(value);
+    paragraph = [];
+  };
+  const flushSection = () => {
+    flushParagraph();
+    if (blocks.length > 0) sections.push({ path, ...(heading ? { heading } : {}), blocks });
+    blocks = [];
+  };
+  for (const line of content.split(/\r?\n/u)) {
+    const match = /^(#{1,6})\s+(.+?)\s*$/u.exec(line);
+    if (match) {
+      flushSection();
+      const level = match[1]!.length;
+      const title = match[2]!.trim();
+      headings.length = level - 1;
+      headings[level - 1] = title;
+      path = headings.filter(Boolean);
+      heading = `${match[1]} ${title}`;
+    } else if (!line.trim()) {
+      flushParagraph();
+    } else {
+      paragraph.push(line);
+    }
+  }
+  flushSection();
+  return sections;
+}
+
+function groupBlocks(blocks: readonly string[], maxCharacters: number): readonly (readonly string[])[] {
+  const normalized = blocks.flatMap((block) => splitLongBlock(block, maxCharacters));
+  const groups: string[][] = [];
+  let current: string[] = [];
+  let size = 0;
+  for (const block of normalized) {
+    const addition = block.length + (current.length > 0 ? 2 : 0);
+    if (current.length > 0 && size + addition > maxCharacters) {
+      groups.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(block);
+    size += block.length + (current.length > 1 ? 2 : 0);
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+function withStructureLocator(
+  citation: EvidenceCitation,
+  path: readonly string[],
+  level: "parent" | "child",
+  sectionPart: number,
+  childPart?: number,
+): EvidenceCitation {
+  return {
+    ...citation,
+    locator: {
+      ...(citation.locator ?? {}),
+      section_path: path.join(" > "),
+      chunk_level: level,
+      section_part: sectionPart,
+      ...(childPart === undefined ? {} : { chunk_part: childPart }),
+    },
   };
 }
 

@@ -11,12 +11,18 @@ import {
   createDatabase,
   migrateToLatest,
 } from "@firefly/persistence";
-import { PostgresMemoryIndexer, PostgresLexicalRetriever } from "@firefly/retrieval-postgres";
+import {
+  PostgresLexicalRetriever,
+  PostgresMemoryIndexer,
+  PostgresParentChildExpander,
+  PostgresVectorRetriever,
+} from "@firefly/retrieval-postgres";
 import { sql } from "kysely";
 
 import {
   AdvancedIndexReadyGate,
   DeletionPropagationWorker,
+  MarkdownParentChildChunker,
   ObjectStoreDeletionConsumer,
   RetrievalIndexBuildWorker,
   SourceWatermarkQualityProbe,
@@ -84,6 +90,7 @@ test(
           passingProbe("recall"),
           passingProbe("citation"),
         ]),
+        chunker: new MarkdownParentChildChunker(),
         auto_activate: true,
         now: () => clock,
         source: {
@@ -91,7 +98,7 @@ test(
             ? []
             : [{
                 memory_id: "memory.worker.source",
-                content: "Solar output follows daylight.\n\nBattery storage supports the night cycle.",
+                content: "# Solar Systems\n\nOutput follows daylight.\n\nBattery storage supports the night cycle.",
                 source_type: "memory.document",
                 entity_keys: ["concept.solar", "concept.storage"],
                 citation: { artifact_id: sourceArtifact.artifact_id, uri: sourceArtifact.uri, digest: sourceArtifact.digest },
@@ -110,6 +117,15 @@ test(
         "recall",
         "citation",
       ]);
+      const chunkLevels = await db
+        .selectFrom("questlab.memory_chunk")
+        .select(["chunk_level", "parent_chunk_id", "embedding"])
+        .where("index_version_id", "=", readyBuild.index_version_id)
+        .orderBy("ordinal")
+        .execute();
+      assert.deepEqual(chunkLevels.map((chunk) => chunk.chunk_level), ["parent", "child", "child"]);
+      assert.equal(chunkLevels[0]?.embedding, null);
+      assert.ok(chunkLevels.slice(1).every((chunk) => chunk.embedding !== null && chunk.parent_chunk_id !== null));
       const lexical = new PostgresLexicalRetriever(db);
       const hits = await lexical.retrieve({
         query_id: "query.worker.integration",
@@ -120,6 +136,29 @@ test(
         filters: {},
       });
       assert.equal(hits.length, 1);
+      const vector = new PostgresVectorRetriever({
+        db,
+        embeddings,
+        embedding_model: "embedding.worker.v1",
+        embedding_budget: { max_tokens: 100, max_cost_usd: 0.01, max_duration_ms: 1_000 },
+      });
+      const childHits = await vector.retrieve({
+        query_id: "query.worker.parent",
+        query: "solar battery",
+        principal: { tenant_id: "tenant.worker" },
+        purpose: "integration_test",
+        max_results: 10,
+        filters: {},
+      });
+      assert.equal(childHits.length, 2);
+      const expandedHits = await new PostgresParentChildExpander(db).expand({
+        hits: childHits,
+        principal: { tenant_id: "tenant.worker" },
+        purpose: "integration_test",
+        max_tokens: 1_000,
+      });
+      assert.equal(expandedHits.length, 1);
+      assert.match(expandedHits[0]?.content ?? "", /Battery storage supports the night cycle/);
 
       const emptyBuild = buildTask("empty");
       await indexes.createBuild(emptyBuild);

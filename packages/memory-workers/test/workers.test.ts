@@ -10,6 +10,7 @@ import {
   DeletionWorkerError,
   SourceWatermarkQualityProbe,
   ObjectStoreDeletionConsumer,
+  MarkdownParentChildChunker,
   PlainTextParagraphChunker,
   type IndexQualityProbe,
 } from "../src/index.ts";
@@ -28,6 +29,24 @@ test("plain-text chunking is deterministic and preserves paragraph order", () =>
   assert.equal(chunks.length, 3);
   assert.deepEqual(chunks.map((chunk) => chunk.ordinal), [0, 1, 2]);
   assert.equal(chunks[2]?.content, "second paragraph");
+});
+
+test("Markdown chunking creates deterministic Parent/Child sections with structural locators", () => {
+  const chunker = new MarkdownParentChildChunker();
+  const chunks = chunker.chunk({
+    memory_id: "memory.worker.markdown",
+    content: "# Solar Output\n\nDaylight changes generation.\n\nBatteries support the night.\n\n## Safety\n\nReserve capacity prevents outages.",
+    source_type: "memory.document",
+    citation: { artifact_id: "artifact.worker.markdown", uri: "s3://unit/solar.md", digest },
+  });
+
+  assert.deepEqual(chunks.map((chunk) => chunk.chunk_level), ["parent", "child", "child", "parent", "child"]);
+  assert.deepEqual(chunks.map((chunk) => chunk.ordinal), [0, 1, 2, 3, 4]);
+  assert.deepEqual(chunks.filter((chunk) => chunk.chunk_level === "child").map((chunk) => chunk.parent_ordinal), [0, 0, 3]);
+  assert.deepEqual(chunks[3]?.structure_path, ["Solar Output", "Safety"]);
+  assert.match(chunks[4]?.content ?? "", /^Solar Output > Safety\n\nReserve capacity/u);
+  assert.ok((chunks[4]?.content.length ?? Infinity) <= 1_200);
+  assert.equal(chunks[4]?.citation.locator?.section_path, "Solar Output > Safety");
 });
 
 test("ready gate requires every source document to produce a Chunk", () => {

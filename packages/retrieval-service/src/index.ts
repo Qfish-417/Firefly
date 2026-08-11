@@ -87,10 +87,21 @@ export interface StructuredAggregatorPort {
   }): Promise<StructuredResult>;
 }
 
+export interface EvidenceExpansionPort {
+  expand(input: {
+    readonly hits: readonly RetrievalHit[];
+    readonly principal: RetrievalPrincipal;
+    readonly purpose: string;
+    readonly max_tokens: number;
+    readonly signal?: AbortSignal;
+  }): Promise<readonly RetrievalHit[]>;
+}
+
 export interface RetrievalGatewayOptions {
   readonly retrievers: readonly Retriever[];
   readonly authorization: RetrievalAuthorizationPort;
   readonly aggregator?: StructuredAggregatorPort;
+  readonly expander?: EvidenceExpansionPort;
   readonly rrf_constant?: number;
 }
 
@@ -105,6 +116,7 @@ export class RetrievalGateway {
   private readonly retrievers: ReadonlyMap<SearchStage, Retriever>;
   private readonly authorization: RetrievalAuthorizationPort;
   private readonly aggregator: StructuredAggregatorPort | undefined;
+  private readonly expander: EvidenceExpansionPort | undefined;
   private readonly rrfConstant: number;
 
   constructor(options: RetrievalGatewayOptions) {
@@ -114,6 +126,7 @@ export class RetrievalGateway {
     }
     this.authorization = options.authorization;
     this.aggregator = options.aggregator;
+    this.expander = options.expander;
     this.rrfConstant = options.rrf_constant ?? 60;
     if (this.rrfConstant <= 0) throw new RetrievalPolicyError("rrf_constant must be positive");
   }
@@ -215,8 +228,33 @@ export class RetrievalGateway {
       plan,
     );
     const selectedById = new Map(rerankWindow.map((hit) => [hit.id, hit]));
-    const evidence = selected.candidates.map((candidate) => {
-      const hit = selectedById.get(candidate.id)!;
+    let contextHits: readonly RetrievalHit[] = selected.candidates.map((candidate) => selectedById.get(candidate.id)!);
+    if (this.expander && contextHits.length > 0) {
+      contextHits = validateExpandedHits(await this.expander.expand({
+        hits: contextHits,
+        principal: request.principal,
+        purpose: request.purpose,
+        max_tokens: plan.max_context_tokens,
+        ...(signal ? { signal } : {}),
+      }), plan.max_context_tokens);
+      const finallyAuthorized: RetrievalHit[] = [];
+      for (const hit of contextHits) {
+        let allowed = false;
+        try {
+          allowed = await this.authorization.canRead({
+            principal: request.principal,
+            purpose: request.purpose,
+            hit,
+          });
+        } catch {
+          allowed = false;
+        }
+        if (allowed) finallyAuthorized.push(hit);
+        else denied += 1;
+      }
+      contextHits = finallyAuthorized;
+    }
+    const evidence = contextHits.map((hit) => {
       return {
         evidence_id: hit.id,
         untrusted_content: hit.content,
@@ -306,6 +344,28 @@ function validHit(hit: RetrievalHit): boolean {
     hit.citation.uri &&
     /^sha256:[a-f0-9]{64}$/.test(hit.citation.digest),
   );
+}
+
+function validateExpandedHits(hits: readonly RetrievalHit[], maxTokens: number): readonly RetrievalHit[] {
+  const unique = new Map<string, RetrievalHit>();
+  let usedTokens = 0;
+  for (const hit of hits) {
+    if (!validHit(hit)) throw new RetrievalPolicyError("Evidence Expander returned an invalid hit");
+    const existing = unique.get(hit.id);
+    if (existing && (
+      existing.content !== hit.content ||
+      existing.citation.uri !== hit.citation.uri ||
+      existing.citation.digest !== hit.citation.digest
+    )) {
+      throw new RetrievalPolicyError(`Expanded evidence ID ${hit.id} has conflicting immutable content`);
+    }
+    if (!existing) {
+      unique.set(hit.id, hit);
+      usedTokens += hit.token_count;
+    }
+  }
+  if (usedTokens > maxTokens) throw new RetrievalPolicyError("Evidence Expander exceeded the context token budget");
+  return [...unique.values()];
 }
 
 function validateRequest(request: RetrievalRequest, signal?: AbortSignal): void {

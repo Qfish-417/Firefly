@@ -19,6 +19,7 @@ import {
   PostgresLexicalRetriever,
   PostgresMemoryAuthorization,
   PostgresMemoryIndexer,
+  PostgresParentChildExpander,
   PostgresRetrievalPolicyError,
   PostgresVectorRetriever,
 } from "../src/index.ts";
@@ -105,7 +106,17 @@ test(
       const buildReplays = await Promise.all([indexes.createBuild(buildV1), indexes.createBuild(buildV1)]);
       assert.deepEqual(buildReplays.map((version) => version.index_version_id), [buildV1.index_version_id, buildV1.index_version_id]);
 
-      await indexer.index(chunk("public", "memory.retrieval.public", "Solar output changes with daylight.", [1, 0, 0]));
+      const publicParent = parentChunk(
+        "public-parent",
+        "memory.retrieval.public",
+        "# Solar Output\n\nSolar output changes with daylight. Battery reserves support the full night cycle.",
+      );
+      await indexer.index(publicParent);
+      await indexer.index({
+        ...chunk("public", "memory.retrieval.public", "Solar output changes with daylight.", [1, 0, 0], 1),
+        parent_chunk_id: publicParent.chunk_id,
+        structure_path: ["Solar Output"],
+      });
       const privateChunk = chunk(
         "private",
         "memory.retrieval.user",
@@ -114,6 +125,13 @@ test(
       );
       await indexer.index(privateChunk);
       await indexer.index(privateChunk);
+      await assert.rejects(
+        indexer.index({
+          ...chunk("wrong-parent", "memory.retrieval.user", "Cross-memory parent reference.", [1, 0, 0], 1),
+          parent_chunk_id: publicParent.chunk_id,
+        }),
+        (error: unknown) => error instanceof PostgresRetrievalPolicyError,
+      );
       await indexer.index(chunk("secret", "memory.retrieval.other", "Secret solar output record.", [1, 0, 0]));
       await assert.rejects(
         indexer.index(chunk("other-dimension", "memory.retrieval.public", "Unrelated dimension probe.", [1, 0], 1)),
@@ -144,7 +162,7 @@ test(
         }),
         (error: unknown) => error instanceof ChunkIdentityConflictError,
       );
-      await indexes.completeBuild(indexBuildResult(buildV1, "ready", 3, 3));
+      await indexes.completeBuild(indexBuildResult(buildV1, "ready", 3, 4));
       await indexes.activate(buildV1.index_version_id, new Date("2026-08-10T09:00:00Z"));
       assert.equal((await indexes.getActive("tenant.retrieval", "memory.hybrid"))?.index_version_id, buildV1.index_version_id);
 
@@ -181,6 +199,7 @@ test(
       assert.deepEqual(lexicalHits.map((hit) => hit.id).sort(), ["chunk.foreign-public", "chunk.private", "chunk.public"]);
       const vectorHits = await vector.retrieve(call);
       assert.deepEqual(vectorHits.map((hit) => hit.id).sort(), ["chunk.foreign-public", "chunk.private", "chunk.public"]);
+      assert.equal(lexicalHits.some((hit) => hit.id === publicParent.chunk_id), false);
       assert.equal(await authorization.canRead({ principal, purpose: call.purpose, hit: secretHit() }), false);
       const publicHit = lexicalHits.find((hit) => hit.id === "chunk.public");
       assert.ok(publicHit);
@@ -210,6 +229,27 @@ test(
       });
       assert.equal(pack.status, "sufficient");
       assert.deepEqual(pack.evidence.map((item) => item.evidence_id).sort(), ["chunk.foreign-public", "chunk.private"]);
+
+      const expandedGateway = new RetrievalGateway({
+        retrievers: [lexical, vector],
+        authorization,
+        expander: new PostgresParentChildExpander(db),
+      });
+      const expandedPack = await expandedGateway.retrieve({
+        query_id: "query.retrieval.parent",
+        original_query: "solar daylight",
+        intent: "fact_lookup",
+        agent_id: "learning-director",
+        principal,
+        purpose: call.purpose,
+        token_budget: 1_000,
+        estimated_chunk_tokens: 80,
+        require_citations: true,
+        filters: { memory_id: "memory.retrieval.public" },
+      });
+      assert.deepEqual(expandedPack.evidence.map((item) => item.evidence_id), [publicParent.chunk_id]);
+      assert.match(expandedPack.evidence[0]?.untrusted_content ?? "", /Battery reserves support the full night cycle/);
+      assert.equal(expandedPack.evidence[0]?.citation.locator?.chunk_level, "parent");
 
       const buildV2 = indexBuild("v2", "tenant.retrieval", "watermark.02");
       await indexes.createBuild(buildV2);
@@ -392,6 +432,28 @@ function chunk(
     },
     embedding,
     embedding_model: "embedding.integration.v1",
+  } as const;
+}
+
+function parentChunk(suffix: string, memoryId: string, content: string) {
+  return {
+    chunk_id: `chunk.${suffix}`,
+    memory_id: memoryId,
+    index_version_id: "index.memory.v1",
+    ordinal: 0,
+    chunk_level: "parent",
+    structure_path: ["Solar Output"],
+    content,
+    chunk_digest: contentDigest(content),
+    token_count: 24,
+    source_type: "memory.document",
+    entity_keys: ["concept.solar"],
+    citation: {
+      artifact_id: `artifact.${suffix}`,
+      uri: `s3://retrieval-test/${suffix}.json`,
+      digest: digest("d"),
+      locator: { section_path: "Solar Output", chunk_level: "parent" },
+    },
   } as const;
 }
 

@@ -4,6 +4,7 @@ import type { EvidenceCitation } from "@firefly/contracts";
 import type { EmbeddingPort, ModelBudget } from "@firefly/model-gateway";
 import type { QuestLabDatabase } from "@firefly/persistence";
 import type {
+  EvidenceExpansionPort,
   RetrievalAuthorizationPort,
   RetrievalHit,
   RetrievalPrincipal,
@@ -17,6 +18,9 @@ export interface IndexMemoryChunkInput {
   readonly memory_id: string;
   readonly index_version_id: string;
   readonly ordinal: number;
+  readonly chunk_level?: "parent" | "child";
+  readonly parent_chunk_id?: string;
+  readonly structure_path?: readonly string[];
   readonly content: string;
   readonly chunk_digest: `sha256:${string}`;
   readonly token_count: number;
@@ -47,6 +51,10 @@ interface MemorySearchRow {
   readonly citation_digest: string;
   readonly citation_locator: Readonly<Record<string, string | number>>;
   readonly score: number | string;
+}
+
+interface ParentExpansionRow extends Omit<MemorySearchRow, "score"> {
+  readonly child_id: string;
 }
 
 export class PostgresRetrievalPolicyError extends Error {
@@ -94,11 +102,27 @@ export class PostgresMemoryIndexer {
     if (version.tenant_id !== memory.tenant_id) {
       throw new PostgresRetrievalPolicyError("Index version and source memory must belong to the same tenant");
     }
-    if (
+    const chunkLevel = input.chunk_level ?? "child";
+    if (chunkLevel === "child" && (
       version.embedding_model !== (input.embedding_model ?? null) ||
       version.embedding_dimensions !== (input.embedding?.length ?? null)
-    ) {
+    )) {
       throw new PostgresRetrievalPolicyError("Chunk embedding snapshot does not match its index version");
+    }
+    if (input.parent_chunk_id) {
+      const parent = await this.db
+        .selectFrom("questlab.memory_chunk")
+        .select(["memory_id", "index_version_id", "chunk_level"])
+        .where("chunk_id", "=", input.parent_chunk_id)
+        .executeTakeFirst();
+      if (
+        !parent ||
+        parent.chunk_level !== "parent" ||
+        parent.memory_id !== input.memory_id ||
+        parent.index_version_id !== input.index_version_id
+      ) {
+        throw new PostgresRetrievalPolicyError("Parent Chunk must belong to the same Memory and index version");
+      }
     }
 
     const embedding = input.embedding
@@ -111,6 +135,9 @@ export class PostgresMemoryIndexer {
         memory_id: input.memory_id,
         index_version_id: input.index_version_id,
         ordinal: input.ordinal,
+        chunk_level: chunkLevel,
+        parent_chunk_id: input.parent_chunk_id ?? null,
+        structure_path: input.structure_path ?? [],
         content: input.content,
         chunk_digest: input.chunk_digest,
         token_count: input.token_count,
@@ -135,6 +162,9 @@ export class PostgresMemoryIndexer {
         "memory_id",
         "index_version_id",
         "ordinal",
+        "chunk_level",
+        "parent_chunk_id",
+        "structure_path",
         "content",
         "chunk_digest",
         "token_count",
@@ -154,6 +184,9 @@ export class PostgresMemoryIndexer {
       existing.memory_id !== input.memory_id ||
       existing.index_version_id !== input.index_version_id ||
       existing.ordinal !== input.ordinal ||
+      existing.chunk_level !== chunkLevel ||
+      existing.parent_chunk_id !== (input.parent_chunk_id ?? null) ||
+      !sameStrings(existing.structure_path, input.structure_path ?? []) ||
       existing.content !== input.content ||
       existing.chunk_digest !== input.chunk_digest ||
       existing.token_count !== input.token_count ||
@@ -214,6 +247,7 @@ export class PostgresLexicalRetriever implements Retriever {
         AND index_version.status = 'active'
         AND (memory.scope = 'public' OR index_version.tenant_id = ${call.principal.tenant_id})
         AND index_version.logical_name = ${this.logicalName}
+        AND chunk.chunk_level = 'child'
         AND chunk.search_vector @@ query.value
         AND ${access}
         AND ${filters}
@@ -274,6 +308,7 @@ export class PostgresVectorRetriever implements Retriever {
           AND index_version.status = 'active'
           AND (memory.scope = 'public' OR index_version.tenant_id = ${call.principal.tenant_id})
           AND index_version.logical_name = ${this.options.logical_name ?? "memory.hybrid"}
+          AND chunk.chunk_level = 'child'
           AND chunk.embedding IS NOT NULL
           AND chunk.embedding_model = ${this.options.embedding_model}
           AND chunk.embedding_dimensions = ${vector.length}
@@ -333,6 +368,84 @@ export class PostgresMemoryAuthorization implements RetrievalAuthorizationPort {
       LIMIT 1
     `.execute(this.db);
     return result.rows.length === 1;
+  }
+}
+
+export class PostgresParentChildExpander implements EvidenceExpansionPort {
+  private readonly db: Kysely<QuestLabDatabase>;
+  private readonly logicalName: string;
+
+  constructor(db: Kysely<QuestLabDatabase>, logicalName = "memory.hybrid") {
+    this.db = db;
+    this.logicalName = logicalName;
+  }
+
+  async expand(input: {
+    readonly hits: readonly RetrievalHit[];
+    readonly principal: RetrievalPrincipal;
+    readonly purpose: string;
+    readonly max_tokens: number;
+    readonly signal?: AbortSignal;
+  }): Promise<readonly RetrievalHit[]> {
+    input.signal?.throwIfAborted();
+    if (!input.purpose.trim() || !Number.isInteger(input.max_tokens) || input.max_tokens <= 0) {
+      throw new PostgresRetrievalPolicyError("Parent expansion requires purpose and a positive token budget");
+    }
+    if (input.hits.length === 0) return [];
+    const childIds = [...new Set(input.hits.map((hit) => hit.id))];
+    const access = readableMemoryPredicate(input.principal);
+    const rows = await sql<ParentExpansionRow>`
+      SELECT
+        child.chunk_id AS child_id,
+        parent.chunk_id,
+        parent.content,
+        parent.token_count,
+        parent.source_type,
+        parent.entity_keys,
+        parent.citation_artifact_id,
+        parent.citation_uri,
+        parent.citation_digest,
+        parent.citation_locator
+      FROM questlab.memory_chunk AS child
+      JOIN questlab.memory_chunk AS parent
+        ON parent.chunk_id = child.parent_chunk_id
+        AND parent.memory_id = child.memory_id
+        AND parent.index_version_id = child.index_version_id
+      JOIN questlab.memory_record AS memory ON memory.memory_id = parent.memory_id
+      JOIN questlab.retrieval_index_version AS index_version
+        ON index_version.index_version_id = parent.index_version_id
+      WHERE child.chunk_id IN (${sql.join(childIds)})
+        AND child.chunk_level = 'child'
+        AND parent.chunk_level = 'parent'
+        AND memory.status = 'active'
+        AND index_version.status = 'active'
+        AND (memory.scope = 'public' OR index_version.tenant_id = ${input.principal.tenant_id})
+        AND index_version.logical_name = ${this.logicalName}
+        AND ${access}
+    `.execute(this.db);
+    input.signal?.throwIfAborted();
+    const parentByChild = new Map(rows.rows.map((row) => [row.child_id, row]));
+    const expanded = new Map<string, RetrievalHit>();
+    let usedTokens = 0;
+    for (const child of input.hits) {
+      const parent = parentByChild.get(child.id);
+      const parentHit = parent ? toHit(parent, child.score) : undefined;
+      const existingParent = parentHit ? expanded.get(parentHit.id) : undefined;
+      if (existingParent && parentHit) {
+        if (parentHit.score > existingParent.score) expanded.set(parentHit.id, { ...existingParent, score: parentHit.score });
+        continue;
+      }
+      const candidate = parentHit && parentHit.token_count <= input.max_tokens - usedTokens ? parentHit : child;
+      const existing = expanded.get(candidate.id);
+      if (existing) {
+        if (candidate.score > existing.score) expanded.set(candidate.id, { ...existing, score: candidate.score });
+        continue;
+      }
+      if (candidate.token_count > input.max_tokens - usedTokens) continue;
+      expanded.set(candidate.id, candidate);
+      usedTokens += candidate.token_count;
+    }
+    return [...expanded.values()];
   }
 }
 
@@ -402,7 +515,7 @@ function retrievalFilterPredicate(
   return predicates.length > 0 ? sql<boolean>`(${sql.join(predicates, sql` AND `)})` : sql<boolean>`TRUE`;
 }
 
-function toHit(row: MemorySearchRow, score: number): RetrievalHit {
+function toHit(row: Omit<MemorySearchRow, "score">, score: number): RetrievalHit {
   return {
     id: row.chunk_id,
     content: row.content,
@@ -437,6 +550,16 @@ function validateChunk(input: IndexMemoryChunkInput): void {
   }
   if (new Set(input.entity_keys ?? []).size !== (input.entity_keys?.length ?? 0)) {
     throw new PostgresRetrievalPolicyError("Chunk entity keys must be unique");
+  }
+  const chunkLevel = input.chunk_level ?? "child";
+  if (chunkLevel === "parent" && (input.parent_chunk_id || input.embedding || input.embedding_model)) {
+    throw new PostgresRetrievalPolicyError("Parent Chunks cannot reference a parent or carry retrieval embeddings");
+  }
+  if (input.parent_chunk_id === input.chunk_id) {
+    throw new PostgresRetrievalPolicyError("A Child Chunk cannot reference itself as parent");
+  }
+  if ((input.structure_path ?? []).some((part) => !part.trim())) {
+    throw new PostgresRetrievalPolicyError("Chunk structure paths cannot contain empty segments");
   }
   if (Boolean(input.embedding) !== Boolean(input.embedding_model)) {
     throw new PostgresRetrievalPolicyError("Embedding vectors and model snapshots must be supplied together");

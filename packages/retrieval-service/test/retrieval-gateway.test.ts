@@ -104,6 +104,38 @@ test("insufficient authorized evidence blocks generation", async () => {
   assert.equal(pack.coverage, 0.5);
 });
 
+test("expanded Parent evidence is reauthorized before entering the EvidencePack", async () => {
+  const gateway = new RetrievalGateway({
+    retrievers: [fakeRetriever("lexical", [hit("child.allowed", 1, "concept:a"), hit("child.denied", 0.9, "concept:b")])],
+    authorization: { canRead: ({ hit: candidate }) => candidate.id !== "parent.denied" },
+    expander: {
+      expand: async ({ hits }) => hits.map((candidate) => ({
+        ...candidate,
+        id: candidate.id.replace("child", "parent"),
+        content: `Expanded context for ${candidate.id}`,
+      })),
+    },
+  });
+
+  const pack = await gateway.retrieve(baseRequest);
+
+  assert.deepEqual(pack.evidence.map((item) => item.evidence_id), ["parent.allowed"]);
+  assert.equal(pack.trace.denied, 1);
+  assert.equal(pack.generation_allowed, false);
+});
+
+test("an Evidence Expander cannot exceed the context token budget", async () => {
+  const gateway = new RetrievalGateway({
+    retrievers: [fakeRetriever("lexical", [hit("child.a", 1, "concept:a"), hit("child.b", 0.9, "concept:b")])],
+    authorization: { canRead: () => true },
+    expander: {
+      expand: async ({ hits }) => hits.map((candidate) => ({ ...candidate, token_count: 10_000 })),
+    },
+  });
+
+  await assert.rejects(gateway.retrieve(baseRequest), /exceeded the context token budget/);
+});
+
 test("conflicting immutable evidence identities fail closed", async () => {
   const original = hit("same", 1, "concept:same");
   const gateway = new RetrievalGateway({

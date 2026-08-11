@@ -88,6 +88,32 @@ test("chunk validation rejects duplicate entity keys before indexing", async () 
   );
 });
 
+test("Parent Chunk validation rejects retrieval embeddings before database access", async () => {
+  const indexer = new PostgresMemoryIndexer(unavailableDb);
+
+  await assert.rejects(
+    indexer.index({
+      chunk_id: "chunk.parent.unit",
+      memory_id: "memory.unit",
+      index_version_id: "index.unit.v1",
+      ordinal: 0,
+      chunk_level: "parent",
+      content: "parent context",
+      chunk_digest: contentDigest("parent context"),
+      token_count: 4,
+      source_type: "document",
+      citation: {
+        artifact_id: "artifact.unit",
+        uri: "s3://unit/content",
+        digest: `sha256:${"b".repeat(64)}`,
+      },
+      embedding: [1, 0, 0],
+      embedding_model: "embedding.unit.v1",
+    }),
+    (error: unknown) => error instanceof PostgresRetrievalPolicyError,
+  );
+});
+
 function contentDigest(content: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
 }

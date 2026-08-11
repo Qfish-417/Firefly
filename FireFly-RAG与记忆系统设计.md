@@ -502,6 +502,20 @@ candidate_k -> fusion_k -> rerank_k -> context_k
 
 Overlap 根据句法和语义跨界决定，不采用固定字符比例。列表、代码块和表格不能在关键结构中间截断。
 
+当前 M5.3 已为 Markdown 落地 `MarkdownParentChildChunker`。它按标题层级维护 `structure_path`，每个章节生成一个 Parent，再把章节正文按预算生成一个或多个 Child；Child 的检索文本包含受长度约束的标题路径，避免标题关键词只存在于 Parent 而无法召回。Child 通过 `parent_chunk_id` 引用同一 Memory、同一索引版本内的 Parent。稳定 Chunk ID 仍由文档身份、ordinal 和内容决定，Citation Locator 额外保存 `section_path`、`chunk_level`、`section_part` 与 `chunk_part`。PlainText Chunker 仅作为兼容模式保留，不能代表 PDF、代码、表格和多模态结构化分块已经完成。
+
+索引与查询遵循不对称职责：Parent 不生成 Embedding，也不进入 FTS/pgvector 候选；只有 Child 用于精确召回。Ready Gate 要求每个文档至少有一个 Child、父子引用闭合、Parent 不携带 Embedding，且每个 Parent 至少拥有一个 Child。Indexer 在写入 Child 前校验其 Parent 属于同一 Memory 和同一索引版本，禁止通过父引用跨越授权或版本边界。
+
+运行时扩展顺序固定为：
+
+```text
+Child recall -> fusion -> Child ACL -> evidence selection
+-> Parent expansion -> active/tenant/Memory ACL recheck
+-> token budget -> EvidencePack
+```
+
+扩展发生在候选融合、Child 授权和动态选证据之后，避免先扩展造成上下文膨胀。多个 Child 指向同一 Parent 时只加入一次；Parent 超过剩余上下文预算时保留已授权 Child，而不是截断 Parent 或突破预算。扩展器返回的 Evidence ID 必须保持不可变，Gateway 对 Parent 再次授权并拒绝任何超预算、身份冲突或越权结果。
+
 ### 10.3 版本与重建
 
 - `document_id` 稳定，`document_version` 随内容变化。
@@ -520,7 +534,7 @@ IndexBuildTask -> building -> ready -> active -> retired
 
 上线前的 Ready Gate 不能只看“任务成功”。`DefaultIndexReadyGate` 校验非空文档、每文档至少一个 Chunk、Chunk ID 唯一和 Embedding 形状一致。`AdvancedIndexReadyGate` 在此基础上强制配置来源水位、ACL、Recall、Citation 四类 Probe；缺失、重复、非法分数或任一低于阈值都 fail closed。双读用于验证，不直接把两版结果混入用户上下文；正式流量仍由单一 active 指针决定。
 
-`packages/memory-workers` 已实现 `RetrievalIndexBuildWorker`：它按事件类型领取带租约的 `RetrievalIndexBuildRequested`，通过 `IndexSourcePort` 加载来源、确定性分块、调用独立 `EmbeddingPort`、幂等写入版本绑定 Chunk，通过 Ready Gate 后完成并可原子激活。每次门禁生成版本化 `IndexQualityReport`，记录五类检查的 score、threshold、sample size、摘要和证据引用，并与 build ID、index version、source watermark 和 configuration Digest 绑定；PostgreSQL 持久化报告，Repository 拒绝身份不匹配或结果状态矛盾的报告。Worker 重启时按持久状态恢复：`building` 继续构建，`ready` 只补激活，`active/retired` 视为完成，`failed` 不重复构建。可重试故障指数退避，超过 attempt 上限后把版本和 Outbox 事件置为可审计终态。
+`packages/memory-workers` 已实现 `RetrievalIndexBuildWorker`：它按事件类型领取带租约的 `RetrievalIndexBuildRequested`，通过 `IndexSourcePort` 加载来源、确定性分块、仅为可召回 Child 调用独立 `EmbeddingPort`、幂等写入版本绑定 Chunk，通过 Ready Gate 后完成并可原子激活。每次门禁生成版本化 `IndexQualityReport`，记录五类检查的 score、threshold、sample size、摘要和证据引用，并与 build ID、index version、source watermark 和 configuration Digest 绑定；PostgreSQL 持久化报告，Repository 拒绝身份不匹配或结果状态矛盾的报告。Worker 重启时按持久状态恢复：`building` 继续构建，`ready` 只补激活，`active/retired` 视为完成，`failed` 不重复构建。可重试故障指数退避，超过 attempt 上限后把版本和 Outbox 事件置为可审计终态。
 
 `SourceWatermarkQualityProbe` 已提供真实水位比较逻辑；ACL/Recall/Citation 的 Probe 合同和强制装配已经完成，但生产实现必须读取部署侧 ACL 抽样器和固定评测集，当前集成测试中的确定性 Probe 只验证编排与持久化，不代表生产检索质量已经达标。
 
@@ -783,13 +797,14 @@ rag-memory/
 - `packages/memory-workers` 已实现租约式索引构建 Worker、基础 Ready Gate、Embedding 维度校验和崩溃恢复。
 - `IndexQualityReport`、迁移 009 和 `AdvancedIndexReadyGate` 已实现五类质量检查的强制装配、阈值判定、不可变身份绑定和 PostgreSQL 审计持久化。
 - 对象存储删除消费者已通过官方 AWS S3 SDK 接入真实 MinIO；目标定向领取、指数退避、attempt 耗尽终态及 failed 目标 reconciliation 已通过 PostgreSQL/MinIO 集成测试。
+- 迁移 010、`MarkdownParentChildChunker` 与 `PostgresParentChildExpander` 已实现 Markdown Parent/Child 分块：只召回 Child、Parent 无 Embedding、父引用受 Memory/索引版本约束、扩展后重新授权、共享 Parent 去重，并在 Parent 超预算时回退 Child。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、生产 ACL/Recall/Citation Probe 与固定评测集、Parent/Child 结构化分块、retired 索引垃圾回收、reconciliation 周期调度器、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、生产 ACL/Recall/Citation Probe 与固定评测集、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、retired 索引垃圾回收、reconciliation 周期调度器、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
 
-- 下一批优先实现 Parent/Child 分块和生产质量 Probe/评测集，再补 retired 版本回收与 reconciliation 调度，最后接生产 BM25/ANN Provider。
+- 下一批优先接入生产质量 Probe/评测集，再补 reconciliation 调度与 retired 版本回收，然后扩展 PDF/代码/表格 Chunker，最后接生产 BM25/ANN Provider。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
-- 实现 Parent/Child 分块、RRF、确定性 Count 聚合和引用。
+- 已以 Markdown 验证 Parent/Child、RRF、确定性 Count 聚合和引用闭环；其他内容类型按相同合同逐个接入。
 
 ### R1：用户与 Agent 长期记忆
 

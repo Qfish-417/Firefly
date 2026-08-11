@@ -421,6 +421,9 @@ export interface MemoryChunkTable {
   memory_id: string;
   index_version_id: string | null;
   ordinal: number;
+  chunk_level: "parent" | "child";
+  parent_chunk_id: string | null;
+  structure_path: readonly string[];
   content: string;
   chunk_digest: string;
   token_count: number;

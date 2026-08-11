@@ -92,6 +92,7 @@ solar-energy@1.2.0 忽略昼夜变化
 - M5.1 后台执行闭环已落地：`packages/memory-workers` 通过定向 Outbox 租约运行索引构建与删除消费者；索引 Worker 支持确定性分块、Embedding 形状校验、基础 Ready Gate、崩溃恢复和可选原子激活；对象删除通过官方 AWS S3 SDK 兼容 MinIO/S3，失败按指数退避并可由 reconciliation 重新排队。
 - M5.1 明确区分 Provider 删除失败与 Ack/数据库/Outbox 发布失败：只有 Provider 失败才写 failed Ack；若 completed Ack 已提交而发布标记失败，重放只补齐发布，不重复改变删除事实。
 - M5.2 可审计索引质量门禁已落地：`IndexQualityReport` 将结构、来源水位、ACL、Recall、Citation 检查与 build/version/configuration Digest 绑定并持久化；`AdvancedIndexReadyGate` 强制五项检查齐全、名称唯一、分数与阈值自洽，任一失败即阻止激活。内置来源水位 Probe 已实现，生产 ACL/Recall/Citation Probe 与评测集仍需按部署接入。
+- M5.3 Parent/Child 检索扩展已落地：Markdown 按标题层级生成无 Embedding 的 Parent Section 与可召回 Child Chunk；FTS/pgvector 只召回 Child，选证据后再扩展共享 Parent，并重新校验 active 索引、租户和 Memory ACL。Parent 超过剩余 Token 预算时保留 Child，跨 Memory/索引版本父引用和扩展越权均 fail closed。PDF、代码与表格的结构化 Chunker 仍待实现。
 - 旧 Java/Python 原型仍在原目录，只作追溯参考，不被新 TypeScript packages 依赖。
 
 开发检查：
@@ -119,4 +120,4 @@ docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 
 Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`，响应同时包含因果边、预算、哨兵、PluginRelease、Sandbox、Canary 与当前活动 PluginVersion。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
 
-M5 的运行时决策依次记录在 [ADR 0008](./docs/adr/0008-model-invocation-projection.md)、[ADR 0009](./docs/adr/0009-memory-acl-and-structured-aggregation.md)、[ADR 0010](./docs/adr/0010-governed-retrieval-gateway.md)、[ADR 0011](./docs/adr/0011-versioned-retrieval-contracts.md)、[ADR 0012](./docs/adr/0012-postgresql-hybrid-retrieval-and-deletion.md)、[ADR 0013](./docs/adr/0013-versioned-index-activation-and-deletion-ack.md)、[ADR 0014](./docs/adr/0014-durable-index-and-deletion-workers.md) 和 [ADR 0015](./docs/adr/0015-auditable-index-quality-gate.md)。
+M5 的运行时决策依次记录在 [ADR 0008](./docs/adr/0008-model-invocation-projection.md)、[ADR 0009](./docs/adr/0009-memory-acl-and-structured-aggregation.md)、[ADR 0010](./docs/adr/0010-governed-retrieval-gateway.md)、[ADR 0011](./docs/adr/0011-versioned-retrieval-contracts.md)、[ADR 0012](./docs/adr/0012-postgresql-hybrid-retrieval-and-deletion.md)、[ADR 0013](./docs/adr/0013-versioned-index-activation-and-deletion-ack.md)、[ADR 0014](./docs/adr/0014-durable-index-and-deletion-workers.md)、[ADR 0015](./docs/adr/0015-auditable-index-quality-gate.md) 和 [ADR 0016](./docs/adr/0016-parent-child-retrieval-expansion.md)。
