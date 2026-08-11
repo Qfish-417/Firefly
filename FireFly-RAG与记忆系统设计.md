@@ -599,7 +599,9 @@ IndexBuildTask -> building -> ready -> active -> retired
 
 消费者必须返回版本化 `DeletionPropagationAck`。Ack 以 `ack_id` 幂等，attempt 必须单调递增；失败可由更高 attempt 重试为完成，旧 attempt 或内容冲突拒绝。任一目标失败时全局状态为 failed，仍有待处理目标时为 pending，只有所有目标完成才写入 `propagation_completed_at` 并发出 `MemoryDeletionPropagationCompleted`。因此“本地回执 != 全局删除完成”。
 
-当前 `DeletionPropagationWorker` 按 `payload.target` 定向领取任务，不允许不同目标的消费者互相抢占。`ObjectStoreDeletionConsumer` 使用任务中的 `ArtifactRef` 定位并去重 `s3://bucket/key`，由官方 AWS S3 SDK 删除 MinIO/S3 对象；缺少对象引用时 fail closed。Provider 删除失败才写 failed Ack 并退避重试；Ack、数据库或 `markPublished` 失败不伪装成 Provider 失败。若 completed Ack 已提交但发布标记失败，重放识别目标已完成后只补发布。超过 attempt 上限的事件进入 discarded 终态，`reconcileFailedDeletionTargets` 对超时 failed 目标加行锁复核并创建幂等的新任务。Provider 证据真实性核验和 reconciliation 的周期调度器仍待实现。
+当前 `DeletionPropagationWorker` 按 `payload.target` 定向领取任务，不允许不同目标的消费者互相抢占。`ObjectStoreDeletionConsumer` 使用任务中的 `ArtifactRef` 定位并去重 `s3://bucket/key`，由官方 AWS S3 SDK 删除 MinIO/S3 对象；缺少对象引用时 fail closed。Provider 删除失败才写 failed Ack 并退避重试；Ack、数据库或 `markPublished` 失败不伪装成 Provider 失败。若 completed Ack 已提交但发布标记失败，重放识别目标已完成后只补发布。超过 attempt 上限的事件进入 discarded 终态，`reconcileFailedDeletionTargets` 对超时 failed 目标加行锁复核并创建幂等的新任务。
+
+M5.5 的 `DeletionReconciliationScheduler` 已把上述修复函数接入周期运行层。`runOnce` 合并同一实例内的并发调用；多实例同时扫描时仍由目标行锁、failed 状态复核和确定性 Outbox ID 防止重复副作用。每个周期记录 scheduler/instance/cycle 身份、stale cutoff、batch limit、重排数量、起止时间和失败摘要；Observer 故障只增加本地计数，不反写已经发生的数据库事实。`run(AbortSignal)` 在失败周期后继续等待下一次 tick，并在取消后不再开启新周期。独立入口 `npm run memory:reconcile` 只要求 `DATABASE_URL`，其他间隔、陈旧阈值和批量参数均显式校验。持久化调度账本、部署级指标后端、告警规则和 Provider 删除证据真实性核验仍待实现。
 
 ### 12.5 模型边界
 
@@ -801,10 +803,11 @@ rag-memory/
 - 对象存储删除消费者已通过官方 AWS S3 SDK 接入真实 MinIO；目标定向领取、指数退避、attempt 耗尽终态及 failed 目标 reconciliation 已通过 PostgreSQL/MinIO 集成测试。
 - 迁移 010、`MarkdownParentChildChunker` 与 `PostgresParentChildExpander` 已实现 Markdown Parent/Child 分块：只召回 Child、Parent 无 Embedding、父引用受 Memory/索引版本约束、扩展后重新授权、共享 Parent 去重，并在 Parent 超预算时回退 Child。
 - `IndexEvaluationSet`、固定评测 Runner、ACL/Recall/Citation Probe 与 `PostgresBuildingIndexQualityEvaluator` 已实现 digest-bound lexical 质量评测；真实集成在 building 版本上验证授权、召回和 Citation，激活后评测旁路关闭。
+- `DeletionReconciliationScheduler` 与独立进程入口已实现周期扫描、同实例 tick 合并、失败继续、结构化周期观测和 AbortSignal 停止；真实 PostgreSQL 集成已验证 failed 目标经 scheduler 重排后被恢复 Worker 完成。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、vector/hybrid 固定质量评测、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、retired 索引垃圾回收、reconciliation 周期调度器、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、vector/hybrid 固定质量评测、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、retired 索引垃圾回收、持久化调度账本与部署告警、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
 
-- 下一批优先补 reconciliation 调度与 retired 版本回收，再扩展 vector/hybrid 固定评测和 PDF/代码/表格 Chunker，最后接生产 BM25/ANN Provider。
+- 下一批优先补 retired 版本回收，再扩展 vector/hybrid 固定评测和 PDF/代码/表格 Chunker，最后接生产 BM25/ANN Provider。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 已以 Markdown 验证 Parent/Child、RRF、确定性 Count 聚合和引用闭环；其他内容类型按相同合同逐个接入。

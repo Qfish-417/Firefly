@@ -24,6 +24,7 @@ import {
   AdvancedIndexReadyGate,
   createFixedIndexQualityProbes,
   DeletionPropagationWorker,
+  DeletionReconciliationScheduler,
   MarkdownParentChildChunker,
   ObjectStoreDeletionConsumer,
   indexEvaluationSetDigest,
@@ -323,7 +324,16 @@ test(
       });
       assert.deepEqual(await failingWorker.runBatch(), { claimed: 1, completed: 0, failed: 1, released: 0 });
       clock = new Date("2026-08-10T12:05:00.000Z");
-      assert.equal(await memories.reconcileFailedDeletionTargets({ stale_before: clock, limit: 10, now: clock }), 1);
+      const reconciliation = await new DeletionReconciliationScheduler({
+        scheduler_id: "scheduler.deletion.integration",
+        instance_id: "scheduler.deletion.integration.instance-a",
+        memories,
+        stale_after_ms: 0,
+        batch_limit: 10,
+        now: () => clock,
+      }).runOnce();
+      assert.equal(reconciliation.status, "completed");
+      assert.equal(reconciliation.requeued_count, 1);
       const recoveryWorker = new DeletionPropagationWorker({
         worker_id: "worker.deletion.recovery",
         outbox,

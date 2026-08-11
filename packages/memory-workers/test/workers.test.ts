@@ -8,6 +8,7 @@ import {
   AdvancedIndexReadyGate,
   createFixedIndexQualityProbes,
   DefaultIndexReadyGate,
+  DeletionReconciliationScheduler,
   DeletionWorkerError,
   SourceWatermarkQualityProbe,
   ObjectStoreDeletionConsumer,
@@ -245,6 +246,81 @@ test("object deletion deduplicates S3 locations and rejects missing resources", 
     consumer.delete(deletionTask([])),
     (error: unknown) => error instanceof DeletionWorkerError && !error.retryable,
   );
+});
+
+test("deletion reconciliation coalesces concurrent cycles and exposes a stable snapshot", async () => {
+  let calls = 0;
+  let resolveRequeue!: (value: number) => void;
+  const pending = new Promise<number>((resolve) => {
+    resolveRequeue = resolve;
+  });
+  const observed: string[] = [];
+  const scheduler = new DeletionReconciliationScheduler({
+    scheduler_id: "scheduler.worker.unit",
+    instance_id: "scheduler.worker.unit.instance-a",
+    memories: {
+      reconcileFailedDeletionTargets: async (input) => {
+        calls += 1;
+        assert.equal(input.stale_before.toISOString(), "2026-08-10T11:55:00.000Z");
+        assert.equal(input.limit, 25);
+        return pending;
+      },
+    },
+    stale_after_ms: 300_000,
+    batch_limit: 25,
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+    observe: (cycle) => observed.push(cycle.cycle_id),
+  });
+
+  const first = scheduler.runOnce();
+  const second = scheduler.runOnce();
+  assert.strictEqual(first, second);
+  assert.equal(calls, 1);
+  assert.equal(scheduler.snapshot().running, true);
+  resolveRequeue(3);
+  const cycle = await first;
+
+  assert.equal(cycle.status, "completed");
+  assert.equal(cycle.requeued_count, 3);
+  await Promise.resolve();
+  assert.equal(scheduler.snapshot().running, false);
+  assert.equal(scheduler.snapshot().last_cycle?.cycle_id, cycle.cycle_id);
+  assert.deepEqual(observed, [cycle.cycle_id]);
+});
+
+test("deletion reconciliation records failures and stops its loop on cancellation", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const scheduler = new DeletionReconciliationScheduler({
+    scheduler_id: "scheduler.worker.failure",
+    instance_id: "scheduler.worker.failure.instance-a",
+    memories: {
+      reconcileFailedDeletionTargets: async () => {
+        calls += 1;
+        throw new Error("database unavailable");
+      },
+    },
+    interval_ms: 100,
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+    wait: async (_milliseconds, signal) => {
+      controller.abort();
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      assert.equal(signal.aborted, true);
+      throw error;
+    },
+    observe: () => {
+      throw new Error("metrics unavailable");
+    },
+  });
+
+  await scheduler.run(controller.signal);
+
+  assert.equal(calls, 1);
+  assert.equal(scheduler.snapshot().running, false);
+  assert.equal(scheduler.snapshot().observer_failures, 1);
+  assert.equal(scheduler.snapshot().last_cycle?.status, "failed");
+  assert.match(scheduler.snapshot().last_cycle?.error?.message ?? "", /database unavailable/u);
 });
 
 function deletionTask(resourceRefs: DeletionPropagationTask["resource_refs"]): DeletionPropagationTask {
