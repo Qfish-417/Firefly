@@ -14,6 +14,9 @@ import {
   SourceWatermarkQualityProbe,
   ObjectStoreDeletionConsumer,
   MarkdownParentChildChunker,
+  PdfLayoutChunker,
+  CodeAstChunker,
+  TableStructureChunker,
   indexEvaluationSetDigest,
   PlainTextParagraphChunker,
   RetiredIndexGarbageCollector,
@@ -52,6 +55,88 @@ test("Markdown chunking creates deterministic Parent/Child sections with structu
   assert.match(chunks[4]?.content ?? "", /^Solar Output > Safety\n\nReserve capacity/u);
   assert.ok((chunks[4]?.content.length ?? Infinity) <= 1_200);
   assert.equal(chunks[4]?.citation.locator?.section_path, "Solar Output > Safety");
+});
+
+test("PDF layout chunking preserves page, heading and region locators", () => {
+  const chunks = new PdfLayoutChunker().chunk({
+    memory_id: "memory.worker.pdf",
+    content: "parser output",
+    source_type: "application/pdf",
+    citation: { artifact_id: "artifact.worker.pdf", uri: "s3://unit/source.pdf", digest },
+    structured: {
+      kind: "pdf-layout",
+      pages: [{
+        page: 3,
+        blocks: [
+          { kind: "heading", heading_level: 1, text: "Findings" },
+          { kind: "paragraph", text: "The first finding is reproducible.", bbox: [10, 20, 300, 60], region_id: "r-1" },
+          { kind: "paragraph", text: "The second finding is independently cited." },
+        ],
+      }],
+    },
+  });
+
+  assert.deepEqual(chunks.map((chunk) => chunk.chunk_level), ["parent", "child", "child"]);
+  assert.deepEqual(chunks[1]?.structure_path, ["page 3", "Findings"]);
+  assert.equal(chunks[1]?.citation.locator?.page, 3);
+  assert.equal(chunks[1]?.citation.locator?.region_id, "r-1");
+  assert.equal(chunks[1]?.citation.locator?.bbox_width, 300);
+  assert.equal(chunks[2]?.parent_ordinal, 0);
+});
+
+test("code AST chunking uses symbol and line boundaries", () => {
+  const chunks = new CodeAstChunker().chunk({
+    memory_id: "memory.worker.code",
+    content: "parser output",
+    source_type: "text/typescript",
+    citation: { artifact_id: "artifact.worker.code", uri: "s3://unit/source.ts", digest },
+    structured: {
+      kind: "code-ast",
+      language: "typescript",
+      nodes: [{
+        kind: "function", name: "loadUser", signature: "async function loadUser()", text: "return repository.get();",
+        start_line: 10, end_line: 14,
+        children: [{ kind: "return", text: "return repository.get();", start_line: 13, end_line: 13 }],
+      }],
+    },
+  });
+
+  assert.deepEqual(chunks.map((chunk) => chunk.chunk_level), ["parent", "child"]);
+  assert.deepEqual(chunks[1]?.structure_path, ["typescript", "loadUser", "1", "return", "1"]);
+  assert.equal(chunks[1]?.citation.locator?.start_line, 13);
+  assert.equal(chunks[1]?.parent_ordinal, 0);
+});
+
+test("table chunking keeps headers with row groups and coordinates", () => {
+  const chunks = new TableStructureChunker({ max_child_characters: 128 }).chunk({
+    memory_id: "memory.worker.table",
+    content: "parser output",
+    source_type: "text/csv",
+    citation: { artifact_id: "artifact.worker.table", uri: "s3://unit/data.csv", digest },
+    structured: {
+      kind: "table",
+      sheets: [{ name: "Trips", tables: [{ name: "Countries", headers: ["country", "year"], rows: [["US", "2024"], ["JP", "2025"]] }] }],
+    },
+  });
+
+  assert.equal(chunks[0]?.chunk_level, "parent");
+  assert.equal(chunks[1]?.chunk_level, "child");
+  assert.deepEqual(chunks[1]?.structure_path, ["Trips", "Countries"]);
+  assert.equal(chunks[1]?.citation.locator?.sheet, "Trips");
+  assert.equal(chunks[1]?.citation.locator?.row_start, 0);
+  assert.equal(chunks[1]?.parent_ordinal, 0);
+});
+
+test("structured chunkers fail closed when parser output is absent", () => {
+  const document = {
+    memory_id: "memory.worker.unparsed",
+    content: "plain text",
+    source_type: "application/pdf",
+    citation: { artifact_id: "artifact.worker.unparsed", uri: "s3://unit/source.pdf", digest },
+  };
+  assert.throws(() => new PdfLayoutChunker().chunk(document), /parser output/);
+  assert.throws(() => new CodeAstChunker().chunk(document), /parser output/);
+  assert.throws(() => new TableStructureChunker().chunk(document), /parser output/);
 });
 
 test("ready gate requires every source document to produce a Chunk", () => {

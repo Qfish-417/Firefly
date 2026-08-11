@@ -343,7 +343,7 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 
 - 已建立 `MemoryRecord`、`QueryPlan`、`EvidenceCitation`、`StructuredResult` 和 `EvidencePack` v1 Schema。
 - PostgreSQL 已保存 ACL、Fact/Event、Chunk 和索引版本；MinIO/S3 对象删除路径已接入，完整对象写入与 Lineage 管理仍待实现。
-- 已实现 PostgreSQL FTS 基线 + pgvector 精确检索、RRF、双重 ACL 和引用；Markdown 已采用只召回 Child、按预算扩展 Parent 的结构化分块，生产 BM25/ANN 与其他内容类型 Chunker 待实现。
+- 已实现 PostgreSQL FTS 基线 + pgvector 精确检索、RRF、双重 ACL 和引用；Markdown、PDF Layout、代码 AST 与表格已采用只召回 Child、按预算扩展 Parent 的结构化分块，生产 BM25/ANN 与真实 parser SourcePort 待实现。
 - 已完成一个 `COUNT DISTINCT` 聚合用例，禁止由 LLM 自行计数。
 - 已实现 `building -> ready -> active -> retired/failed` 索引生命周期，正式查询只读单一 active 版本。
 - 已实现租约式索引构建 Worker、基础 Ready Gate、确定性 Chunk/Embedding 写入、崩溃恢复与可选原子激活。
@@ -388,7 +388,7 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 
 ### 当前施工顺序
 
-1. 以 Markdown Parent/Child 合同为基线，增加 PDF Layout、代码 AST 和表格结构化 Chunker；禁止把纯字符切片包装成结构化实现。
+1. 以 Markdown Parent/Child 合同为基线，接入真实 PDF/OCR、代码 AST 和表格 parser SourcePort；禁止把纯字符切片包装成结构化实现。
 2. 逐个实现 lexical/vector/cache/summary/evaluation 删除 Provider 与证据核验，并把 scheduler JSON 周期事件接入部署级指标、持久化账本和告警。
 3. 把 retired 回收扩展到外部 BM25/ANN Provider，并为 hold 生产者建立明确的审计/法务接入流程。
 4. 接入生产 BM25 Provider；pgvector 按模型/维度分区后再评估 HNSW，不把当前精确检索称为 ANN。

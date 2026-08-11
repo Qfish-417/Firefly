@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="23">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="24">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -714,6 +714,32 @@
         <mxCell id="p23-g1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p23-1" source="p23-probes" target="p23-report"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p23-g2" value="passed only" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p23-1" source="p23-report" target="p23-active"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p23-boundary" value="Current boundary: exact pgvector evaluation, not production ANN latency or recall. Rerank quality, multilingual calibration and alternative hybrid weights require separately versioned evaluation contracts." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p23-1"><mxGeometry x="310" y="905" width="980" height="30" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-structured-chunkers" name="24-M5.8 Structured Chunkers">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p24-0"/><mxCell id="p24-1" parent="p24-0"/>
+        <mxCell id="p24-title" value="M5.8 Structured Chunkers: preserve document semantics before retrieval" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p24-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+        <mxCell id="p24-input" value="IndexSourceDocument&#xa;immutable Memory + EvidenceCitation&#xa;optional parser output" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p24-1"><mxGeometry x="610" y="105" width="380" height="105" as="geometry"/></mxCell>
+        <mxCell id="p24-pdf" value="PDF Layout Chunker&#xa;page + bbox + heading path&#xa;region/table/figure locators" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p24-1"><mxGeometry x="90" y="300" width="330" height="125" as="geometry"/></mxCell>
+        <mxCell id="p24-code" value="Code AST Chunker&#xa;language + symbol path&#xa;node kind + start/end line" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p24-1"><mxGeometry x="510" y="300" width="330" height="125" as="geometry"/></mxCell>
+        <mxCell id="p24-table" value="Table Structure Chunker&#xa;sheet + table + headers&#xa;row groups + column coordinates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p24-1"><mxGeometry x="930" y="300" width="330" height="125" as="geometry"/></mxCell>
+        <mxCell id="p24-fail" value="Missing parser output&#xa;fail closed&#xa;never fake structure with character slices" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p24-1"><mxGeometry x="1300" y="300" width="230" height="125" as="geometry"/></mxCell>
+        <mxCell id="p24-parent" value="Governed Parent/Child contract&#xa;Parent: context, no embedding&#xa;Child: recall unit, deterministic ordinal and identity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p24-1"><mxGeometry x="440" y="535" width="530" height="130" as="geometry"/></mxCell>
+        <mxCell id="p24-locator" value="Citation Locator&#xa;page/bbox | symbol/line | sheet/table/row/column&#xa;re-authorized with Memory and index version" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;" vertex="1" parent="p24-1"><mxGeometry x="1010" y="535" width="390" height="130" as="geometry"/></mxCell>
+        <mxCell id="p24-index" value="Index Build Worker&#xa;embed Child only&#xa;Ready Gate checks structure and references" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p24-1"><mxGeometry x="550" y="760" width="500" height="115" as="geometry"/></mxCell>
+        <mxCell id="p24-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p24-1" source="p24-input" target="p24-pdf"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p24-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p24-1" source="p24-input" target="p24-code"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p24-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p24-1" source="p24-input" target="p24-table"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p24-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;dashed=1;" edge="1" parent="p24-1" source="p24-input" target="p24-fail"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p24-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p24-1" source="p24-pdf" target="p24-parent"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p24-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p24-1" source="p24-code" target="p24-parent"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p24-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p24-1" source="p24-table" target="p24-parent"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p24-e8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p24-1" source="p24-parent" target="p24-locator"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p24-e9" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p24-1" source="p24-parent" target="p24-index"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p24-boundary" value="Boundary: parser provenance and structure are part of the build input. Any parser/model change requires a new source watermark or configuration Digest and a new quality report." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p24-1"><mxGeometry x="260" y="910" width="1080" height="35" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

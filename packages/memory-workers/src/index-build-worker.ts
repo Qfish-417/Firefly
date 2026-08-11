@@ -24,6 +24,60 @@ export interface IndexSourceDocument {
   readonly source_type: string;
   readonly entity_keys?: readonly string[];
   readonly citation: EvidenceCitation;
+  /** Optional parser output. Structured chunkers never infer structure from characters. */
+  readonly structured?: IndexStructuredSource;
+}
+
+export type IndexStructuredSource = IndexPdfLayoutSource | IndexCodeAstSource | IndexTableSource;
+
+export interface IndexPdfLayoutSource {
+  readonly kind: "pdf-layout";
+  readonly pages: readonly IndexPdfPage[];
+}
+
+export interface IndexPdfPage {
+  readonly page: number;
+  readonly blocks: readonly IndexPdfLayoutBlock[];
+}
+
+export interface IndexPdfLayoutBlock {
+  readonly kind: "heading" | "paragraph" | "list" | "table" | "figure" | "caption";
+  readonly text: string;
+  readonly bbox?: readonly [number, number, number, number];
+  readonly heading_level?: number;
+  readonly region_id?: string;
+}
+
+export interface IndexCodeAstSource {
+  readonly kind: "code-ast";
+  readonly language: string;
+  readonly nodes: readonly IndexCodeAstNode[];
+}
+
+export interface IndexCodeAstNode {
+  readonly kind: string;
+  readonly name?: string;
+  readonly signature?: string;
+  readonly text: string;
+  readonly start_line: number;
+  readonly end_line: number;
+  readonly children?: readonly IndexCodeAstNode[];
+}
+
+export interface IndexTableSource {
+  readonly kind: "table";
+  readonly sheets: readonly IndexTableSheet[];
+}
+
+export interface IndexTableSheet {
+  readonly name: string;
+  readonly tables: readonly IndexTable[];
+}
+
+export interface IndexTable {
+  readonly name: string;
+  readonly headers: readonly string[];
+  readonly rows: readonly (readonly string[])[];
 }
 
 export interface IndexSourcePort {
@@ -390,6 +444,324 @@ export class MarkdownParentChildChunker implements IndexChunkerPort {
   }
 }
 
+export class PdfLayoutChunker implements IndexChunkerPort {
+  private readonly maxChildCharacters: number;
+  private readonly maxParentCharacters: number;
+
+  constructor(options: { readonly max_child_characters?: number; readonly max_parent_characters?: number } = {}) {
+    this.maxChildCharacters = options.max_child_characters ?? 1_200;
+    this.maxParentCharacters = options.max_parent_characters ?? 4_800;
+    validateChunkLimits(this.maxChildCharacters, this.maxParentCharacters, "PDF");
+  }
+
+  chunk(document: IndexSourceDocument): readonly IndexChunkDraft[] {
+    const source = requireStructuredSource(document, "pdf-layout");
+    const drafts: IndexChunkDraft[] = [];
+    let ordinal = 0;
+    for (const page of source.pages) {
+      if (!Number.isInteger(page.page) || page.page < 1) {
+        throw new IndexBuildWorkerError("INVALID_PDF_PAGE", "PDF pages must use positive integer numbers", false);
+      }
+      const blocks = page.blocks.filter((block) => block.text.trim());
+      if (blocks.length === 0) continue;
+      const headings: string[] = [];
+      let sectionBlocks: PdfBlockWithPath[] = [];
+      const flush = () => {
+        if (sectionBlocks.length === 0) return;
+        const path = ["page " + page.page, ...headings];
+        const parentGroups = groupLayoutBlocks(sectionBlocks, this.maxParentCharacters);
+        for (const group of parentGroups) {
+          const parentOrdinal = ordinal++;
+          const parentContent = group.map((block) => block.text).join("\n\n").trim();
+          drafts.push(this.pdfDraft(document, parentOrdinal, "parent", path, parentContent, page.page, group[0]));
+          const childBlocks = group.flatMap((block) => splitLongBlock(block.text, this.maxChildCharacters));
+          for (const [childPart, childText] of childBlocks.entries()) {
+            const content = `${path.join(" > ")}\n\n${childText}`.trim();
+            drafts.push(this.pdfDraft(document, ordinal++, "child", path, content, page.page,
+              group[Math.min(childPart, group.length - 1)], parentOrdinal, childPart));
+          }
+        }
+        sectionBlocks = [];
+      };
+      for (const block of blocks) {
+        if (block.kind === "heading") {
+          flush();
+          const level = Math.max(1, Math.min(6, block.heading_level ?? 1));
+          headings.length = level - 1;
+          headings[level - 1] = block.text.trim();
+          continue;
+        }
+        sectionBlocks.push({
+          text: block.text.trim(),
+          ...(block.bbox ? { bbox: block.bbox } : {}),
+          ...(block.region_id ? { region_id: block.region_id } : {}),
+        });
+      }
+      flush();
+    }
+    return drafts;
+  }
+
+  private pdfDraft(
+    document: IndexSourceDocument,
+    ordinal: number,
+    level: "parent" | "child",
+    path: readonly string[],
+    content: string,
+    page: number,
+    block: PdfBlockWithPath | undefined,
+    parentOrdinal?: number,
+    chunkPart?: number,
+  ): IndexChunkDraft {
+    return {
+      memory_id: document.memory_id,
+      ordinal,
+      chunk_level: level,
+      ...(parentOrdinal === undefined ? {} : { parent_ordinal: parentOrdinal }),
+      structure_path: path,
+      content,
+      source_type: document.source_type,
+      entity_keys: document.entity_keys ?? [],
+      citation: withStructureLocator(document.citation, path, level, page, chunkPart, {
+        page,
+        ...(block?.bbox ? {
+          bbox_x: block.bbox[0],
+          bbox_y: block.bbox[1],
+          bbox_width: block.bbox[2],
+          bbox_height: block.bbox[3],
+        } : {}),
+        ...(block?.region_id ? { region_id: block.region_id } : {}),
+      }),
+      token_count: Math.max(1, Math.ceil(content.length / 4)),
+    };
+  }
+}
+
+interface PdfBlockWithPath {
+  readonly text: string;
+  readonly bbox?: readonly [number, number, number, number];
+  readonly region_id?: string;
+}
+
+export class CodeAstChunker implements IndexChunkerPort {
+  private readonly maxChildCharacters: number;
+  private readonly maxParentCharacters: number;
+
+  constructor(options: { readonly max_child_characters?: number; readonly max_parent_characters?: number } = {}) {
+    this.maxChildCharacters = options.max_child_characters ?? 1_200;
+    this.maxParentCharacters = options.max_parent_characters ?? 4_800;
+    validateChunkLimits(this.maxChildCharacters, this.maxParentCharacters, "Code AST");
+  }
+
+  chunk(document: IndexSourceDocument): readonly IndexChunkDraft[] {
+    const source = requireStructuredSource(document, "code-ast");
+    const drafts: IndexChunkDraft[] = [];
+    let ordinal = 0;
+    for (const [rootIndex, node] of source.nodes.entries()) {
+      validateAstNode(node);
+      const path = [source.language, node.name ?? node.kind, String(rootIndex + 1)];
+      const parentOrdinal = ordinal++;
+      const parentText = `${node.signature ?? node.name ?? node.kind}\n\n${node.text}`.trim();
+      const parentParts = splitLongBlock(parentText, this.maxParentCharacters);
+      for (const [partIndex, part] of parentParts.entries()) {
+        const currentParent = partIndex === 0 ? parentOrdinal : ordinal++;
+        drafts.push(codeDraft(document, currentParent, "parent", path, part, source.language, node, undefined));
+        const astParts = flattenAstNodes(node);
+        for (const [childIndex, child] of astParts.entries()) {
+          const childText = `${child.signature ?? child.name ?? child.kind}\n${child.text}`.trim();
+          for (const [partOffset, text] of splitLongBlock(childText, this.maxChildCharacters).entries()) {
+            drafts.push(codeDraft(
+              document,
+              ordinal++,
+              "child",
+              [...path, child.name ?? child.kind, String(childIndex + 1)],
+              text,
+              source.language,
+              child,
+              currentParent,
+              partOffset,
+            ));
+          }
+        }
+      }
+    }
+    return drafts;
+  }
+}
+
+export class TableStructureChunker implements IndexChunkerPort {
+  private readonly maxChildCharacters: number;
+  private readonly maxParentCharacters: number;
+
+  constructor(options: { readonly max_child_characters?: number; readonly max_parent_characters?: number } = {}) {
+    this.maxChildCharacters = options.max_child_characters ?? 1_200;
+    this.maxParentCharacters = options.max_parent_characters ?? 4_800;
+    validateChunkLimits(this.maxChildCharacters, this.maxParentCharacters, "Table");
+  }
+
+  chunk(document: IndexSourceDocument): readonly IndexChunkDraft[] {
+    const source = requireStructuredSource(document, "table");
+    const drafts: IndexChunkDraft[] = [];
+    let ordinal = 0;
+    for (const sheet of source.sheets) {
+      if (!sheet.name.trim()) throw new IndexBuildWorkerError("INVALID_TABLE_SHEET", "Table sheets require names", false);
+      for (const table of sheet.tables) {
+        if (!table.name.trim() || table.headers.length === 0) {
+          throw new IndexBuildWorkerError("INVALID_TABLE", "Tables require a name and at least one header", false);
+        }
+        if (table.rows.some((row) => row.length !== table.headers.length)) {
+          throw new IndexBuildWorkerError("TABLE_WIDTH_MISMATCH", "Table rows must match the header width", false);
+        }
+        const path = [sheet.name.trim(), table.name.trim()];
+        const header = table.headers.map((value, index) => `${index + 1}. ${value}`).join(" | ");
+        const parentOrdinal = ordinal++;
+        const parentContent = `${path.join(" > ")}\n\nColumns: ${header}`;
+        drafts.push(tableDraft(document, parentOrdinal, "parent", path, parentContent, sheet.name, table.name, 0, table.headers.length - 1));
+        const rows = table.rows.length > 0 ? table.rows : [table.headers];
+        let rowIndex = 0;
+        let group: string[] = [];
+        let groupStart = 0;
+        const flush = (endIndex: number) => {
+          if (group.length === 0) return;
+          const raw = `${path.join(" > ")}\n\n${header}\n${group.join("\n")}`;
+          for (const [part, content] of splitLongBlock(raw, this.maxChildCharacters).entries()) {
+            drafts.push(tableDraft(document, ordinal++, "child", path, content, sheet.name, table.name, groupStart, endIndex, part, parentOrdinal));
+          }
+          group = [];
+        };
+        for (const row of rows) {
+          const line = row.map((value, index) => `${table.headers[index]}=${value}`).join(" | ");
+          const addition = line.length + (group.length > 0 ? 1 : 0);
+          if (group.length > 0 && (`${header}\n${group.join("\n")}\n${line}`).length > this.maxChildCharacters) {
+            flush(rowIndex - 1);
+            groupStart = rowIndex;
+          }
+          group.push(line);
+          rowIndex += 1;
+          void addition;
+        }
+        flush(rowIndex - 1);
+      }
+    }
+    return drafts;
+  }
+}
+
+function requireStructuredSource<K extends IndexStructuredSource["kind"]>(
+  document: IndexSourceDocument,
+  kind: K,
+): Extract<IndexStructuredSource, { readonly kind: K }> {
+  if (!document.structured || document.structured.kind !== kind) {
+    throw new IndexBuildWorkerError("STRUCTURED_SOURCE_MISSING", `${kind} chunking requires parser output`, false);
+  }
+  return document.structured as Extract<IndexStructuredSource, { readonly kind: K }>;
+}
+
+function validateChunkLimits(child: number, parent: number, label: string): void {
+  if (!Number.isInteger(child) || child < 128) throw new TypeError(`${label} Child maximum must be at least 128 characters`);
+  if (!Number.isInteger(parent) || parent < child) throw new TypeError(`${label} Parent maximum must be no smaller than Child maximum`);
+}
+
+function groupLayoutBlocks(blocks: readonly PdfBlockWithPath[], maxCharacters: number): readonly (readonly PdfBlockWithPath[])[] {
+  const groups: PdfBlockWithPath[][] = [];
+  let current: PdfBlockWithPath[] = [];
+  let size = 0;
+  for (const block of blocks) {
+    const pieces = splitLongBlock(block.text, maxCharacters);
+    for (const piece of pieces) {
+      const normalized = { ...block, text: piece };
+      const addition = piece.length + (current.length > 0 ? 2 : 0);
+      if (current.length > 0 && size + addition > maxCharacters) {
+        groups.push(current);
+        current = [];
+        size = 0;
+      }
+      current.push(normalized);
+      size += piece.length + (current.length > 1 ? 2 : 0);
+    }
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+function validateAstNode(node: IndexCodeAstNode): void {
+  if (!node.kind.trim() || !node.text.trim() || !Number.isInteger(node.start_line) || !Number.isInteger(node.end_line) ||
+    node.start_line < 1 || node.end_line < node.start_line) {
+    throw new IndexBuildWorkerError("INVALID_AST_NODE", "AST nodes require kind, text and ordered line numbers", false);
+  }
+  for (const child of node.children ?? []) validateAstNode(child);
+}
+
+function flattenAstNodes(root: IndexCodeAstNode): readonly IndexCodeAstNode[] {
+  const children = root.children ?? [];
+  return children.length > 0
+    ? children.flatMap((child) => [child, ...(child.children ? flattenAstNodes(child) : [])])
+    : [root];
+}
+
+function codeDraft(
+  document: IndexSourceDocument,
+  ordinal: number,
+  level: "parent" | "child",
+  path: readonly string[],
+  content: string,
+  language: string,
+  node: IndexCodeAstNode,
+  part?: number,
+  parentOrdinal?: number,
+): IndexChunkDraft {
+  return {
+    memory_id: document.memory_id,
+    ordinal,
+    chunk_level: level,
+    ...(parentOrdinal === undefined ? {} : { parent_ordinal: parentOrdinal }),
+    structure_path: path,
+    content,
+    source_type: document.source_type,
+    entity_keys: document.entity_keys ?? [],
+    citation: withStructureLocator(document.citation, path, level, node.start_line, part, {
+      language,
+      start_line: node.start_line,
+      end_line: node.end_line,
+      node_kind: node.kind,
+      ...(node.name ? { symbol: node.name } : {}),
+    }),
+    token_count: Math.max(1, Math.ceil(content.length / 4)),
+  };
+}
+
+function tableDraft(
+  document: IndexSourceDocument,
+  ordinal: number,
+  level: "parent" | "child",
+  path: readonly string[],
+  content: string,
+  sheet: string,
+  table: string,
+  rowStart: number,
+  rowEnd: number,
+  part?: number,
+  parentOrdinal?: number,
+): IndexChunkDraft {
+  return {
+    memory_id: document.memory_id,
+    ordinal,
+    chunk_level: level,
+    ...(parentOrdinal === undefined ? {} : { parent_ordinal: parentOrdinal }),
+    structure_path: path,
+    content,
+    source_type: document.source_type,
+    entity_keys: document.entity_keys ?? [],
+    citation: withStructureLocator(document.citation, path, level, rowStart, part, {
+      sheet,
+      table,
+      row_start: rowStart,
+      row_end: rowEnd,
+    }),
+    token_count: Math.max(1, Math.ceil(content.length / 4)),
+  };
+}
+
 export class DefaultIndexReadyGate implements IndexReadyGatePort {
   evaluate(input: IndexReadyGateInput): IndexReadyGateResult {
     const reasons: string[] = [];
@@ -682,6 +1054,7 @@ function withStructureLocator(
   level: "parent" | "child",
   sectionPart: number,
   childPart?: number,
+  extra?: Readonly<Record<string, string | number>>,
 ): EvidenceCitation {
   return {
     ...citation,
@@ -691,6 +1064,7 @@ function withStructureLocator(
       chunk_level: level,
       section_part: sectionPart,
       ...(childPart === undefined ? {} : { chunk_part: childPart }),
+      ...(extra ?? {}),
     },
   };
 }

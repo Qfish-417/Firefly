@@ -504,6 +504,8 @@ Overlap 根据句法和语义跨界决定，不采用固定字符比例。列表
 
 当前 M5.3 已为 Markdown 落地 `MarkdownParentChildChunker`。它按标题层级维护 `structure_path`，每个章节生成一个 Parent，再把章节正文按预算生成一个或多个 Child；Child 的检索文本包含受长度约束的标题路径，避免标题关键词只存在于 Parent 而无法召回。Child 通过 `parent_chunk_id` 引用同一 Memory、同一索引版本内的 Parent。稳定 Chunk ID 仍由文档身份、ordinal 和内容决定，Citation Locator 额外保存 `section_path`、`chunk_level`、`section_part` 与 `chunk_part`。PlainText Chunker 仅作为兼容模式保留，不能代表 PDF、代码、表格和多模态结构化分块已经完成。
 
+M5.8 已补齐三类结构化 Chunker：`PdfLayoutChunker` 消费页码、布局块、标题层级、bbox 和 region 标识；`CodeAstChunker` 消费语言、AST 节点、符号路径和起止行；`TableStructureChunker` 消费 sheet/table、表头、行组和列坐标。三者复用 Parent/Child 合同，Parent 只保存上下文、Child 才参与召回和 Embedding，Citation Locator 保留原始结构坐标。缺少 parser output 时返回不可重试的 `STRUCTURED_SOURCE_MISSING`，禁止将纯字符切片伪装成结构化结果。
+
 索引与查询遵循不对称职责：Parent 不生成 Embedding，也不进入 FTS/pgvector 候选；只有 Child 用于精确召回。Ready Gate 要求每个文档至少有一个 Child、父子引用闭合、Parent 不携带 Embedding，且每个 Parent 至少拥有一个 Child。Indexer 在写入 Child 前校验其 Parent 属于同一 Memory 和同一索引版本，禁止通过父引用跨越授权或版本边界。
 
 运行时扩展顺序固定为：
@@ -808,9 +810,9 @@ rag-memory/
 - `DeletionReconciliationScheduler` 与独立进程入口已实现周期扫描、同实例 tick 合并、失败继续、结构化周期观测和 AbortSignal 停止；真实 PostgreSQL 集成已验证 failed 目标经 scheduler 重排后被恢复 Worker 完成。
 - 迁移 011、显式 retention hold 与 `RetiredIndexGarbageCollector` 已实现带保留期的 retired 投影回收；真实 PostgreSQL 集成已验证 active、未到期和审计 hold 均阻断清理，释放 hold 后仅删除到期 Chunk，并保留版本证据与幂等 Outbox 事实。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、对话 Chunker、Neighbor/Entity/Temporal/Region 扩展、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
 
-- 下一批优先实现 PDF/代码/表格 Chunker，再接生产 BM25/ANN Provider 与外部索引回收。
+- 下一批优先接入真实 PDF/OCR、代码解析器和表格解析器的 SourcePort，再接生产 BM25/ANN Provider 与外部索引回收。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 已以 Markdown 验证 Parent/Child、RRF、确定性 Count 聚合和引用闭环；其他内容类型按相同合同逐个接入。
