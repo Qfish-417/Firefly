@@ -127,6 +127,8 @@ M5.9 已落地 `ConversationTurnChunker`：保留轮次、说话人、角色和�
 
 Parser 接入已抽象为 `ParserBackedIndexSourcePort`：可按 `source_type` 插拔本地、远程或模型解析器；严格模式阻断缺失/失败/非法输出，显式降级模式保留原文并传递 parser 诊断码。详见 [ADR 0023](./docs/adr/0023-parser-backed-source-port.md)。
 
+降级索引不会自动进入生产：`allow_degraded_build` 与 `allow_degraded_activation` 必须分别显式开启，默认均关闭。详见 [ADR 0024](./docs/adr/0024-degraded-index-activation-policy.md)。
+
 Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`，响应同时包含因果边、预算、哨兵、PluginRelease、Sandbox、Canary 与当前活动 PluginVersion。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
 
 删除 reconciliation 独立进程至少需要 `DATABASE_URL`，可选配置为 `MEMORY_RECONCILIATION_SCHEDULER_ID`、`MEMORY_RECONCILIATION_INSTANCE_ID`、`MEMORY_RECONCILIATION_INTERVAL_MS`、`MEMORY_RECONCILIATION_STALE_AFTER_MS` 和 `MEMORY_RECONCILIATION_BATCH_SIZE`。启动命令为 `npm run memory:reconcile`；SIGINT/SIGTERM 会在当前周期结束后停止并关闭数据库连接。

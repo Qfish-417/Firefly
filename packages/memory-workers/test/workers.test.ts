@@ -19,6 +19,7 @@ import {
   TableStructureChunker,
   ConversationTurnChunker,
   ParserBackedIndexSourcePort,
+  assertDegradedIndexPolicy,
   indexEvaluationSetDigest,
   PlainTextParagraphChunker,
   RetiredIndexGarbageCollector,
@@ -223,6 +224,24 @@ test("parser-backed source port fails closed in strict mode and marks parser fai
   const chunks = new PdfLayoutChunker({ fallback_mode: "degraded" }).chunk(degraded[0]!);
   assert.equal(chunks[0]?.citation.locator?.parser_diagnostic, "parser-failed");
   assert.equal(chunks[0]?.citation.locator?.parser_id, "parser.pdf.failure");
+});
+
+test("degraded chunks require explicit build and activation policy", () => {
+  const degraded = new PdfLayoutChunker({ fallback_mode: "degraded" }).chunk({
+    memory_id: "memory.worker.policy",
+    content: "source",
+    source_type: "application/pdf",
+    citation: { artifact_id: "artifact.worker.policy", uri: "s3://unit/policy.pdf", digest },
+  });
+  assert.throws(() => assertDegradedIndexPolicy(degraded, {
+    auto_activate: false, allow_degraded_build: false, allow_degraded_activation: false,
+  }), /allow_degraded_build/u);
+  assert.throws(() => assertDegradedIndexPolicy(degraded, {
+    auto_activate: true, allow_degraded_build: true, allow_degraded_activation: false,
+  }), /allow_degraded_activation/u);
+  assert.doesNotThrow(() => assertDegradedIndexPolicy(degraded, {
+    auto_activate: false, allow_degraded_build: true, allow_degraded_activation: false,
+  }));
 });
 
 test("ready gate requires every source document to produce a Chunk", () => {

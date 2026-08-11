@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="26">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="27">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -786,6 +786,26 @@
         <mxCell id="p26-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;dashed=1;" edge="1" parent="p26-1" source="p26-adapter" target="p26-policy"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p26-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p26-1" source="p26-adapter" target="p26-worker"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p26-boundary" value="Provider implementations may be local, remote or model-backed. The Worker receives only typed parser output or an explicitly diagnosed degraded source." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p26-1"><mxGeometry x="290" y="900" width="1020" height="40" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-degraded-index-policy" name="27-Degraded Index Policy">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p27-0"/><mxCell id="p27-1" parent="p27-0"/>
+        <mxCell id="p27-title" value="Degraded Index Governance: build continuity is not production activation" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p27-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+        <mxCell id="p27-draft" value="Parser-degraded Chunk&#xa;Citation Locator parser_mode=degraded&#xa;diagnostic is immutable" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p27-1"><mxGeometry x="560" y="110" width="480" height="115" as="geometry"/></mxCell>
+        <mxCell id="p27-build" value="allow_degraded_build&#xa;explicit continuity permission&#xa;ready build may be recorded" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p27-1"><mxGeometry x="250" y="350" width="340" height="125" as="geometry"/></mxCell>
+        <mxCell id="p27-activation" value="allow_degraded_activation&#xa;separate production permission&#xa;default false" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p27-1"><mxGeometry x="1010" y="350" width="340" height="125" as="geometry"/></mxCell>
+        <mxCell id="p27-ready" value="Ready / audit record&#xa;quality report carries degraded evidence&#xa;no silent semantic claim" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;" vertex="1" parent="p27-1"><mxGeometry x="250" y="610" width="340" height="125" as="geometry"/></mxCell>
+        <mxCell id="p27-active" value="Active index&#xa;only after both explicit permissions&#xa;otherwise activation blocked" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p27-1"><mxGeometry x="1010" y="610" width="340" height="125" as="geometry"/></mxCell>
+        <mxCell id="p27-error" value="Fail closed&#xa;DEGRADED_INDEX_BUILD_NOT_ALLOWED&#xa;or DEGRADED_INDEX_ACTIVATION_NOT_ALLOWED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=12;fontStyle=1;" vertex="1" parent="p27-1"><mxGeometry x="560" y="820" width="480" height="75" as="geometry"/></mxCell>
+        <mxCell id="p27-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p27-1" source="p27-draft" target="p27-build"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p27-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p27-1" source="p27-draft" target="p27-activation"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p27-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p27-1" source="p27-build" target="p27-ready"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p27-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p27-1" source="p27-activation" target="p27-active"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p27-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;dashed=1;" edge="1" parent="p27-1" source="p27-build" target="p27-error"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p27-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;dashed=1;" edge="1" parent="p27-1" source="p27-activation" target="p27-error"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

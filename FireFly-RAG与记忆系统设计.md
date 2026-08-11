@@ -510,6 +510,8 @@ M5.9 已补齐 `ConversationTurnChunker`：按稳定 sequence 排序并保留 tu
 
 解析器接入通过 `ParserBackedIndexSourcePort` 完成：它按 `source_type` 选择 `IndexSourceParserPort`，校验 typed `IndexStructuredSource`，保留 Source 顺序并记录 `parser-missing`、`parser-failed` 或 `parser-invalid-output`。`parser_failure_mode=strict` 默认阻断构建；显式 `degraded` 才把原文交给 Chunker 的降级路径。Worker 不绑定 PDF/OCR、AST、表格或转录的第三方实现。
 
+降级索引还受独立激活策略约束：`allow_degraded_build` 控制是否允许完成降级构建，`allow_degraded_activation` 控制是否允许自动激活；两者默认关闭。即使允许构建，未单独授权激活也会记录 `DEGRADED_INDEX_ACTIVATION_NOT_ALLOWED` 并阻断 active 切换。
+
 索引与查询遵循不对称职责：Parent 不生成 Embedding，也不进入 FTS/pgvector 候选；只有 Child 用于精确召回。Ready Gate 要求每个文档至少有一个 Child、父子引用闭合、Parent 不携带 Embedding，且每个 Parent 至少拥有一个 Child。Indexer 在写入 Child 前校验其 Parent 属于同一 Memory 和同一索引版本，禁止通过父引用跨越授权或版本边界。
 
 运行时扩展顺序固定为：

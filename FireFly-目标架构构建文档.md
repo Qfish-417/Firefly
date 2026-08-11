@@ -345,6 +345,7 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 - PostgreSQL 已保存 ACL、Fact/Event、Chunk 和索引版本；MinIO/S3 对象删除路径已接入，完整对象写入与 Lineage 管理仍待实现。
 - 已实现 PostgreSQL FTS 基线 + pgvector 精确检索、RRF、双重 ACL 和引用；Markdown、PDF Layout、代码 AST、表格与对话已采用只召回 Child、按预算扩展 Parent 的结构化分块，`ParserBackedIndexSourcePort` 已提供真实 parser 的插拔边界。解析器不可用时默认严格失败，只有显式 degraded 策略才允许带标记的纯文本降级。
 - 已完成一个 `COUNT DISTINCT` 聚合用例，禁止由 LLM 自行计数。
+- 降级 parser 输出与 active 索引已分离治理：构建和激活分别需要显式授权，默认 fail closed。
 - 已实现 `building -> ready -> active -> retired/failed` 索引生命周期，正式查询只读单一 active 版本。
 - 已实现租约式索引构建 Worker、基础 Ready Gate、确定性 Chunk/Embedding 写入、崩溃恢复与可选原子激活。
 - 已实现版本化 `IndexQualityReport` 与高级 Ready Gate：结构、来源水位、ACL、Recall、Citation 检查必须齐全，分数/阈值/样本量/证据可审计，并与构建身份和配置 Digest 绑定。

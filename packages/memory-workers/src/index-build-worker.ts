@@ -186,6 +186,9 @@ export interface IndexBuildWorkerOptions {
   readonly embedding_budget?: ModelBudget;
   readonly ready_gate?: IndexReadyGatePort;
   readonly auto_activate: boolean;
+  /** Degraded parser output must be explicitly allowed for build and activation separately. */
+  readonly allow_degraded_build?: boolean;
+  readonly allow_degraded_activation?: boolean;
   readonly batch_size?: number;
   readonly lease_duration_ms?: number;
   readonly max_attempts?: number;
@@ -267,6 +270,11 @@ export class RetrievalIndexBuildWorker {
     validateDocuments(documents);
     const drafts = documents.flatMap((document) => this.chunker.chunk(document));
     validateDrafts(drafts);
+    assertDegradedIndexPolicy(drafts, {
+      auto_activate: this.options.auto_activate,
+      allow_degraded_build: this.options.allow_degraded_build ?? false,
+      allow_degraded_activation: this.options.allow_degraded_activation ?? false,
+    });
     const retrievalDrafts = drafts.filter((draft) => (draft.chunk_level ?? "child") === "child");
     const vectors = await this.embed(task, retrievalDrafts);
     const vectorByDraft = new Map(retrievalDrafts.map((draft, index) => [draftKey(draft), vectors?.[index]]));
@@ -1191,6 +1199,32 @@ function validateDrafts(drafts: readonly IndexChunkDraft[]): void {
     if (!parent || parent.chunk_level !== "parent") {
       throw new IndexBuildWorkerError("PARENT_CHUNK_MISSING", "Child Chunk references a missing Parent", false);
     }
+  }
+}
+
+export function assertDegradedIndexPolicy(
+  drafts: readonly IndexChunkDraft[],
+  options: {
+    readonly auto_activate: boolean;
+    readonly allow_degraded_build: boolean;
+    readonly allow_degraded_activation: boolean;
+  },
+): void {
+  const degraded = drafts.some((draft) => draft.citation.locator?.parser_mode === "degraded");
+  if (!degraded) return;
+  if (!options.allow_degraded_build) {
+    throw new IndexBuildWorkerError(
+      "DEGRADED_INDEX_BUILD_NOT_ALLOWED",
+      "Parser-degraded chunks require explicit allow_degraded_build",
+      false,
+    );
+  }
+  if (options.auto_activate && !options.allow_degraded_activation) {
+    throw new IndexBuildWorkerError(
+      "DEGRADED_INDEX_ACTIVATION_NOT_ALLOWED",
+      "Parser-degraded chunks cannot be auto-activated without explicit allow_degraded_activation",
+      false,
+    );
   }
 }
 
