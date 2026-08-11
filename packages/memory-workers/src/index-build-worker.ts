@@ -80,6 +80,15 @@ export interface IndexTable {
   readonly rows: readonly (readonly string[])[];
 }
 
+export type StructuredChunkerFallbackMode = "strict" | "degraded";
+
+export interface StructuredChunkerOptions {
+  readonly max_child_characters?: number;
+  readonly max_parent_characters?: number;
+  /** Strict by default. Degraded mode is an explicit plain-text fallback. */
+  readonly fallback_mode?: StructuredChunkerFallbackMode;
+}
+
 export interface IndexSourcePort {
   load(task: IndexBuildTask): Promise<readonly IndexSourceDocument[]>;
 }
@@ -447,15 +456,18 @@ export class MarkdownParentChildChunker implements IndexChunkerPort {
 export class PdfLayoutChunker implements IndexChunkerPort {
   private readonly maxChildCharacters: number;
   private readonly maxParentCharacters: number;
+  private readonly fallbackMode: StructuredChunkerFallbackMode;
 
-  constructor(options: { readonly max_child_characters?: number; readonly max_parent_characters?: number } = {}) {
+  constructor(options: StructuredChunkerOptions = {}) {
     this.maxChildCharacters = options.max_child_characters ?? 1_200;
     this.maxParentCharacters = options.max_parent_characters ?? 4_800;
+    this.fallbackMode = options.fallback_mode ?? "strict";
     validateChunkLimits(this.maxChildCharacters, this.maxParentCharacters, "PDF");
   }
 
   chunk(document: IndexSourceDocument): readonly IndexChunkDraft[] {
-    const source = requireStructuredSource(document, "pdf-layout");
+    const source = structuredSourceOrFallback(document, "pdf-layout", this.fallbackMode);
+    if (!source) return degradedTextChunks(document, "pdf-layout", this.maxChildCharacters);
     const drafts: IndexChunkDraft[] = [];
     let ordinal = 0;
     for (const page of source.pages) {
@@ -546,15 +558,18 @@ interface PdfBlockWithPath {
 export class CodeAstChunker implements IndexChunkerPort {
   private readonly maxChildCharacters: number;
   private readonly maxParentCharacters: number;
+  private readonly fallbackMode: StructuredChunkerFallbackMode;
 
-  constructor(options: { readonly max_child_characters?: number; readonly max_parent_characters?: number } = {}) {
+  constructor(options: StructuredChunkerOptions = {}) {
     this.maxChildCharacters = options.max_child_characters ?? 1_200;
     this.maxParentCharacters = options.max_parent_characters ?? 4_800;
+    this.fallbackMode = options.fallback_mode ?? "strict";
     validateChunkLimits(this.maxChildCharacters, this.maxParentCharacters, "Code AST");
   }
 
   chunk(document: IndexSourceDocument): readonly IndexChunkDraft[] {
-    const source = requireStructuredSource(document, "code-ast");
+    const source = structuredSourceOrFallback(document, "code-ast", this.fallbackMode);
+    if (!source) return degradedTextChunks(document, "code-ast", this.maxChildCharacters);
     const drafts: IndexChunkDraft[] = [];
     let ordinal = 0;
     for (const [rootIndex, node] of source.nodes.entries()) {
@@ -592,15 +607,18 @@ export class CodeAstChunker implements IndexChunkerPort {
 export class TableStructureChunker implements IndexChunkerPort {
   private readonly maxChildCharacters: number;
   private readonly maxParentCharacters: number;
+  private readonly fallbackMode: StructuredChunkerFallbackMode;
 
-  constructor(options: { readonly max_child_characters?: number; readonly max_parent_characters?: number } = {}) {
+  constructor(options: StructuredChunkerOptions = {}) {
     this.maxChildCharacters = options.max_child_characters ?? 1_200;
     this.maxParentCharacters = options.max_parent_characters ?? 4_800;
+    this.fallbackMode = options.fallback_mode ?? "strict";
     validateChunkLimits(this.maxChildCharacters, this.maxParentCharacters, "Table");
   }
 
   chunk(document: IndexSourceDocument): readonly IndexChunkDraft[] {
-    const source = requireStructuredSource(document, "table");
+    const source = structuredSourceOrFallback(document, "table", this.fallbackMode);
+    if (!source) return degradedTextChunks(document, "table", this.maxChildCharacters);
     const drafts: IndexChunkDraft[] = [];
     let ordinal = 0;
     for (const sheet of source.sheets) {
@@ -647,14 +665,34 @@ export class TableStructureChunker implements IndexChunkerPort {
   }
 }
 
-function requireStructuredSource<K extends IndexStructuredSource["kind"]>(
+function structuredSourceOrFallback<K extends IndexStructuredSource["kind"]>(
   document: IndexSourceDocument,
   kind: K,
-): Extract<IndexStructuredSource, { readonly kind: K }> {
-  if (!document.structured || document.structured.kind !== kind) {
-    throw new IndexBuildWorkerError("STRUCTURED_SOURCE_MISSING", `${kind} chunking requires parser output`, false);
-  }
-  return document.structured as Extract<IndexStructuredSource, { readonly kind: K }>;
+  fallbackMode: StructuredChunkerFallbackMode,
+): Extract<IndexStructuredSource, { readonly kind: K }> | undefined {
+  if (document.structured?.kind === kind) return document.structured as Extract<IndexStructuredSource, { readonly kind: K }>;
+  if (fallbackMode === "degraded") return undefined;
+  throw new IndexBuildWorkerError("STRUCTURED_SOURCE_MISSING", `${kind} chunking requires parser output`, false);
+}
+
+function degradedTextChunks(
+  document: IndexSourceDocument,
+  expectedStructure: IndexStructuredSource["kind"],
+  maxCharacters: number,
+): readonly IndexChunkDraft[] {
+  const chunks = new PlainTextParagraphChunker(maxCharacters).chunk(document);
+  return chunks.map((chunk) => ({
+    ...chunk,
+    citation: {
+      ...chunk.citation,
+      locator: {
+        ...(chunk.citation.locator ?? {}),
+        parser_mode: "degraded",
+        degradation: "parser-unavailable",
+        expected_structure: expectedStructure,
+      },
+    },
+  }));
 }
 
 function validateChunkLimits(child: number, parent: number, label: string): void {

@@ -139,6 +139,22 @@ test("structured chunkers fail closed when parser output is absent", () => {
   assert.throws(() => new TableStructureChunker().chunk(document), /parser output/);
 });
 
+test("structured chunkers support an explicit degraded text fallback", () => {
+  const document = {
+    memory_id: "memory.worker.degraded",
+    content: "first paragraph\n\nsecond paragraph",
+    source_type: "application/pdf",
+    citation: { artifact_id: "artifact.worker.degraded", uri: "s3://unit/source.bin", digest },
+  };
+  const chunks = new PdfLayoutChunker({ fallback_mode: "degraded" }).chunk(document);
+
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0]?.citation.locator?.parser_mode, "degraded");
+  assert.equal(chunks[0]?.citation.locator?.expected_structure, "pdf-layout");
+  assert.equal(chunks[0]?.citation.locator?.degradation, "parser-unavailable");
+  assert.deepEqual(chunks[0]?.structure_path, []);
+});
+
 test("ready gate requires every source document to produce a Chunk", () => {
   const gate = new DefaultIndexReadyGate();
   const documents = ["memory.worker.first", "memory.worker.empty"].map((memory_id) => ({

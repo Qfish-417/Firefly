@@ -17,9 +17,12 @@ Extend `IndexSourceDocument` with optional typed parser output and add three det
 
 All three emit a Parent for context and Child chunks for recall. Parent chunks never receive embeddings. Child identity remains a function of index version, Memory, ordinal and immutable content. Missing or mismatched parser output is a non-retryable `STRUCTURED_SOURCE_MISSING` error; a structured chunker must never silently fall back to character slicing. Parser provenance and configuration belong in the source watermark/configuration Digest so a parser upgrade creates a new build and quality report.
 
+Missing or mismatched parser output is a non-retryable `STRUCTURED_SOURCE_MISSING` error by default. Callers may explicitly select `fallback_mode: "degraded"`; this uses deterministic plain-text paragraphs and writes `parser_mode=degraded`, `degradation=parser-unavailable` and `expected_structure` into the Citation Locator. Degraded chunks preserve service continuity but are not evidence that layout, AST or table semantics were recovered.
+
 ## Consequences
 
 - Evidence can cite the original page/region, code lines or table coordinates.
 - Retrieval and context expansion share one contract across content types.
+- Deployments can remain available during parser outages only when the degraded policy is explicit and observable.
 - Real PDF/OCR, AST and spreadsheet parsers still need SourcePort adapters; the chunkers deliberately do not embed third-party parser dependencies.
 - Oversized parser nodes can still require policy-specific splitting, but every split retains its structural path and locator.

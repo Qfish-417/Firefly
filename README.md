@@ -121,7 +121,7 @@ npm run admin:start
 docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 ```
 
-M5.8 结构化 Chunker 已落地：`PdfLayoutChunker` 保留 page/bbox/heading/region，`CodeAstChunker` 保留 language/symbol/AST/line，`TableStructureChunker` 保留 sheet/table/header/row/column；三者复用 Parent/Child 合同并在缺失 parser output 时 fail closed。架构图新增第 24 页，决策记录见 [ADR 0021](./docs/adr/0021-structured-document-chunkers.md)。
+M5.8 结构化 Chunker 已落地：`PdfLayoutChunker` 保留 page/bbox/heading/region，`CodeAstChunker` 保留 language/symbol/AST/line，`TableStructureChunker` 保留 sheet/table/header/row/column；默认在缺失 parser output 时 fail closed，也支持显式 `fallback_mode=degraded` 的纯文本降级并标记 Citation Locator。架构图新增第 24 页，决策记录见 [ADR 0021](./docs/adr/0021-structured-document-chunkers.md)。
 
 Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`，响应同时包含因果边、预算、哨兵、PluginRelease、Sandbox、Canary 与当前活动 PluginVersion。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
 
