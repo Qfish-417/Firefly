@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { EvidenceCitation } from "@firefly/contracts";
+import type { EvidenceCitation, IndexBuildTask, IndexEvaluationCase } from "@firefly/contracts";
 import type { EmbeddingPort, ModelBudget } from "@firefly/model-gateway";
 import type { QuestLabDatabase } from "@firefly/persistence";
 import type {
@@ -51,6 +51,17 @@ interface MemorySearchRow {
   readonly citation_digest: string;
   readonly citation_locator: Readonly<Record<string, string | number>>;
   readonly score: number | string;
+}
+
+interface IndexQualitySearchRow extends MemorySearchRow {
+  readonly memory_id: string;
+}
+
+export interface PostgresIndexQualityEvaluationHit {
+  readonly chunk_id: string;
+  readonly memory_id: string;
+  readonly score: number;
+  readonly citation: EvidenceCitation;
 }
 
 interface ParentExpansionRow extends Omit<MemorySearchRow, "score"> {
@@ -256,6 +267,81 @@ export class PostgresLexicalRetriever implements Retriever {
     `.execute(this.db);
     call.signal?.throwIfAborted();
     return result.rows.map((row) => toHit(row, normalizeLexicalScore(Number(row.score))));
+  }
+}
+
+export class PostgresBuildingIndexQualityEvaluator {
+  private readonly db: Kysely<QuestLabDatabase>;
+
+  constructor(db: Kysely<QuestLabDatabase>) {
+    this.db = db;
+  }
+
+  async search(input: {
+    readonly task: IndexBuildTask;
+    readonly evaluation_case: IndexEvaluationCase;
+  }): Promise<readonly PostgresIndexQualityEvaluationHit[]> {
+    const evaluationCase = input.evaluation_case;
+    if (evaluationCase.stage !== "lexical" || !evaluationCase.query.trim() || !evaluationCase.purpose.trim()) {
+      throw new PostgresRetrievalPolicyError("Building-index evaluation requires a lexical query and purpose");
+    }
+    if (evaluationCase.principal.tenant_id !== input.task.tenant_id) {
+      throw new PostgresRetrievalPolicyError("Building-index evaluation principal must belong to the build tenant");
+    }
+    const version = await this.db
+      .selectFrom("questlab.retrieval_index_version")
+      .select(["tenant_id", "logical_name", "configuration_digest", "source_watermark", "status"])
+      .where("index_version_id", "=", input.task.index_version_id)
+      .executeTakeFirst();
+    if (!version || version.status !== "building") {
+      throw new PostgresRetrievalPolicyError("Index quality evaluation may only read its building index version");
+    }
+    if (
+      version.tenant_id !== input.task.tenant_id ||
+      version.logical_name !== input.task.logical_name ||
+      version.configuration_digest !== input.task.configuration_digest ||
+      version.source_watermark !== input.task.source_watermark
+    ) {
+      throw new PostgresRetrievalPolicyError("Building index identity does not match the quality evaluation task");
+    }
+
+    const access = readableMemoryPredicate(evaluationCase.principal);
+    const result = await sql<IndexQualitySearchRow>`
+      WITH query AS (SELECT websearch_to_tsquery('simple', ${evaluationCase.query}) AS value)
+      SELECT
+        chunk.chunk_id,
+        chunk.memory_id,
+        chunk.content,
+        chunk.token_count,
+        chunk.source_type,
+        chunk.entity_keys,
+        chunk.citation_artifact_id,
+        chunk.citation_uri,
+        chunk.citation_digest,
+        chunk.citation_locator,
+        ts_rank_cd(chunk.search_vector, query.value)::double precision AS score
+      FROM questlab.memory_chunk AS chunk
+      JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
+      CROSS JOIN query
+      WHERE chunk.index_version_id = ${input.task.index_version_id}
+        AND chunk.chunk_level = 'child'
+        AND memory.status = 'active'
+        AND chunk.search_vector @@ query.value
+        AND ${access}
+      ORDER BY score DESC, chunk.chunk_id ASC
+      LIMIT ${evaluationCase.max_results}
+    `.execute(this.db);
+    return result.rows.map((row) => ({
+      chunk_id: row.chunk_id,
+      memory_id: row.memory_id,
+      score: normalizeLexicalScore(Number(row.score)),
+      citation: {
+        artifact_id: row.citation_artifact_id,
+        uri: row.citation_uri,
+        digest: row.citation_digest as `sha256:${string}`,
+        ...(Object.keys(row.citation_locator).length > 0 ? { locator: row.citation_locator } : {}),
+      },
+    }));
   }
 }
 

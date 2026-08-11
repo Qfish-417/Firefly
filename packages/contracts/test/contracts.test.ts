@@ -7,6 +7,7 @@ import {
   type ArtifactRef,
   type ContractName,
   type EvidencePack,
+  type IndexEvaluationSet,
   type IndexQualityReport,
   type QueryPlan,
 } from "../src/index.ts";
@@ -112,6 +113,36 @@ const validIndexBuildTask = {
   embedding_dimensions: 3,
   requested_at: "2026-08-10T12:00:00Z",
 } as const;
+
+const validIndexEvaluationSet = {
+  schema_version: 1,
+  evaluation_set_id: "index-eval.contract.01",
+  logical_name: "memory.hybrid",
+  thresholds: { acl: 1, recall: 0.9, citation: 1 },
+  cases: [{
+    case_id: "index-eval-case.contract.01",
+    stage: "lexical",
+    query: "solar daylight variation",
+    purpose: "index_quality_gate",
+    principal: { tenant_id: "tenant.questlab", user_id: "learner.contract.01" },
+    max_results: 10,
+    expected_memory_ids: ["memory.solar.public"],
+    forbidden_memory_ids: ["memory.solar.private"],
+    expected_citations: [{
+      memory_id: "memory.solar.public",
+      artifact_id: "artifact.evidence.01",
+      uri: "https://artifacts.firefly.local/evidence/01.json",
+      digest,
+      locator: { section_path: "Solar > Daylight" },
+    }],
+  }],
+  artifact_ref: {
+    ...evidenceArtifact,
+    artifact_id: "artifact.index-eval.contract.01",
+    uri: "https://artifacts.firefly.local/evaluations/index-eval.contract.01.json",
+    media_type: "application/vnd.firefly.index-evaluation-set+json",
+  },
+} satisfies IndexEvaluationSet;
 
 const validIndexQualityReport = {
   schema_version: 1,
@@ -353,6 +384,7 @@ const validContracts: Record<ContractName, unknown> = {
   EvidenceItem: validEvidenceItem,
   EvidencePack: validEvidencePack,
   IndexBuildTask: validIndexBuildTask,
+  IndexEvaluationSet: validIndexEvaluationSet,
   IndexQualityReport: validIndexQualityReport,
   IndexBuildResult: validIndexBuildResult,
   DeletionPropagationTask: validDeletionTask,

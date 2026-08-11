@@ -536,7 +536,9 @@ IndexBuildTask -> building -> ready -> active -> retired
 
 `packages/memory-workers` 已实现 `RetrievalIndexBuildWorker`：它按事件类型领取带租约的 `RetrievalIndexBuildRequested`，通过 `IndexSourcePort` 加载来源、确定性分块、仅为可召回 Child 调用独立 `EmbeddingPort`、幂等写入版本绑定 Chunk，通过 Ready Gate 后完成并可原子激活。每次门禁生成版本化 `IndexQualityReport`，记录五类检查的 score、threshold、sample size、摘要和证据引用，并与 build ID、index version、source watermark 和 configuration Digest 绑定；PostgreSQL 持久化报告，Repository 拒绝身份不匹配或结果状态矛盾的报告。Worker 重启时按持久状态恢复：`building` 继续构建，`ready` 只补激活，`active/retired` 视为完成，`failed` 不重复构建。可重试故障指数退避，超过 attempt 上限后把版本和 Outbox 事件置为可审计终态。
 
-`SourceWatermarkQualityProbe` 已提供真实水位比较逻辑；ACL/Recall/Citation 的 Probe 合同和强制装配已经完成，但生产实现必须读取部署侧 ACL 抽样器和固定评测集，当前集成测试中的确定性 Probe 只验证编排与持久化，不代表生产检索质量已经达标。
+`SourceWatermarkQualityProbe` 已提供真实水位比较逻辑。M5.4 新增版本化 `IndexEvaluationSet`：每个用例固定 lexical 查询、查询主体、允许召回 Memory、禁止泄露 Memory、预期 Citation、TopK 和三项阈值，规范化内容必须与 `artifact_ref.digest` 一致。`FixedIndexEvaluationRunner` 只执行一次数据集，ACL、Recall、Citation Probe 共享结果并分别计分，质量报告引用同一不可变评测集 Artifact。
+
+`PostgresBuildingIndexQualityEvaluator` 是门禁专用读取通道：它要求版本仍为 `building`，并逐项核对 task 的 index version、tenant、logical name、configuration Digest 和 source watermark；查询复用真实 Memory ACL，但不修改正常 Retriever 的 active-only 约束。版本激活后该通道拒绝读取。当前真实集成已经覆盖 PostgreSQL lexical 的允许召回、私有 Memory 不泄露和结构化 Citation 精确匹配；pgvector/vector 与完整 hybrid 固定评测仍待实现，因此当前报告不能解释为向量召回质量已达标。
 
 ## 11. 多模态设计
 
@@ -798,10 +800,11 @@ rag-memory/
 - `IndexQualityReport`、迁移 009 和 `AdvancedIndexReadyGate` 已实现五类质量检查的强制装配、阈值判定、不可变身份绑定和 PostgreSQL 审计持久化。
 - 对象存储删除消费者已通过官方 AWS S3 SDK 接入真实 MinIO；目标定向领取、指数退避、attempt 耗尽终态及 failed 目标 reconciliation 已通过 PostgreSQL/MinIO 集成测试。
 - 迁移 010、`MarkdownParentChildChunker` 与 `PostgresParentChildExpander` 已实现 Markdown Parent/Child 分块：只召回 Child、Parent 无 Embedding、父引用受 Memory/索引版本约束、扩展后重新授权、共享 Parent 去重，并在 Parent 超预算时回退 Child。
+- `IndexEvaluationSet`、固定评测 Runner、ACL/Recall/Citation Probe 与 `PostgresBuildingIndexQualityEvaluator` 已实现 digest-bound lexical 质量评测；真实集成在 building 版本上验证授权、召回和 Citation，激活后评测旁路关闭。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、生产 ACL/Recall/Citation Probe 与固定评测集、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、retired 索引垃圾回收、reconciliation 周期调度器、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、vector/hybrid 固定质量评测、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、retired 索引垃圾回收、reconciliation 周期调度器、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
 
-- 下一批优先接入生产质量 Probe/评测集，再补 reconciliation 调度与 retired 版本回收，然后扩展 PDF/代码/表格 Chunker，最后接生产 BM25/ANN Provider。
+- 下一批优先补 reconciliation 调度与 retired 版本回收，再扩展 vector/hybrid 固定评测和 PDF/代码/表格 Chunker，最后接生产 BM25/ANN Provider。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 已以 Markdown 验证 Parent/Child、RRF、确定性 Count 聚合和引用闭环；其他内容类型按相同合同逐个接入。

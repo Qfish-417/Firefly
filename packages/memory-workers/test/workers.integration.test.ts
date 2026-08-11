@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import type { ArtifactRef, IndexBuildTask } from "@firefly/contracts";
+import type { ArtifactRef, IndexBuildTask, IndexEvaluationSet } from "@firefly/contracts";
 import type { EmbeddingPort } from "@firefly/model-gateway";
 import {
   MemoryRepository,
@@ -13,6 +13,7 @@ import {
 } from "@firefly/persistence";
 import {
   PostgresLexicalRetriever,
+  PostgresBuildingIndexQualityEvaluator,
   PostgresMemoryIndexer,
   PostgresParentChildExpander,
   PostgresVectorRetriever,
@@ -21,12 +22,13 @@ import { sql } from "kysely";
 
 import {
   AdvancedIndexReadyGate,
+  createFixedIndexQualityProbes,
   DeletionPropagationWorker,
   MarkdownParentChildChunker,
   ObjectStoreDeletionConsumer,
+  indexEvaluationSetDigest,
   RetrievalIndexBuildWorker,
   SourceWatermarkQualityProbe,
-  type IndexQualityProbe,
 } from "../src/index.ts";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -53,6 +55,7 @@ test(
       const outbox = new OutboxRepository(db);
       const indexer = new PostgresMemoryIndexer(db);
       const sourceArtifact = artifact("artifact.worker.source", "s3://questlab/memories/source.txt");
+      const forbiddenArtifact = artifact("artifact.worker.forbidden", "s3://questlab/memories/forbidden.txt");
       await memories.capture({
         memory_id: "memory.worker.source",
         tenant_id: "tenant.worker",
@@ -67,9 +70,58 @@ test(
         sensitivity: "internal",
         status: "active",
       });
+      await memories.capture({
+        memory_id: "memory.worker.forbidden",
+        tenant_id: "tenant.worker",
+        owner_type: "user",
+        owner_id: "user.worker.other",
+        scope: "user_private",
+        stage: "structured",
+        kind: "document",
+        content_digest: forbiddenArtifact.digest,
+        source_refs: [forbiddenArtifact],
+        confidence: 1,
+        sensitivity: "restricted",
+        status: "active",
+      });
 
       const readyBuild = buildTask("ready");
       await indexes.createBuild(readyBuild);
+      const evaluationPayload = {
+        schema_version: 1,
+        evaluation_set_id: "index-eval.worker.integration",
+        logical_name: "memory.hybrid",
+        thresholds: { acl: 1, recall: 1, citation: 1 },
+        cases: [{
+          case_id: "index-eval-case.worker.integration",
+          stage: "lexical",
+          query: "solar daylight",
+          purpose: "index_quality_gate",
+          principal: { tenant_id: "tenant.worker", user_id: "user.worker.allowed" },
+          max_results: 10,
+          expected_memory_ids: ["memory.worker.source"],
+          forbidden_memory_ids: ["memory.worker.forbidden"],
+          expected_citations: [{
+            memory_id: "memory.worker.source",
+            artifact_id: sourceArtifact.artifact_id,
+            uri: sourceArtifact.uri,
+            digest: sourceArtifact.digest,
+            locator: { section_path: "Solar Systems", chunk_level: "child" },
+          }],
+        }],
+      } as const;
+      const evaluationSet: IndexEvaluationSet = {
+        ...evaluationPayload,
+        artifact_ref: {
+          artifact_id: "artifact.index-eval.worker.integration",
+          uri: "s3://questlab/evaluations/index-eval.worker.integration.json",
+          digest: indexEvaluationSetDigest(evaluationPayload),
+          media_type: "application/vnd.firefly.index-evaluation-set+json",
+          scope: "tenant",
+          owner_id: "tenant.worker",
+          lineage_ids: [sourceArtifact.artifact_id, forbiddenArtifact.artifact_id],
+        },
+      };
       const embeddings: EmbeddingPort = {
         embed: async ({ inputs }) => ({
           vectors: inputs.map(() => [1, 0, 0]),
@@ -86,9 +138,7 @@ test(
         embedding_budget: { max_tokens: 1_000, max_cost_usd: 0.01, max_duration_ms: 10_000 },
         ready_gate: new AdvancedIndexReadyGate([
           new SourceWatermarkQualityProbe((task) => task.source_watermark),
-          passingProbe("acl"),
-          passingProbe("recall"),
-          passingProbe("citation"),
+          ...createFixedIndexQualityProbes(evaluationSet, new PostgresBuildingIndexQualityEvaluator(db)),
         ]),
         chunker: new MarkdownParentChildChunker(),
         auto_activate: true,
@@ -96,19 +146,31 @@ test(
         source: {
           load: async (task) => task.build_id.endsWith("empty")
             ? []
-            : [{
-                memory_id: "memory.worker.source",
-                content: "# Solar Systems\n\nOutput follows daylight.\n\nBattery storage supports the night cycle.",
-                source_type: "memory.document",
-                entity_keys: ["concept.solar", "concept.storage"],
-                citation: { artifact_id: sourceArtifact.artifact_id, uri: sourceArtifact.uri, digest: sourceArtifact.digest },
-              }],
+            : [
+                {
+                  memory_id: "memory.worker.source",
+                  content: "# Solar Systems\n\nOutput follows daylight.\n\nBattery storage supports the night cycle.",
+                  source_type: "memory.document",
+                  entity_keys: ["concept.solar", "concept.storage"],
+                  citation: { artifact_id: sourceArtifact.artifact_id, uri: sourceArtifact.uri, digest: sourceArtifact.digest },
+                },
+                {
+                  memory_id: "memory.worker.forbidden",
+                  content: "# Solar Systems\n\nPrivate output follows daylight.",
+                  source_type: "memory.document",
+                  entity_keys: ["concept.solar", "concept.private"],
+                  citation: { artifact_id: forbiddenArtifact.artifact_id, uri: forbiddenArtifact.uri, digest: forbiddenArtifact.digest },
+                },
+              ],
         },
       });
       assert.deepEqual(await buildWorker.runBatch(), { claimed: 1, completed: 1, failed: 0, released: 0 });
       const activeVersion = await indexes.getById(readyBuild.index_version_id);
       assert.equal(activeVersion?.status, "active");
-      const qualityReport = activeVersion?.quality_report as { passed?: boolean; checks?: readonly { name?: string }[] };
+      const qualityReport = activeVersion?.quality_report as {
+        passed?: boolean;
+        checks?: readonly { name?: string; score?: number; evidence_refs?: readonly ArtifactRef[] }[];
+      };
       assert.equal(qualityReport.passed, true);
       assert.deepEqual(qualityReport.checks?.map((check) => check.name), [
         "structure",
@@ -117,15 +179,28 @@ test(
         "recall",
         "citation",
       ]);
+      assert.ok(qualityReport.checks?.slice(2).every((check) =>
+        check.score === 1 && check.evidence_refs?.[0]?.artifact_id === evaluationSet.artifact_ref.artifact_id
+      ));
+      await assert.rejects(
+        () => new PostgresBuildingIndexQualityEvaluator(db).search({
+          task: readyBuild,
+          evaluation_case: evaluationSet.cases[0]!,
+        }),
+        /only read its building index version/u,
+      );
       const chunkLevels = await db
         .selectFrom("questlab.memory_chunk")
         .select(["chunk_level", "parent_chunk_id", "embedding"])
         .where("index_version_id", "=", readyBuild.index_version_id)
         .orderBy("ordinal")
         .execute();
-      assert.deepEqual(chunkLevels.map((chunk) => chunk.chunk_level), ["parent", "child", "child"]);
-      assert.equal(chunkLevels[0]?.embedding, null);
-      assert.ok(chunkLevels.slice(1).every((chunk) => chunk.embedding !== null && chunk.parent_chunk_id !== null));
+      assert.equal(chunkLevels.filter((chunk) => chunk.chunk_level === "parent").length, 2);
+      assert.equal(chunkLevels.filter((chunk) => chunk.chunk_level === "child").length, 3);
+      assert.ok(chunkLevels.filter((chunk) => chunk.chunk_level === "parent").every((chunk) => chunk.embedding === null));
+      assert.ok(chunkLevels.filter((chunk) => chunk.chunk_level === "child").every((chunk) =>
+        chunk.embedding !== null && chunk.parent_chunk_id !== null
+      ));
       const lexical = new PostgresLexicalRetriever(db);
       const hits = await lexical.retrieve({
         query_id: "query.worker.integration",
@@ -343,19 +418,5 @@ function artifact(id: string, uri: string): ArtifactRef {
     scope: "tenant",
     owner_id: "tenant.worker",
     lineage_ids: [id.replace("artifact", "memory")],
-  };
-}
-
-function passingProbe(name: IndexQualityProbe["name"]): IndexQualityProbe {
-  return {
-    name,
-    evaluate: () => ({
-      passed: true,
-      score: 1,
-      threshold: 0.9,
-      sample_size: 10,
-      summary: `${name} integration quality passed`,
-      evidence_refs: [],
-    }),
   };
 }

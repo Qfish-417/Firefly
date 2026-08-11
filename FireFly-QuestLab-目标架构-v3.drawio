@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="19">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="20">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -558,6 +558,47 @@
         <mxCell id="p19-ge1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p19-1" source="p19-expander" target="p19-recheck"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p19-ge2" value="authorized" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p19-1" source="p19-recheck" target="p19-budget"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p19-ge3" value="compose" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p19-1" source="p19-budget" target="p19-pack"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-fixed-index-evaluation" name="20-M5.4固定评测与Building索引门禁">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p20-0"/><mxCell id="p20-1" parent="p20-0"/>
+        <mxCell id="p20-title" value="M5.4 Digest-bound Fixed Evaluation: measure the candidate before activation" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p20-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+
+        <mxCell id="p20-evidence-band" value="固定评测证据：改变内容必须改变 Digest" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="45" y="85" width="1510" height="225" as="geometry"/></mxCell>
+        <mxCell id="p20-set" value="IndexEvaluationSet v1&#xa;lexical query + principal + TopK&#xa;expected / forbidden Memory&#xa;expected Citation + thresholds" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="90" y="140" width="330" height="135" as="geometry"/></mxCell>
+        <mxCell id="p20-canonical" value="Canonical JSON&#xa;stable object-key order&#xa;SHA-256 recomputation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p20-1"><mxGeometry x="545" y="150" width="270" height="115" as="geometry"/></mxCell>
+        <mxCell id="p20-artifact" value="Evaluation ArtifactRef&#xa;immutable URI + Digest&#xa;tenant/public ownership" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="950" y="150" width="270" height="115" as="geometry"/></mxCell>
+        <mxCell id="p20-integrity" value="Integrity gate&#xa;payload Digest == Artifact Digest&#xa;logical name / tenant match" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="1325" y="150" width="190" height="115" as="geometry"/></mxCell>
+        <mxCell id="p20-ee1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p20-1" source="p20-set" target="p20-canonical"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-ee2" value="digest" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p20-1" source="p20-canonical" target="p20-artifact"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-ee3" value="verify" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p20-1" source="p20-artifact" target="p20-integrity"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="p20-run-band" value="候选评测：专用通道读取 building 版本，正常 Retriever 仍只读 active" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="45" y="340" width="1510" height="280" as="geometry"/></mxCell>
+        <mxCell id="p20-task" value="IndexBuildTask&#xa;version + tenant + logical name&#xa;config Digest + source watermark" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="75" y="425" width="285" height="120" as="geometry"/></mxCell>
+        <mxCell id="p20-building" value="PostgreSQL candidate index&#xa;status = building&#xa;Child FTS + real Memory ACL" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="455" y="425" width="285" height="120" as="geometry"/></mxCell>
+        <mxCell id="p20-evaluator" value="PostgresBuildingIndexQualityEvaluator&#xa;identity recheck&#xa;evaluation-only lexical search" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="835" y="425" width="330" height="120" as="geometry"/></mxCell>
+        <mxCell id="p20-runner" value="FixedIndexEvaluationRunner&#xa;one execution per build&#xa;shared immutable result set" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="1260" y="425" width="255" height="120" as="geometry"/></mxCell>
+        <mxCell id="p20-re1" value="bind" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p20-1" source="p20-task" target="p20-building"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-re2" value="authorized hits" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p20-1" source="p20-building" target="p20-evaluator"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-re3" value="case results" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p20-1" source="p20-evaluator" target="p20-runner"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="p20-score-band" value="独立计分与激活边界" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="45" y="650" width="1510" height="305" as="geometry"/></mxCell>
+        <mxCell id="p20-acl" value="ACL Probe&#xa;forbidden Memory leakage = 0&#xa;score vs threshold" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="90" y="730" width="260" height="110" as="geometry"/></mxCell>
+        <mxCell id="p20-recall" value="Recall Probe&#xa;expected Memory coverage&#xa;score vs threshold" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="430" y="730" width="260" height="110" as="geometry"/></mxCell>
+        <mxCell id="p20-citation" value="Citation Probe&#xa;artifact + URI + Digest + locator&#xa;exact assertion" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="770" y="730" width="280" height="110" as="geometry"/></mxCell>
+        <mxCell id="p20-report" value="IndexQualityReport v1&#xa;three checks cite same Artifact&#xa;any failure blocks activation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="1130" y="730" width="300" height="110" as="geometry"/></mxCell>
+        <mxCell id="p20-active" value="Atomic activate&#xa;building -> active&#xa;evaluation-only path closes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p20-1"><mxGeometry x="1250" y="875" width="265" height="60" as="geometry"/></mxCell>
+        <mxCell id="p20-boundary" value="当前边界：已验证 PostgreSQL lexical。vector / fused hybrid 评测必须绑定查询 Embedding 与模型快照后另行接入；lexical 通过不等于向量质量通过。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=13;" vertex="1" parent="p20-1"><mxGeometry x="120" y="875" width="1000" height="60" as="geometry"/></mxCell>
+        <mxCell id="p20-se1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p20-1" source="p20-runner" target="p20-acl"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-se2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p20-1" source="p20-runner" target="p20-recall"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-se3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p20-1" source="p20-runner" target="p20-citation"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-se4a" value="ACL check" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p20-1" source="p20-acl" target="p20-report"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-se4b" value="Recall check" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p20-1" source="p20-recall" target="p20-report"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-se4c" value="Citation check" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p20-1" source="p20-citation" target="p20-report"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p20-se5" value="passed only" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p20-1" source="p20-report" target="p20-active"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

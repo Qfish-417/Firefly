@@ -324,6 +324,47 @@ export interface IndexBuildTask {
   readonly requested_at: string;
 }
 
+export interface IndexEvaluationPrincipal {
+  readonly tenant_id: string;
+  readonly user_id?: string;
+  readonly agent_id?: string;
+  readonly session_id?: string;
+  readonly role_ids?: readonly string[];
+}
+
+export interface IndexEvaluationCitationExpectation {
+  readonly memory_id: string;
+  readonly artifact_id: string;
+  readonly uri: string;
+  readonly digest: `sha256:${string}`;
+  readonly locator?: Readonly<Record<string, string | number>>;
+}
+
+export interface IndexEvaluationCase {
+  readonly case_id: string;
+  readonly stage: "lexical";
+  readonly query: string;
+  readonly purpose: string;
+  readonly principal: IndexEvaluationPrincipal;
+  readonly max_results: number;
+  readonly expected_memory_ids: readonly string[];
+  readonly forbidden_memory_ids: readonly string[];
+  readonly expected_citations: readonly IndexEvaluationCitationExpectation[];
+}
+
+export interface IndexEvaluationSet {
+  readonly schema_version: 1;
+  readonly evaluation_set_id: string;
+  readonly logical_name: string;
+  readonly thresholds: {
+    readonly acl: number;
+    readonly recall: number;
+    readonly citation: number;
+  };
+  readonly cases: readonly IndexEvaluationCase[];
+  readonly artifact_ref: ArtifactRef;
+}
+
 export type IndexQualityCheckName = "structure" | "source_watermark" | "acl" | "recall" | "citation";
 
 export interface IndexQualityCheck {
@@ -419,6 +460,7 @@ export type ContractName =
   | "EvidenceItem"
   | "EvidencePack"
   | "IndexBuildTask"
+  | "IndexEvaluationSet"
   | "IndexQualityReport"
   | "IndexBuildResult"
   | "DeletionPropagationTask"

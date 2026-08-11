@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { DeletionPropagationTask, IndexBuildTask } from "@firefly/contracts";
+import type { DeletionPropagationTask, IndexBuildTask, IndexEvaluationSet } from "@firefly/contracts";
 import type { IndexMemoryChunkInput } from "@firefly/retrieval-postgres";
 
 import {
   AdvancedIndexReadyGate,
+  createFixedIndexQualityProbes,
   DefaultIndexReadyGate,
   DeletionWorkerError,
   SourceWatermarkQualityProbe,
   ObjectStoreDeletionConsumer,
   MarkdownParentChildChunker,
+  indexEvaluationSetDigest,
   PlainTextParagraphChunker,
   type IndexQualityProbe,
 } from "../src/index.ts";
@@ -118,6 +120,106 @@ test("advanced ready gate rejects a stale source watermark and preserves every c
     "citation",
   ]);
   assert.match(result.reasons[0] ?? "", /^source_watermark:/);
+});
+
+test("fixed evaluation probes share one immutable dataset run and score ACL, Recall and Citation", async () => {
+  const payload = {
+    schema_version: 1,
+    evaluation_set_id: "index-eval.worker.unit",
+    logical_name: "memory-default",
+    thresholds: { acl: 1, recall: 1, citation: 1 },
+    cases: [{
+      case_id: "index-eval-case.worker.unit",
+      stage: "lexical",
+      query: "solar daylight",
+      purpose: "index_quality_gate",
+      principal: { tenant_id: "tenant.worker", user_id: "user.worker" },
+      max_results: 5,
+      expected_memory_ids: ["memory.worker.allowed"],
+      forbidden_memory_ids: ["memory.worker.denied"],
+      expected_citations: [{
+        memory_id: "memory.worker.allowed",
+        artifact_id: "artifact.worker.allowed",
+        uri: "s3://unit/allowed.md",
+        digest,
+        locator: { section_path: "Solar" },
+      }],
+    }],
+  } as const;
+  const evaluationSet: IndexEvaluationSet = {
+    ...payload,
+    artifact_ref: {
+      artifact_id: "artifact.index-eval.worker.unit",
+      uri: "s3://unit/index-eval.worker.unit.json",
+      digest: indexEvaluationSetDigest(payload),
+      media_type: "application/vnd.firefly.index-evaluation-set+json",
+      scope: "tenant",
+      owner_id: "tenant.worker",
+      lineage_ids: [],
+    },
+  };
+  let searches = 0;
+  const probes = createFixedIndexQualityProbes(evaluationSet, {
+    search: async () => {
+      searches += 1;
+      return [{
+        chunk_id: "chunk.worker.allowed",
+        memory_id: "memory.worker.allowed",
+        score: 0.9,
+        citation: {
+          artifact_id: "artifact.worker.allowed",
+          uri: "s3://unit/allowed.md",
+          digest,
+          locator: { section_path: "Solar", chunk_level: "child" },
+        },
+      }];
+    },
+  });
+  const input = { task: indexBuildTask(), documents: [], chunks: [] };
+  const checks = await Promise.all(probes.map((probe) => probe.evaluate(input)));
+
+  assert.equal(searches, 1);
+  assert.deepEqual(checks.map((check) => check.score), [1, 1, 1]);
+  assert.ok(checks.every((check) => check.evidence_refs[0]?.artifact_id === evaluationSet.artifact_ref.artifact_id));
+});
+
+test("fixed evaluation probes reject a dataset whose Artifact Digest does not match its payload", () => {
+  const evaluationSet = {
+    schema_version: 1,
+    evaluation_set_id: "index-eval.worker.tampered",
+    logical_name: "memory.hybrid",
+    thresholds: { acl: 1, recall: 1, citation: 1 },
+    cases: [{
+      case_id: "index-eval-case.worker.tampered",
+      stage: "lexical",
+      query: "solar",
+      purpose: "index_quality_gate",
+      principal: { tenant_id: "tenant.worker" },
+      max_results: 5,
+      expected_memory_ids: ["memory.worker.allowed"],
+      forbidden_memory_ids: ["memory.worker.denied"],
+      expected_citations: [{
+        memory_id: "memory.worker.allowed",
+        artifact_id: "artifact.worker.allowed",
+        uri: "s3://unit/allowed.md",
+        digest,
+      }],
+    }],
+    artifact_ref: {
+      artifact_id: "artifact.index-eval.worker.tampered",
+      uri: "s3://unit/index-eval.worker.tampered.json",
+      digest,
+      media_type: "application/vnd.firefly.index-evaluation-set+json",
+      scope: "tenant",
+      owner_id: "tenant.worker",
+      lineage_ids: [],
+    },
+  } satisfies IndexEvaluationSet;
+
+  assert.throws(
+    () => createFixedIndexQualityProbes(evaluationSet, { search: async () => [] }),
+    /Artifact Digest does not match/u,
+  );
 });
 
 test("object deletion deduplicates S3 locations and rejects missing resources", async () => {
