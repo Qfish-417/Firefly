@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import type { ArtifactRef, IndexBuildTask, IndexEvaluationSet } from "@firefly/contracts";
+import type { ArtifactRef, IndexBuildResult, IndexBuildTask, IndexEvaluationSet } from "@firefly/contracts";
 import type { EmbeddingPort } from "@firefly/model-gateway";
 import {
   MemoryRepository,
@@ -29,6 +29,7 @@ import {
   ObjectStoreDeletionConsumer,
   indexEvaluationSetDigest,
   RetrievalIndexBuildWorker,
+  RetiredIndexGarbageCollector,
   SourceWatermarkQualityProbe,
 } from "../src/index.ts";
 
@@ -402,6 +403,139 @@ test(
   },
 );
 
+test(
+  "retired-index GC respects retention and audit holds while preserving version evidence",
+  { skip: connectionString ? false : "TEST_DATABASE_URL is not configured" },
+  async () => {
+    assert.ok(connectionString);
+    await migrateToLatest(connectionString);
+    const db = createDatabase(connectionString);
+    try {
+      await sql`
+        TRUNCATE TABLE
+          questlab.outbox_event,
+          questlab.retrieval_index_retention_hold,
+          questlab.retrieval_index_version,
+          questlab.memory_record
+        RESTART IDENTITY CASCADE
+      `.execute(db);
+      const memories = new MemoryRepository(db);
+      const indexes = new RetrievalIndexRepository(db);
+      const indexer = new PostgresMemoryIndexer(db);
+      const source = artifact("artifact.worker.gc", "s3://questlab/memories/gc.txt");
+      await memories.capture({
+        memory_id: "memory.worker.gc",
+        tenant_id: "tenant.worker",
+        owner_type: "tenant",
+        owner_id: "tenant.worker",
+        scope: "tenant",
+        stage: "structured",
+        kind: "document",
+        content_digest: source.digest,
+        source_refs: [source],
+        confidence: 1,
+        sensitivity: "internal",
+        status: "active",
+      });
+
+      const first = { ...buildTask("gc-v1"), requested_at: "2026-07-30T12:00:00.000Z" };
+      const second = { ...buildTask("gc-v2"), requested_at: "2026-07-30T12:00:00.000Z" };
+      const active = { ...buildTask("gc-v3"), requested_at: "2026-07-30T12:00:00.000Z" };
+      const firstRetiredAt = new Date("2026-08-01T12:00:00.000Z");
+      const collectionTime = new Date("2026-08-10T12:00:00.000Z");
+      const activationTimes = [new Date("2026-07-31T12:00:00.000Z"), firstRetiredAt, collectionTime];
+      for (const [ordinal, task] of [first, second, active].entries()) {
+        const content = `Retained source projection ${ordinal}`;
+        await indexes.createBuild(task);
+        await indexer.index({
+          chunk_id: `chunk.worker.gc.${ordinal}`,
+          memory_id: "memory.worker.gc",
+          index_version_id: task.index_version_id,
+          ordinal: 0,
+          content,
+          chunk_digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+          token_count: 4,
+          source_type: "memory.document",
+          citation: source,
+          embedding: [1, 0, 0],
+          embedding_model: task.embedding_model!,
+        });
+        await indexes.completeBuild(readyBuildResult(task));
+        await indexes.activate(task.index_version_id, activationTimes[ordinal]!);
+      }
+      const holdInput = {
+        hold_id: "hold.worker.gc.audit",
+        index_version_id: first.index_version_id,
+        reference_type: "evaluation_replay",
+        reference_id: "evaluation.worker.gc.01",
+        reason: "fixed evaluation remains under audit",
+        created_at: firstRetiredAt,
+      } as const;
+      const hold = await indexes.registerRetentionHold(holdInput);
+      assert.equal((await indexes.registerRetentionHold(holdInput)).hold_id, hold.hold_id);
+
+      const blocked = await new RetiredIndexGarbageCollector({
+        collector_id: "index-gc.worker.integration",
+        instance_id: "index-gc.worker.integration.instance-a",
+        indexes,
+        retention_ms: 604_800_000,
+        batch_limit: 10,
+        now: () => collectionTime,
+      }).runOnce();
+      assert.equal(blocked.purged_index_count, 0);
+      assert.equal((await indexes.getById(first.index_version_id))?.purged_at, null);
+
+      await indexes.releaseRetentionHold("hold.worker.gc.audit", collectionTime);
+      const collectors = ["instance-b", "instance-c"].map((instance) => new RetiredIndexGarbageCollector({
+        collector_id: "index-gc.worker.integration",
+        instance_id: `index-gc.worker.integration.${instance}`,
+        indexes,
+        retention_ms: 604_800_000,
+        batch_limit: 10,
+        now: () => collectionTime,
+      }));
+      const collected = await Promise.all(collectors.map((collector) => collector.runOnce()));
+      assert.equal(collected.reduce((total, cycle) => total + cycle.purged_index_count, 0), 1);
+      assert.equal(collected.reduce((total, cycle) => total + cycle.deleted_chunk_count, 0), 1);
+      assert.deepEqual(collected.flatMap((cycle) => cycle.purged_index_ids), [first.index_version_id]);
+
+      const retiredVersion = await indexes.getById(first.index_version_id);
+      assert.equal(retiredVersion?.status, "retired");
+      assert.equal(retiredVersion?.purged_at?.toISOString(), collectionTime.toISOString());
+      assert.ok(retiredVersion?.quality_report);
+      assert.equal(retiredVersion?.chunk_count, 1);
+      assert.equal((await indexes.getById(second.index_version_id))?.purged_at, null);
+      assert.equal((await indexes.getActive("tenant.worker", "memory.hybrid"))?.index_version_id, active.index_version_id);
+      const remainingChunks = await db
+        .selectFrom("questlab.memory_chunk")
+        .select("index_version_id")
+        .orderBy("index_version_id")
+        .execute();
+      assert.deepEqual(remainingChunks.map((row) => row.index_version_id), [second.index_version_id, active.index_version_id]);
+      const event = await db
+        .selectFrom("questlab.outbox_event")
+        .select(["event_type", "payload"])
+        .where("event_type", "=", "RetrievalIndexPurged")
+        .executeTakeFirstOrThrow();
+      assert.equal(event.payload.index_version_id, first.index_version_id);
+      assert.equal(event.payload.deleted_chunk_count, 1);
+      await assert.rejects(
+        indexes.registerRetentionHold({
+          hold_id: "hold.worker.gc.too-late",
+          index_version_id: first.index_version_id,
+          reference_type: "audit",
+          reference_id: "audit.worker.gc.too-late",
+          reason: "must not resurrect purged projections",
+          created_at: collectionTime,
+        }),
+        /purged index version/u,
+      );
+    } finally {
+      await db.destroy();
+    }
+  },
+);
+
 function buildTask(suffix: string): IndexBuildTask {
   return {
     schema_version: 1,
@@ -416,6 +550,39 @@ function buildTask(suffix: string): IndexBuildTask {
     embedding_model: "embedding.worker.v1",
     embedding_dimensions: 3,
     requested_at: "2026-08-10T12:00:00.000Z",
+  };
+}
+
+function readyBuildResult(task: IndexBuildTask): IndexBuildResult {
+  const checks = ["structure", "source_watermark", "acl", "recall", "citation"].map((name) => ({
+    name: name as "structure" | "source_watermark" | "acl" | "recall" | "citation",
+    passed: true,
+    score: 1,
+    threshold: 1,
+    sample_size: 1,
+    summary: `${name} passed`,
+    evidence_refs: [],
+  }));
+  return {
+    schema_version: 1,
+    build_id: task.build_id,
+    index_version_id: task.index_version_id,
+    status: "ready",
+    document_count: 1,
+    chunk_count: 1,
+    source_watermark: task.source_watermark,
+    completed_at: "2026-07-31T11:00:00.000Z",
+    quality_report: {
+      schema_version: 1,
+      report_id: `quality.${task.build_id}`,
+      build_id: task.build_id,
+      index_version_id: task.index_version_id,
+      source_watermark: task.source_watermark,
+      configuration_digest: task.configuration_digest,
+      passed: true,
+      checks,
+      evaluated_at: "2026-07-31T11:00:00.000Z",
+    },
   };
 }
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { DeletionPropagationTask, IndexBuildTask, IndexEvaluationSet } from "@firefly/contracts";
+import type { PurgedRetrievalIndex } from "@firefly/persistence";
 import type { IndexMemoryChunkInput } from "@firefly/retrieval-postgres";
 
 import {
@@ -15,6 +16,7 @@ import {
   MarkdownParentChildChunker,
   indexEvaluationSetDigest,
   PlainTextParagraphChunker,
+  RetiredIndexGarbageCollector,
   type IndexQualityProbe,
 } from "../src/index.ts";
 
@@ -321,6 +323,79 @@ test("deletion reconciliation records failures and stops its loop on cancellatio
   assert.equal(scheduler.snapshot().observer_failures, 1);
   assert.equal(scheduler.snapshot().last_cycle?.status, "failed");
   assert.match(scheduler.snapshot().last_cycle?.error?.message ?? "", /database unavailable/u);
+});
+
+test("retired-index garbage collection coalesces cycles and reports bounded purge totals", async () => {
+  let calls = 0;
+  let resolvePurge!: (value: readonly PurgedRetrievalIndex[]) => void;
+  const pending = new Promise<readonly PurgedRetrievalIndex[]>((resolve) => {
+    resolvePurge = resolve;
+  });
+  const collector = new RetiredIndexGarbageCollector({
+    collector_id: "index-gc.worker.unit",
+    instance_id: "index-gc.worker.unit.instance-a",
+    indexes: {
+      purgeRetiredIndexes: async (input) => {
+        calls += 1;
+        assert.equal(input.retired_before.toISOString(), "2026-08-03T12:00:00.000Z");
+        assert.equal(input.limit, 25);
+        return pending;
+      },
+    },
+    retention_ms: 604_800_000,
+    batch_limit: 25,
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+  });
+
+  const first = collector.runOnce();
+  const second = collector.runOnce();
+  assert.strictEqual(first, second);
+  assert.equal(calls, 1);
+  resolvePurge([{
+    index_version_id: "index.worker.retired",
+    tenant_id: "tenant.worker",
+    logical_name: "memory.hybrid",
+    deleted_chunk_count: 7,
+    retired_at: "2026-08-01T12:00:00.000Z",
+    purged_at: "2026-08-10T12:00:00.000Z",
+  }]);
+  const cycle = await first;
+
+  assert.equal(cycle.status, "completed");
+  assert.equal(cycle.purged_index_count, 1);
+  assert.equal(cycle.deleted_chunk_count, 7);
+  assert.deepEqual(cycle.purged_index_ids, ["index.worker.retired"]);
+  await Promise.resolve();
+  assert.equal(collector.snapshot().running, false);
+});
+
+test("retired-index garbage collection records a failed cycle and honors cancellation", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const collector = new RetiredIndexGarbageCollector({
+    collector_id: "index-gc.worker.failure",
+    instance_id: "index-gc.worker.failure.instance-a",
+    indexes: {
+      purgeRetiredIndexes: async () => {
+        calls += 1;
+        throw new Error("database unavailable");
+      },
+    },
+    interval_ms: 100,
+    wait: async (_milliseconds, signal) => {
+      controller.abort();
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      assert.equal(signal.aborted, true);
+      throw error;
+    },
+  });
+
+  await collector.run(controller.signal);
+
+  assert.equal(calls, 1);
+  assert.equal(collector.snapshot().last_cycle?.status, "failed");
+  assert.match(collector.snapshot().last_cycle?.error?.message ?? "", /database unavailable/u);
 });
 
 function deletionTask(resourceRefs: DeletionPropagationTask["resource_refs"]): DeletionPropagationTask {

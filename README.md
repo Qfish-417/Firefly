@@ -19,7 +19,7 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 按以下顺序阅读：
 
 1. [开工架构与实施顺序](./FireFly-QuestLab-开工架构与实施顺序.md)：编码阶段的事实源，包含通信协议、模块边界、仓库结构、里程碑和 GitHub 权限。
-2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：21 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、后台 Worker、Parent/Child 扩展、固定索引质量评测与删除修复调度视图。
+2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：22 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、后台 Worker、Parent/Child 扩展、固定索引质量评测、删除修复调度与 retired 索引回收视图。
 3. [产品与三 Agent 详细设计](./FireFly-QuestLab产品与三Agent详细设计.md)：产品、领域对象、状态机和太阳能纵向切片。
 4. [RAG 与记忆系统设计](./FireFly-RAG与记忆系统设计.md)：聚合检索、记忆分层、压缩、多模态与安全。
 5. [工具系统设计](./FireFly-工具系统设计.md)：五类工具、发现、异步、动态加载和 KV Cache。
@@ -95,6 +95,7 @@ solar-energy@1.2.0 忽略昼夜变化
 - M5.3 Parent/Child 检索扩展已落地：Markdown 按标题层级生成无 Embedding 的 Parent Section 与可召回 Child Chunk；FTS/pgvector 只召回 Child，选证据后再扩展共享 Parent，并重新校验 active 索引、租户和 Memory ACL。Parent 超过剩余 Token 预算时保留 Child，跨 Memory/索引版本父引用和扩展越权均 fail closed。PDF、代码与表格的结构化 Chunker 仍待实现。
 - M5.4 固定质量评测已落地：`IndexEvaluationSet` 用不可变 Artifact Digest 固定查询、主体、允许/禁止 Memory、Citation 期望与阈值；ACL/Recall/Citation Probe 共享一次真实评测。`PostgresBuildingIndexQualityEvaluator` 只读取任务绑定的 building 版本并复用真实 Memory ACL，版本激活后该旁路立即关闭。当前覆盖 PostgreSQL lexical，vector/hybrid 固定评测仍待实现。
 - M5.5 删除修复调度已落地：`DeletionReconciliationScheduler` 周期扫描超时 failed 目标，合并同实例并发 tick，并依赖数据库行锁、状态复核和幂等 Outbox 身份支持多实例运行；失败周期不会终止循环，AbortSignal 可优雅停止，周期结果通过结构化 Observer 输出。`npm run memory:reconcile` 提供独立进程入口。
+- M5.6 retired 索引回收已落地：迁移 011 记录 `purged_at` 和显式 retention hold；`RetiredIndexGarbageCollector` 只清理超过保留期、没有有效审计 hold 的 retired 版本切片。active、未到期和受 hold 保护的版本均跳过；版本身份、原始计数与质量报告保留，并通过幂等 `RetrievalIndexPurged` Outbox 事件记录事实。
 - 旧 Java/Python 原型仍在原目录，只作追溯参考，不被新 TypeScript packages 依赖。
 
 开发检查：
@@ -124,4 +125,6 @@ Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /
 
 删除 reconciliation 独立进程至少需要 `DATABASE_URL`，可选配置为 `MEMORY_RECONCILIATION_SCHEDULER_ID`、`MEMORY_RECONCILIATION_INSTANCE_ID`、`MEMORY_RECONCILIATION_INTERVAL_MS`、`MEMORY_RECONCILIATION_STALE_AFTER_MS` 和 `MEMORY_RECONCILIATION_BATCH_SIZE`。启动命令为 `npm run memory:reconcile`；SIGINT/SIGTERM 会在当前周期结束后停止并关闭数据库连接。
 
-M5 的运行时决策依次记录在 [ADR 0008](./docs/adr/0008-model-invocation-projection.md)、[ADR 0009](./docs/adr/0009-memory-acl-and-structured-aggregation.md)、[ADR 0010](./docs/adr/0010-governed-retrieval-gateway.md)、[ADR 0011](./docs/adr/0011-versioned-retrieval-contracts.md)、[ADR 0012](./docs/adr/0012-postgresql-hybrid-retrieval-and-deletion.md)、[ADR 0013](./docs/adr/0013-versioned-index-activation-and-deletion-ack.md)、[ADR 0014](./docs/adr/0014-durable-index-and-deletion-workers.md)、[ADR 0015](./docs/adr/0015-auditable-index-quality-gate.md)、[ADR 0016](./docs/adr/0016-parent-child-retrieval-expansion.md)、[ADR 0017](./docs/adr/0017-fixed-building-index-evaluation.md) 和 [ADR 0018](./docs/adr/0018-deletion-reconciliation-scheduler.md)。
+retired 索引回收进程同样需要 `DATABASE_URL`，可选配置为 `MEMORY_INDEX_GC_COLLECTOR_ID`、`MEMORY_INDEX_GC_INSTANCE_ID`、`MEMORY_INDEX_GC_INTERVAL_MS`、`MEMORY_INDEX_GC_RETENTION_MS` 和 `MEMORY_INDEX_GC_BATCH_SIZE`。启动命令为 `npm run memory:index-gc`；默认保留期为 7 天，生产值应按回滚、审计和合规要求显式配置。
+
+M5 的运行时决策依次记录在 [ADR 0008](./docs/adr/0008-model-invocation-projection.md)、[ADR 0009](./docs/adr/0009-memory-acl-and-structured-aggregation.md)、[ADR 0010](./docs/adr/0010-governed-retrieval-gateway.md)、[ADR 0011](./docs/adr/0011-versioned-retrieval-contracts.md)、[ADR 0012](./docs/adr/0012-postgresql-hybrid-retrieval-and-deletion.md)、[ADR 0013](./docs/adr/0013-versioned-index-activation-and-deletion-ack.md)、[ADR 0014](./docs/adr/0014-durable-index-and-deletion-workers.md)、[ADR 0015](./docs/adr/0015-auditable-index-quality-gate.md)、[ADR 0016](./docs/adr/0016-parent-child-retrieval-expansion.md)、[ADR 0017](./docs/adr/0017-fixed-building-index-evaluation.md)、[ADR 0018](./docs/adr/0018-deletion-reconciliation-scheduler.md) 和 [ADR 0019](./docs/adr/0019-retired-index-retention-garbage-collection.md)。

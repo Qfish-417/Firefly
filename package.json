@@ -14,6 +14,7 @@
     "db:migrate": "node packages/persistence/src/migrate.ts",
     "admin:start": "node packages/control-plane/src/admin-server.ts",
     "memory:reconcile": "node packages/memory-workers/src/reconciliation-main.ts",
+    "memory:index-gc": "node packages/memory-workers/src/retired-index-gc-main.ts",
     "check": "npm run typecheck && npm test"
   },
   "engines": {

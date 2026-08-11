@@ -7,10 +7,40 @@ import {
 } from "@firefly/contracts";
 import { sql, type Kysely, type Selectable } from "kysely";
 
-import type { QuestLabDatabase, RetrievalIndexVersionTable } from "./database.ts";
+import type {
+  QuestLabDatabase,
+  RetrievalIndexRetentionHoldTable,
+  RetrievalIndexVersionTable,
+} from "./database.ts";
 import { enqueueOutbox } from "./event-repositories.ts";
 
 export type RetrievalIndexVersion = Selectable<RetrievalIndexVersionTable>;
+export type RetrievalIndexRetentionHold = Selectable<RetrievalIndexRetentionHoldTable>;
+
+export interface RegisterRetrievalIndexRetentionHoldInput {
+  readonly hold_id: string;
+  readonly index_version_id: string;
+  readonly reference_type: string;
+  readonly reference_id: string;
+  readonly reason: string;
+  readonly created_at: Date;
+  readonly expires_at?: Date;
+}
+
+export interface PurgeRetiredIndexesInput {
+  readonly retired_before: Date;
+  readonly limit: number;
+  readonly now?: Date;
+}
+
+export interface PurgedRetrievalIndex {
+  readonly index_version_id: string;
+  readonly tenant_id: string;
+  readonly logical_name: string;
+  readonly deleted_chunk_count: number;
+  readonly retired_at: string;
+  readonly purged_at: string;
+}
 
 export class RetrievalIndexPolicyError extends Error {
   constructor(message: string) {
@@ -77,6 +107,7 @@ export class RetrievalIndexRepository {
           ready_at: null,
           activated_at: null,
           retired_at: null,
+          purged_at: null,
           updated_at: requestedAt,
         })
         .returningAll()
@@ -219,6 +250,235 @@ export class RetrievalIndexRepository {
       .where("index_version_id", "=", indexVersionId)
       .executeTakeFirst();
   }
+
+  async registerRetentionHold(
+    input: RegisterRetrievalIndexRetentionHoldInput,
+  ): Promise<RetrievalIndexRetentionHold> {
+    const createdAt = input.created_at;
+    const expiresAt = input.expires_at ?? null;
+    validateHoldInput(input, createdAt, expiresAt);
+    return this.db.transaction().execute(async (trx) => {
+      const identityLocks = [
+        JSON.stringify(["hold", input.hold_id]),
+        JSON.stringify(["reference", input.index_version_id, input.reference_type, input.reference_id]),
+      ].sort();
+      for (const identityLock of identityLocks) {
+        await sql`SELECT pg_advisory_xact_lock(hashtextextended(${identityLock}, 0))`.execute(trx);
+      }
+      const version = await trx
+        .selectFrom("questlab.retrieval_index_version")
+        .select(["index_version_id", "purged_at"])
+        .where("index_version_id", "=", input.index_version_id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!version) throw new RetrievalIndexPolicyError(`Index version does not exist: ${input.index_version_id}`);
+      if (version.purged_at) throw new RetrievalIndexPolicyError("A purged index version cannot receive a retention hold");
+
+      const existing = await trx
+        .selectFrom("questlab.retrieval_index_retention_hold")
+        .selectAll()
+        .where((expression) => expression.or([
+          expression("hold_id", "=", input.hold_id),
+          expression.and([
+            expression("index_version_id", "=", input.index_version_id),
+            expression("reference_type", "=", input.reference_type),
+            expression("reference_id", "=", input.reference_id),
+          ]),
+        ]))
+        .forUpdate()
+        .executeTakeFirst();
+      if (existing) {
+        if (!sameRetentionHold(existing, input, createdAt, expiresAt)) {
+          throw new RetrievalIndexPolicyError("Retention hold identity was reused with different immutable inputs");
+        }
+        return existing;
+      }
+
+      return trx
+        .insertInto("questlab.retrieval_index_retention_hold")
+        .values({
+          hold_id: input.hold_id,
+          index_version_id: input.index_version_id,
+          reference_type: input.reference_type,
+          reference_id: input.reference_id,
+          reason: input.reason,
+          created_at: createdAt,
+          expires_at: expiresAt,
+          released_at: null,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    });
+  }
+
+  async releaseRetentionHold(holdId: string, releasedAt = new Date()): Promise<RetrievalIndexRetentionHold> {
+    if (!holdId.trim() || !Number.isFinite(releasedAt.getTime())) {
+      throw new RetrievalIndexPolicyError("A hold identity and valid release time are required");
+    }
+    return this.db.transaction().execute(async (trx) => {
+      const identity = await trx
+        .selectFrom("questlab.retrieval_index_retention_hold")
+        .select("index_version_id")
+        .where("hold_id", "=", holdId)
+        .executeTakeFirst();
+      if (!identity) throw new RetrievalIndexPolicyError(`Retention hold does not exist: ${holdId}`);
+      await trx
+        .selectFrom("questlab.retrieval_index_version")
+        .select("index_version_id")
+        .where("index_version_id", "=", identity.index_version_id)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const hold = await trx
+        .selectFrom("questlab.retrieval_index_retention_hold")
+        .selectAll()
+        .where("hold_id", "=", holdId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (hold.released_at) return hold;
+      if (releasedAt < hold.created_at) {
+        throw new RetrievalIndexPolicyError("Retention hold release cannot precede its creation");
+      }
+      return trx
+        .updateTable("questlab.retrieval_index_retention_hold")
+        .set({ released_at: releasedAt })
+        .where("hold_id", "=", holdId)
+        .where("released_at", "is", null)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    });
+  }
+
+  async purgeRetiredIndexes(input: PurgeRetiredIndexesInput): Promise<readonly PurgedRetrievalIndex[]> {
+    const purgedAt = input.now ?? new Date();
+    validatePurgeInput(input, purgedAt);
+    return this.db.transaction().execute(async (trx) => {
+      const candidates = await trx
+        .selectFrom("questlab.retrieval_index_version as version")
+        .select([
+          "version.index_version_id",
+          "version.build_id",
+          "version.tenant_id",
+          "version.logical_name",
+          "version.retired_at",
+        ])
+        .where("version.status", "=", "retired")
+        .where("version.purged_at", "is", null)
+        .where("version.retired_at", "<=", input.retired_before)
+        .where(sql<boolean>`NOT EXISTS (
+          SELECT 1
+          FROM questlab.retrieval_index_retention_hold AS hold
+          WHERE hold.index_version_id = version.index_version_id
+            AND hold.released_at IS NULL
+            AND (hold.expires_at IS NULL OR hold.expires_at > ${purgedAt})
+        )`)
+        .orderBy("version.retired_at", "asc")
+        .orderBy("version.index_version_id", "asc")
+        .limit(input.limit)
+        .forUpdate()
+        .skipLocked()
+        .execute();
+
+      const purged: PurgedRetrievalIndex[] = [];
+      for (const candidate of candidates) {
+        if (!candidate.retired_at) continue;
+        const activeHold = await trx
+          .selectFrom("questlab.retrieval_index_retention_hold")
+          .select("hold_id")
+          .where("index_version_id", "=", candidate.index_version_id)
+          .where("released_at", "is", null)
+          .where((expression) => expression.or([
+            expression("expires_at", "is", null),
+            expression("expires_at", ">", purgedAt),
+          ]))
+          .executeTakeFirst();
+        if (activeHold) continue;
+
+        const deletion = await trx
+          .deleteFrom("questlab.memory_chunk")
+          .where("index_version_id", "=", candidate.index_version_id)
+          .executeTakeFirst();
+        const updated = await trx
+          .updateTable("questlab.retrieval_index_version")
+          .set({ purged_at: purgedAt, updated_at: purgedAt })
+          .where("index_version_id", "=", candidate.index_version_id)
+          .where("status", "=", "retired")
+          .where("purged_at", "is", null)
+          .returning("index_version_id")
+          .executeTakeFirst();
+        if (!updated) continue;
+        const result: PurgedRetrievalIndex = {
+          index_version_id: candidate.index_version_id,
+          tenant_id: candidate.tenant_id,
+          logical_name: candidate.logical_name,
+          deleted_chunk_count: Number(deletion.numDeletedRows),
+          retired_at: candidate.retired_at.toISOString(),
+          purged_at: purgedAt.toISOString(),
+        };
+        await enqueueOutbox(trx, {
+          event_id: `event.index-purged.${candidate.index_version_id}`,
+          event_type: "RetrievalIndexPurged",
+          correlation_id: candidate.build_id,
+          trace_id: candidate.build_id,
+          producer: "retrieval-index-repository",
+          idempotency_key: `index-purge:${candidate.index_version_id}`,
+          occurred_at: purgedAt,
+          payload: result as unknown as JsonObject,
+          artifact_refs: [],
+        });
+        purged.push(result);
+      }
+      return purged;
+    });
+  }
+}
+
+function validateHoldInput(
+  input: RegisterRetrievalIndexRetentionHoldInput,
+  createdAt: Date,
+  expiresAt: Date | null,
+): void {
+  if (
+    !input.hold_id.trim() ||
+    !input.index_version_id.trim() ||
+    !input.reference_type.trim() ||
+    !input.reference_id.trim() ||
+    !input.reason.trim()
+  ) {
+    throw new RetrievalIndexPolicyError("Retention hold identities and reason are required");
+  }
+  if (!Number.isFinite(createdAt.getTime()) || (expiresAt && !Number.isFinite(expiresAt.getTime()))) {
+    throw new RetrievalIndexPolicyError("Retention hold timestamps must be valid");
+  }
+  if (expiresAt && expiresAt <= createdAt) {
+    throw new RetrievalIndexPolicyError("Retention hold expiry must follow its creation");
+  }
+}
+
+function validatePurgeInput(input: PurgeRetiredIndexesInput, now: Date): void {
+  if (!Number.isFinite(input.retired_before.getTime()) || !Number.isFinite(now.getTime())) {
+    throw new RetrievalIndexPolicyError("Retired-index garbage collection timestamps must be valid");
+  }
+  if (input.retired_before > now) {
+    throw new RetrievalIndexPolicyError("Retired-index cutoff cannot be in the future");
+  }
+  if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 1_000) {
+    throw new RetrievalIndexPolicyError("Retired-index garbage collection limit must be between 1 and 1000");
+  }
+}
+
+function sameRetentionHold(
+  hold: RetrievalIndexRetentionHold,
+  input: RegisterRetrievalIndexRetentionHoldInput,
+  createdAt: Date,
+  expiresAt: Date | null,
+): boolean {
+  return hold.hold_id === input.hold_id &&
+    hold.index_version_id === input.index_version_id &&
+    hold.reference_type === input.reference_type &&
+    hold.reference_id === input.reference_id &&
+    hold.reason === input.reason &&
+    hold.created_at.toISOString() === createdAt.toISOString() &&
+    hold.expires_at?.toISOString() === expiresAt?.toISOString();
 }
 
 function sameBuildIdentity(version: RetrievalIndexVersion, task: IndexBuildTask): boolean {

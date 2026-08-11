@@ -532,6 +532,8 @@ IndexBuildTask -> building -> ready -> active -> retired
 
 `retrieval_index_version` 保存租户、逻辑索引名、Provider、配置 Digest、来源水位以及 Embedding 模型/维度。Indexer 只向 `building` 或明确允许增量写入的 `active` 版本写 Chunk，并校验租户与 Embedding 快照完全一致。重建期间查询仍只读旧 active 版本；`RetrievalIndexRepository.activate` 在同一事务中退役旧版本并激活新版本，数据库唯一约束保证每个 `tenant_id + logical_name` 最多一个 active。私有内容只读取查询者租户的 active 版本；显式 `public` 内容可读取其所属租户的 active 版本。未绑定版本的历史 Chunk 不参与查询，必须重建后才能重新可见。
 
+M5.6 把 retired 版本回收定义为“清理可重建投影，保留审计元数据”。迁移 011 增加 `purged_at` 和 `retrieval_index_retention_hold`；评测、事故、法务或审计流程必须用稳定 reference 注册 hold，可设置过期时间或显式释放。Collector 仅选择超过保留期、`status = retired`、尚未清理且没有有效 hold 的版本；事务内使用 `FOR UPDATE SKIP LOCKED`、再次复核 hold、删除该版本 `memory_chunk`、写入 `purged_at` 并产生确定性的 `RetrievalIndexPurged` Outbox 事件。版本行、原始 chunk count、构建身份、来源水位、配置 Digest 和质量报告均保留。hold 注册同样锁定版本行，已清理版本拒绝新增 hold，从而关闭“审计引用与 GC 同时发生”的竞态。
+
 上线前的 Ready Gate 不能只看“任务成功”。`DefaultIndexReadyGate` 校验非空文档、每文档至少一个 Chunk、Chunk ID 唯一和 Embedding 形状一致。`AdvancedIndexReadyGate` 在此基础上强制配置来源水位、ACL、Recall、Citation 四类 Probe；缺失、重复、非法分数或任一低于阈值都 fail closed。双读用于验证，不直接把两版结果混入用户上下文；正式流量仍由单一 active 指针决定。
 
 `packages/memory-workers` 已实现 `RetrievalIndexBuildWorker`：它按事件类型领取带租约的 `RetrievalIndexBuildRequested`，通过 `IndexSourcePort` 加载来源、确定性分块、仅为可召回 Child 调用独立 `EmbeddingPort`、幂等写入版本绑定 Chunk，通过 Ready Gate 后完成并可原子激活。每次门禁生成版本化 `IndexQualityReport`，记录五类检查的 score、threshold、sample size、摘要和证据引用，并与 build ID、index version、source watermark 和 configuration Digest 绑定；PostgreSQL 持久化报告，Repository 拒绝身份不匹配或结果状态矛盾的报告。Worker 重启时按持久状态恢复：`building` 继续构建，`ready` 只补激活，`active/retired` 视为完成，`failed` 不重复构建。可重试故障指数退避，超过 attempt 上限后把版本和 Outbox 事件置为可审计终态。
@@ -804,10 +806,11 @@ rag-memory/
 - 迁移 010、`MarkdownParentChildChunker` 与 `PostgresParentChildExpander` 已实现 Markdown Parent/Child 分块：只召回 Child、Parent 无 Embedding、父引用受 Memory/索引版本约束、扩展后重新授权、共享 Parent 去重，并在 Parent 超预算时回退 Child。
 - `IndexEvaluationSet`、固定评测 Runner、ACL/Recall/Citation Probe 与 `PostgresBuildingIndexQualityEvaluator` 已实现 digest-bound lexical 质量评测；真实集成在 building 版本上验证授权、召回和 Citation，激活后评测旁路关闭。
 - `DeletionReconciliationScheduler` 与独立进程入口已实现周期扫描、同实例 tick 合并、失败继续、结构化周期观测和 AbortSignal 停止；真实 PostgreSQL 集成已验证 failed 目标经 scheduler 重排后被恢复 Worker 完成。
+- 迁移 011、显式 retention hold 与 `RetiredIndexGarbageCollector` 已实现带保留期的 retired 投影回收；真实 PostgreSQL 集成已验证 active、未到期和审计 hold 均阻断清理，释放 hold 后仅删除到期 Chunk，并保留版本证据与幂等 Outbox 事实。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、vector/hybrid 固定质量评测、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、retired 索引垃圾回收、持久化调度账本与部署告警、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、vector/hybrid 固定质量评测、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
 
-- 下一批优先补 retired 版本回收，再扩展 vector/hybrid 固定评测和 PDF/代码/表格 Chunker，最后接生产 BM25/ANN Provider。
+- 下一批优先扩展 vector/hybrid 固定评测和 PDF/代码/表格 Chunker，再接生产 BM25/ANN Provider 与外部索引回收。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 已以 Markdown 验证 Parent/Child、RRF、确定性 Count 聚合和引用闭环；其他内容类型按相同合同逐个接入。
@@ -838,7 +841,7 @@ rag-memory/
 ### R5：高安全与规模化
 
 - 高敏租户物理隔离、独立密钥、审计与 DLP。
-- 在已有版本原子激活基础上补齐双读评估、在线构建 Worker、自动回滚、旧版本回收和容量治理。
+- 在已有版本原子激活、在线构建 Worker 和本地旧版回收基础上补齐自动回滚、外部 Provider 回收和容量治理。
 
 ## 18. 首个验收用例
 

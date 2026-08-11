@@ -318,7 +318,8 @@ M5 starts with the model invocation projection (`questlab.model_invocation`) so 
 - 已完成 Markdown Parent/Child 分块与授权扩展：Parent 无 Embedding，FTS/pgvector 只召回 Child；选证据后扩展 Parent，再校验 active 索引、租户和 Memory ACL，超预算回退 Child，共享 Parent 去重。
 - 已完成 digest-bound lexical 固定评测：ACL/Recall/Citation Probe 读取同一 `IndexEvaluationSet`，专用 PostgreSQL evaluator 只访问任务绑定的 building 版本并使用真实 ACL，激活后不可继续读取。vector/hybrid 固定评测仍待实现。
 - 已完成删除 reconciliation 周期调度：同实例 tick 合并，多实例依靠行锁/状态复核/幂等 Outbox，失败周期可观测且不会杀死循环，支持 AbortSignal 停止和独立进程部署。
-- 下一步补 retired 版本回收，再扩展 vector/hybrid 评测与 PDF/代码/表格 Chunker，最后接生产 BM25/ANN。
+- 已完成 retired 索引带保留期回收：显式审计 hold 阻断清理，active/未到期版本不入选，事务删除派生 Chunk 后保留版本身份与质量报告并发出幂等 Outbox 事实。
+- 下一步扩展 vector/hybrid 评测与 PDF/代码/表格 Chunker，再接生产 BM25/ANN 和外部索引回收。
 - 之后做长期记忆压缩、多模态派生索引和动态工具发现。
 - 动态加载只加载描述与受控 Provider，不把未知代码装入 Agent 主进程。
 
@@ -348,7 +349,7 @@ M5 starts with the model invocation projection (`questlab.model_invocation`) so 
 | M2.1 治理哨兵 | 规范、预算、因果图、Loop Sentinel、隔离 | 循环、风暴、自委派和预算耗尽均被确定性阻断 |
 | M3 插件闭环（完成） | Worktree、Docker Sandbox、门禁、Canary、Rollback | 缺陷基线被拒绝；候选四门禁通过；故障注入恢复指定 Digest |
 | M4 模型闭环（完成） | pi-ai Gateway、三个真实 Agent、Stub 后备、Engineer 隔离构建 | Provider 可替换；模型输出可追溯；真实 Commit、门禁失败和发布证据均受治理 |
-| M5 记忆工具（进行中） | 授权检索、聚合、版本索引、质量报告、后台 Worker、删除 Ack、Parent/Child 扩展 | 索引构建/激活、digest-bound lexical 质量评测、Markdown Parent/Child、MinIO 删除恢复与周期 reconciliation 已通过；vector/hybrid 评测、其他 Chunker、旧版 GC、BM25/ANN 与多模态待补齐 |
+| M5 记忆工具（进行中） | 授权检索、聚合、版本索引、质量报告、后台 Worker、删除 Ack、Parent/Child 扩展 | 索引构建/激活、digest-bound lexical 质量评测、Markdown Parent/Child、MinIO 删除恢复、周期 reconciliation 与本地旧版 GC 已通过；vector/hybrid 评测、其他 Chunker、BM25/ANN、外部索引回收与多模态待补齐 |
 
 不满足以下条件，不称为“自闭环”：
 

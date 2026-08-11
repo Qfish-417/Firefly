@@ -352,6 +352,7 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 - 已实现 Markdown Parent/Child：Parent 保存章节上下文且无 Embedding，Child 保存召回粒度并引用同 Memory、同索引版本 Parent；扩展位于 Child 选证据之后，必须复检 active/tenant/ACL，共享 Parent 去重，超预算保留 Child。
 - 已实现 digest-bound `IndexEvaluationSet` 与 PostgreSQL lexical building-index evaluator：ACL/Recall/Citation Probe 共享真实结果，激活后专用评测通道关闭；vector/hybrid 固定评测仍待补齐。
 - 已实现 `DeletionReconciliationScheduler` 与独立进程入口：周期扫描 stale failed 删除目标、同实例防重入、失败继续、结构化观测和优雅停止；多实例一致性继续由数据库行锁、状态复核和幂等 Outbox 保证。
+- 已实现 retired 索引带保留期垃圾回收：显式 retention hold 表达评测/事故/法务/审计引用；Collector 只清理到期且无 hold 的派生 Chunk，保留版本身份、质量报告与原始计数，并通过 `purged_at` 和幂等 Outbox 记录事实。
 
 ### R1：用户与 Agent 长期记忆
 
@@ -387,10 +388,10 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 
 ### 当前施工顺序
 
-1. 为 retired 版本建立带保留期的垃圾回收任务，删除必须避开 active 和仍被审计引用的版本。
-2. 逐个实现 lexical/vector/cache/summary/evaluation 删除 Provider 与证据核验，并把 scheduler JSON 周期事件接入部署级指标、持久化账本和告警。
-3. 在同一固定评测合同上增加 vector/hybrid evaluator，并把查询 Embedding 模型快照纳入评测身份。
-4. 以 Markdown Parent/Child 合同为基线，增加 PDF Layout、代码 AST 和表格结构化 Chunker；禁止把纯字符切片包装成结构化实现。
+1. 在同一固定评测合同上增加 vector/hybrid evaluator，并把查询 Embedding 模型快照纳入评测身份。
+2. 以 Markdown Parent/Child 合同为基线，增加 PDF Layout、代码 AST 和表格结构化 Chunker；禁止把纯字符切片包装成结构化实现。
+3. 逐个实现 lexical/vector/cache/summary/evaluation 删除 Provider 与证据核验，并把 scheduler JSON 周期事件接入部署级指标、持久化账本和告警。
+4. 把 retired 回收扩展到外部 BM25/ANN Provider，并为 hold 生产者建立明确的审计/法务接入流程。
 5. 接入生产 BM25 Provider；pgvector 按模型/维度分区后再评估 HNSW，不把当前精确检索称为 ANN。
 
 ## 12. 工具系统建设轨道

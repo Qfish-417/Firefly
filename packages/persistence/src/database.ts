@@ -493,7 +493,19 @@ export interface RetrievalIndexVersionTable {
   ready_at: Timestamp | null;
   activated_at: Timestamp | null;
   retired_at: Timestamp | null;
+  purged_at: Timestamp | null;
   updated_at: Timestamp;
+}
+
+export interface RetrievalIndexRetentionHoldTable {
+  hold_id: string;
+  index_version_id: string;
+  reference_type: string;
+  reference_id: string;
+  reason: string;
+  created_at: Timestamp;
+  expires_at: Timestamp | null;
+  released_at: Timestamp | null;
 }
 
 export interface QuestLabDatabase {
@@ -533,6 +545,7 @@ export interface QuestLabDatabase {
   "questlab.memory_deletion_receipt": MemoryDeletionReceiptTable;
   "questlab.memory_deletion_target": MemoryDeletionTargetTable;
   "questlab.retrieval_index_version": RetrievalIndexVersionTable;
+  "questlab.retrieval_index_retention_hold": RetrievalIndexRetentionHoldTable;
 }
 
 export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {
