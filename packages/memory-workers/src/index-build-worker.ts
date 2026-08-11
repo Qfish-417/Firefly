@@ -26,6 +26,7 @@ export interface IndexSourceDocument {
   readonly citation: EvidenceCitation;
   /** Optional parser output. Structured chunkers never infer structure from characters. */
   readonly structured?: IndexStructuredSource;
+  readonly parser_diagnostic?: IndexParserDiagnostic;
 }
 
 export type IndexStructuredSource = IndexPdfLayoutSource | IndexCodeAstSource | IndexTableSource | IndexConversationSource;
@@ -106,6 +107,24 @@ export interface StructuredChunkerOptions {
 
 export interface IndexSourcePort {
   load(task: IndexBuildTask): Promise<readonly IndexSourceDocument[]>;
+}
+
+export type IndexParserFailureMode = "strict" | "degraded";
+
+export interface IndexParserDiagnostic {
+  readonly parser_id?: string;
+  readonly code: "parser-missing" | "parser-failed" | "parser-invalid-output";
+}
+
+export interface IndexSourceParserPort {
+  readonly parser_id: string;
+  supports(source_type: string): boolean;
+  parse(document: IndexSourceDocument): Promise<IndexStructuredSource> | IndexStructuredSource;
+}
+
+export interface ParsedIndexSourcePortOptions {
+  readonly parsers: readonly IndexSourceParserPort[];
+  readonly parser_failure_mode?: IndexParserFailureMode;
 }
 
 export interface IndexChunkDraft {
@@ -365,6 +384,60 @@ export class IndexBuildWorkerError extends Error {
     this.code = code;
     this.retryable = retryable;
   }
+}
+
+export class ParserBackedIndexSourcePort implements IndexSourcePort {
+  private readonly source: IndexSourcePort;
+  private readonly parsers: readonly IndexSourceParserPort[];
+  private readonly failureMode: IndexParserFailureMode;
+
+  constructor(source: IndexSourcePort, options: ParsedIndexSourcePortOptions) {
+    if (options.parsers.length === 0) throw new TypeError("At least one source parser is required");
+    const parserIds = options.parsers.map((parser) => parser.parser_id.trim());
+    if (parserIds.some((id) => !id) || new Set(parserIds).size !== parserIds.length) {
+      throw new TypeError("Source parser IDs must be non-empty and unique");
+    }
+    this.source = source;
+    this.parsers = options.parsers;
+    this.failureMode = options.parser_failure_mode ?? "strict";
+  }
+
+  async load(task: IndexBuildTask): Promise<readonly IndexSourceDocument[]> {
+    const documents = await this.source.load(task);
+    return Promise.all(documents.map((document) => this.parseDocument(document)));
+  }
+
+  private async parseDocument(document: IndexSourceDocument): Promise<IndexSourceDocument> {
+    const parser = this.parsers.find((candidate) => candidate.supports(document.source_type));
+    if (!parser) return this.handleFailure(document, { code: "parser-missing" });
+    try {
+      const structured = await parser.parse(document);
+      if (!structured || !isStructuredSource(structured)) {
+        return this.handleFailure(document, { parser_id: parser.parser_id, code: "parser-invalid-output" });
+      }
+      const { parser_diagnostic: _diagnostic, ...withoutDiagnostic } = document;
+      return { ...withoutDiagnostic, structured };
+    } catch {
+      return this.handleFailure(document, { parser_id: parser.parser_id, code: "parser-failed" });
+    }
+  }
+
+  private handleFailure(document: IndexSourceDocument, diagnostic: IndexParserDiagnostic): IndexSourceDocument {
+    if (this.failureMode === "strict") {
+      throw new IndexBuildWorkerError(
+        diagnostic.code === "parser-missing" ? "SOURCE_PARSER_MISSING" : "SOURCE_PARSER_FAILED",
+        `${diagnostic.code}${diagnostic.parser_id ? `: ${diagnostic.parser_id}` : ""}`,
+        false,
+      );
+    }
+    return { ...document, parser_diagnostic: diagnostic };
+  }
+}
+
+function isStructuredSource(value: unknown): value is IndexStructuredSource {
+  if (!value || typeof value !== "object") return false;
+  const kind = (value as { readonly kind?: unknown }).kind;
+  return kind === "pdf-layout" || kind === "code-ast" || kind === "table" || kind === "conversation";
 }
 
 export class PlainTextParagraphChunker implements IndexChunkerPort {
@@ -818,6 +891,8 @@ function degradedTextChunks(
         parser_mode: "degraded",
         degradation: "parser-unavailable",
         expected_structure: expectedStructure,
+        ...(document.parser_diagnostic?.code ? { parser_diagnostic: document.parser_diagnostic.code } : {}),
+        ...(document.parser_diagnostic?.parser_id ? { parser_id: document.parser_diagnostic.parser_id } : {}),
       },
     },
   }));

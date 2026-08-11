@@ -508,6 +508,8 @@ M5.8 已补齐三类结构化 Chunker：`PdfLayoutChunker` 消费页码、布局
 
 M5.9 已补齐 `ConversationTurnChunker`：按稳定 sequence 排序并保留 turn、speaker、role 和时间范围；Parent 保存连续对话窗口，Child 以轮次为优先边界参与召回，超长单轮才在轮次内部拆分。严格/降级策略与其他结构化 Chunker 一致，降级结果不声明虚假的说话人或时间结构。
 
+解析器接入通过 `ParserBackedIndexSourcePort` 完成：它按 `source_type` 选择 `IndexSourceParserPort`，校验 typed `IndexStructuredSource`，保留 Source 顺序并记录 `parser-missing`、`parser-failed` 或 `parser-invalid-output`。`parser_failure_mode=strict` 默认阻断构建；显式 `degraded` 才把原文交给 Chunker 的降级路径。Worker 不绑定 PDF/OCR、AST、表格或转录的第三方实现。
+
 索引与查询遵循不对称职责：Parent 不生成 Embedding，也不进入 FTS/pgvector 候选；只有 Child 用于精确召回。Ready Gate 要求每个文档至少有一个 Child、父子引用闭合、Parent 不携带 Embedding，且每个 Parent 至少拥有一个 Child。Indexer 在写入 Child 前校验其 Parent 属于同一 Memory 和同一索引版本，禁止通过父引用跨越授权或版本边界。
 
 运行时扩展顺序固定为：

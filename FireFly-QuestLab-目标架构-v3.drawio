@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="25">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="26">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -762,6 +762,30 @@
         <mxCell id="p25-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;dashed=1;" edge="1" parent="p25-1" source="p25-input" target="p25-fallback"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p25-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p25-1" source="p25-child" target="p25-locator"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p25-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p25-1" source="p25-locator" target="p25-index"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-parser-source-port" name="26-M5.10 Parser Source Port">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p26-0"/><mxCell id="p26-1" parent="p26-0"/>
+        <mxCell id="p26-title" value="M5.10 Parser Source Port: plug providers without coupling the Worker" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p26-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+        <mxCell id="p26-source" value="IndexSourcePort&#xa;raw/normalized source documents&#xa;stable source order" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p26-1"><mxGeometry x="570" y="105" width="460" height="110" as="geometry"/></mxCell>
+        <mxCell id="p26-adapter" value="ParserBackedIndexSourcePort&#xa;select by source_type&#xa;preserve order + attach diagnostics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p26-1"><mxGeometry x="540" y="300" width="520" height="125" as="geometry"/></mxCell>
+        <mxCell id="p26-pdf" value="PDF/OCR parser&#xa;layout source" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;" vertex="1" parent="p26-1"><mxGeometry x="80" y="520" width="260" height="105" as="geometry"/></mxCell>
+        <mxCell id="p26-code" value="AST parser&#xa;code source" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;" vertex="1" parent="p26-1"><mxGeometry x="390" y="520" width="260" height="105" as="geometry"/></mxCell>
+        <mxCell id="p26-table" value="Spreadsheet parser&#xa;table source" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p26-1"><mxGeometry x="710" y="520" width="260" height="105" as="geometry"/></mxCell>
+        <mxCell id="p26-transcript" value="Transcript/diarization&#xa;conversation source" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;" vertex="1" parent="p26-1"><mxGeometry x="1030" y="520" width="260" height="105" as="geometry"/></mxCell>
+        <mxCell id="p26-policy" value="Failure policy&#xa;strict: non-retryable fail closed&#xa;degraded: original source + parser diagnostic" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p26-1"><mxGeometry x="1310" y="500" width="220" height="145" as="geometry"/></mxCell>
+        <mxCell id="p26-worker" value="IndexBuildWorker&#xa;typed structured Chunker&#xa;or explicit degraded text fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p26-1"><mxGeometry x="520" y="735" width="560" height="120" as="geometry"/></mxCell>
+        <mxCell id="p26-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p26-1" source="p26-source" target="p26-adapter"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p26-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p26-1" source="p26-adapter" target="p26-pdf"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p26-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p26-1" source="p26-adapter" target="p26-code"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p26-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p26-1" source="p26-adapter" target="p26-table"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p26-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p26-1" source="p26-adapter" target="p26-transcript"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p26-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;dashed=1;" edge="1" parent="p26-1" source="p26-adapter" target="p26-policy"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p26-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p26-1" source="p26-adapter" target="p26-worker"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p26-boundary" value="Provider implementations may be local, remote or model-backed. The Worker receives only typed parser output or an explicitly diagnosed degraded source." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p26-1"><mxGeometry x="290" y="900" width="1020" height="40" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

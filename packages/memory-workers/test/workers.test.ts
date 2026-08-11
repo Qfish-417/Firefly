@@ -18,10 +18,12 @@ import {
   CodeAstChunker,
   TableStructureChunker,
   ConversationTurnChunker,
+  ParserBackedIndexSourcePort,
   indexEvaluationSetDigest,
   PlainTextParagraphChunker,
   RetiredIndexGarbageCollector,
   type IndexQualityProbe,
+  type IndexSourcePort,
 } from "../src/index.ts";
 
 const digest = `sha256:${"a".repeat(64)}` as const;
@@ -176,6 +178,51 @@ test("conversation chunking preserves turn order, speaker identity and time loca
   assert.equal(chunks[1]?.citation.locator?.turn_id, "turn-1");
   assert.equal(chunks[1]?.citation.locator?.started_at, "2026-08-11T10:00:00Z");
   assert.equal(chunks[1]?.parent_ordinal, 0);
+});
+
+test("parser-backed source port binds parser output in stable source order", async () => {
+  const source: IndexSourcePort = {
+    load: async () => [
+      { memory_id: "memory.worker.parser-a", content: "pdf", source_type: "application/pdf", citation: { artifact_id: "artifact.parser-a", uri: "s3://unit/a.pdf", digest } },
+      { memory_id: "memory.worker.parser-b", content: "code", source_type: "text/typescript", citation: { artifact_id: "artifact.parser-b", uri: "s3://unit/b.ts", digest } },
+    ],
+  };
+  const parsed = await new ParserBackedIndexSourcePort(source, {
+    parsers: [{
+      parser_id: "parser.pdf.test",
+      supports: (sourceType) => sourceType === "application/pdf",
+      parse: () => ({ kind: "pdf-layout", pages: [] }),
+    }],
+    parser_failure_mode: "degraded",
+  }).load(indexBuildTask());
+
+  assert.deepEqual(parsed.map((document) => document.memory_id), ["memory.worker.parser-a", "memory.worker.parser-b"]);
+  assert.equal(parsed[0]?.structured?.kind, "pdf-layout");
+  assert.equal(parsed[1]?.parser_diagnostic?.code, "parser-missing");
+});
+
+test("parser-backed source port fails closed in strict mode and marks parser failures in degraded mode", async () => {
+  const source: IndexSourcePort = {
+    load: async () => [{
+      memory_id: "memory.worker.parser-failed", content: "source", source_type: "application/pdf",
+      citation: { artifact_id: "artifact.parser-failed", uri: "s3://unit/fail.pdf", digest },
+    }],
+  };
+  const parser = {
+    parser_id: "parser.pdf.failure",
+    supports: () => true,
+    parse: () => { throw new Error("provider unavailable"); },
+  };
+  await assert.rejects(
+    () => new ParserBackedIndexSourcePort(source, { parsers: [parser] }).load(indexBuildTask()),
+    /parser-failed: parser.pdf.failure/u,
+  );
+  const degraded = await new ParserBackedIndexSourcePort(source, {
+    parsers: [parser], parser_failure_mode: "degraded",
+  }).load(indexBuildTask());
+  const chunks = new PdfLayoutChunker({ fallback_mode: "degraded" }).chunk(degraded[0]!);
+  assert.equal(chunks[0]?.citation.locator?.parser_diagnostic, "parser-failed");
+  assert.equal(chunks[0]?.citation.locator?.parser_id, "parser.pdf.failure");
 });
 
 test("ready gate requires every source document to produce a Chunk", () => {
