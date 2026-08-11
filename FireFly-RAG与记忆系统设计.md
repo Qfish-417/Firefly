@@ -540,7 +540,7 @@ M5.6 把 retired 版本回收定义为“清理可重建投影，保留审计元
 
 `SourceWatermarkQualityProbe` 已提供真实水位比较逻辑。M5.4 新增版本化 `IndexEvaluationSet`：每个用例固定 lexical 查询、查询主体、允许召回 Memory、禁止泄露 Memory、预期 Citation、TopK 和三项阈值，规范化内容必须与 `artifact_ref.digest` 一致。`FixedIndexEvaluationRunner` 只执行一次数据集，ACL、Recall、Citation Probe 共享结果并分别计分，质量报告引用同一不可变评测集 Artifact。
 
-`PostgresBuildingIndexQualityEvaluator` 是门禁专用读取通道：它要求版本仍为 `building`，并逐项核对 task 的 index version、tenant、logical name、configuration Digest 和 source watermark；查询复用真实 Memory ACL，但不修改正常 Retriever 的 active-only 约束。版本激活后该通道拒绝读取。当前真实集成已经覆盖 PostgreSQL lexical 的允许召回、私有 Memory 不泄露和结构化 Citation 精确匹配；pgvector/vector 与完整 hybrid 固定评测仍待实现，因此当前报告不能解释为向量召回质量已达标。
+`PostgresBuildingIndexQualityEvaluator` 是门禁专用读取通道：它要求版本仍为 `building`，并逐项核对 task 的 index version、tenant、logical name、configuration Digest 和 source watermark；查询复用真实 Memory ACL，但不修改正常 Retriever 的 active-only 约束。Lexical 用 FTS，vector 用绑定模型/维度的 cosine，hybrid 对归一化 lexical 与 vector 分数做确定性 50/50 融合；vector/hybrid 用例必须把 query embedding 和模型快照写入固定评测集 Digest。版本激活后该通道拒绝读取。真实集成已覆盖三种阶段的 building 版本授权、私有 Memory 不泄露和结构化 Citation 精确匹配；生产 ANN、重排和延迟质量仍需单独评估。
 
 ## 11. 多模态设计
 
@@ -804,13 +804,13 @@ rag-memory/
 - `IndexQualityReport`、迁移 009 和 `AdvancedIndexReadyGate` 已实现五类质量检查的强制装配、阈值判定、不可变身份绑定和 PostgreSQL 审计持久化。
 - 对象存储删除消费者已通过官方 AWS S3 SDK 接入真实 MinIO；目标定向领取、指数退避、attempt 耗尽终态及 failed 目标 reconciliation 已通过 PostgreSQL/MinIO 集成测试。
 - 迁移 010、`MarkdownParentChildChunker` 与 `PostgresParentChildExpander` 已实现 Markdown Parent/Child 分块：只召回 Child、Parent 无 Embedding、父引用受 Memory/索引版本约束、扩展后重新授权、共享 Parent 去重，并在 Parent 超预算时回退 Child。
-- `IndexEvaluationSet`、固定评测 Runner、ACL/Recall/Citation Probe 与 `PostgresBuildingIndexQualityEvaluator` 已实现 digest-bound lexical 质量评测；真实集成在 building 版本上验证授权、召回和 Citation，激活后评测旁路关闭。
+- `IndexEvaluationSet`、固定评测 Runner、ACL/Recall/Citation Probe 与 `PostgresBuildingIndexQualityEvaluator` 已实现 digest-bound lexical/vector/hybrid 质量评测；真实集成在 building 版本上验证三种阶段的授权、召回和 Citation，激活后评测旁路关闭。
 - `DeletionReconciliationScheduler` 与独立进程入口已实现周期扫描、同实例 tick 合并、失败继续、结构化周期观测和 AbortSignal 停止；真实 PostgreSQL 集成已验证 failed 目标经 scheduler 重排后被恢复 Worker 完成。
 - 迁移 011、显式 retention hold 与 `RetiredIndexGarbageCollector` 已实现带保留期的 retired 投影回收；真实 PostgreSQL 集成已验证 active、未到期和审计 hold 均阻断清理，释放 hold 后仅删除到期 Chunk，并保留版本证据与幂等 Outbox 事实。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、vector/hybrid 固定质量评测、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、PDF/代码/表格/对话等结构化 Chunker、Neighbor/Entity/Temporal/Region 扩展、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
 
-- 下一批优先扩展 vector/hybrid 固定评测和 PDF/代码/表格 Chunker，再接生产 BM25/ANN Provider 与外部索引回收。
+- 下一批优先实现 PDF/代码/表格 Chunker，再接生产 BM25/ANN Provider 与外部索引回收。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 已以 Markdown 验证 Parent/Child、RRF、确定性 Count 聚合和引用闭环；其他内容类型按相同合同逐个接入。

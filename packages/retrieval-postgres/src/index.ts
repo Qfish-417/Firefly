@@ -282,8 +282,8 @@ export class PostgresBuildingIndexQualityEvaluator {
     readonly evaluation_case: IndexEvaluationCase;
   }): Promise<readonly PostgresIndexQualityEvaluationHit[]> {
     const evaluationCase = input.evaluation_case;
-    if (evaluationCase.stage !== "lexical" || !evaluationCase.query.trim() || !evaluationCase.purpose.trim()) {
-      throw new PostgresRetrievalPolicyError("Building-index evaluation requires a lexical query and purpose");
+    if (!evaluationCase.query.trim() || !evaluationCase.purpose.trim()) {
+      throw new PostgresRetrievalPolicyError("Building-index evaluation requires a query and purpose");
     }
     if (evaluationCase.principal.tenant_id !== input.task.tenant_id) {
       throw new PostgresRetrievalPolicyError("Building-index evaluation principal must belong to the build tenant");
@@ -306,6 +306,36 @@ export class PostgresBuildingIndexQualityEvaluator {
     }
 
     const access = readableMemoryPredicate(evaluationCase.principal);
+    if (evaluationCase.stage === "lexical") {
+      if (evaluationCase.query_embedding || evaluationCase.embedding_model) {
+        throw new PostgresRetrievalPolicyError("Lexical evaluation cases cannot carry an embedding snapshot");
+      }
+      return this.searchLexical(input, access);
+    }
+    if (
+      !evaluationCase.query_embedding ||
+      !evaluationCase.embedding_model ||
+      !input.task.embedding_model ||
+      input.task.embedding_model !== evaluationCase.embedding_model ||
+      input.task.embedding_dimensions !== evaluationCase.query_embedding.length
+    ) {
+      throw new PostgresRetrievalPolicyError("Vector evaluation embedding snapshot does not match the build task");
+    }
+    validateVector(evaluationCase.query_embedding);
+    if (evaluationCase.stage === "vector" && !["vector", "hybrid"].includes(input.task.index_kind)) {
+      throw new PostgresRetrievalPolicyError("Vector evaluation requires a vector-capable index build");
+    }
+    if (evaluationCase.stage === "hybrid" && input.task.index_kind !== "hybrid") {
+      throw new PostgresRetrievalPolicyError("Hybrid evaluation requires a hybrid index build");
+    }
+    return this.searchVectorOrHybrid(input, access, evaluationCase.stage === "hybrid");
+  }
+
+  private async searchLexical(
+    input: { readonly task: IndexBuildTask; readonly evaluation_case: IndexEvaluationCase },
+    access: RawBuilder<boolean>,
+  ): Promise<readonly PostgresIndexQualityEvaluationHit[]> {
+    const evaluationCase = input.evaluation_case;
     const result = await sql<IndexQualitySearchRow>`
       WITH query AS (SELECT websearch_to_tsquery('simple', ${evaluationCase.query}) AS value)
       SELECT
@@ -335,6 +365,75 @@ export class PostgresBuildingIndexQualityEvaluator {
       chunk_id: row.chunk_id,
       memory_id: row.memory_id,
       score: normalizeLexicalScore(Number(row.score)),
+      citation: {
+        artifact_id: row.citation_artifact_id,
+        uri: row.citation_uri,
+        digest: row.citation_digest as `sha256:${string}`,
+        ...(Object.keys(row.citation_locator).length > 0 ? { locator: row.citation_locator } : {}),
+      },
+    }));
+  }
+
+  private async searchVectorOrHybrid(
+    input: { readonly task: IndexBuildTask; readonly evaluation_case: IndexEvaluationCase },
+    access: RawBuilder<boolean>,
+    hybrid: boolean,
+  ): Promise<readonly PostgresIndexQualityEvaluationHit[]> {
+    const evaluationCase = input.evaluation_case;
+    const queryVector = vectorLiteral(evaluationCase.query_embedding!);
+    const result = hybrid
+      ? await sql<IndexQualitySearchRow & { readonly lexical_score: number; readonly vector_score: number }>`
+          WITH query AS (SELECT websearch_to_tsquery('simple', ${evaluationCase.query}) AS value), candidates AS (
+            SELECT
+              chunk.chunk_id,
+              chunk.memory_id,
+              chunk.citation_artifact_id,
+              chunk.citation_uri,
+              chunk.citation_digest,
+              chunk.citation_locator,
+              ts_rank_cd(chunk.search_vector, query.value)::double precision AS lexical_score,
+              greatest(0, least(1, 1 - ((chunk.embedding <=> ${queryVector}::vector) / 2)))::double precision AS vector_score
+            FROM questlab.memory_chunk AS chunk
+            JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
+            CROSS JOIN query
+            WHERE chunk.index_version_id = ${input.task.index_version_id}
+              AND chunk.chunk_level = 'child'
+              AND memory.status = 'active'
+              AND chunk.embedding IS NOT NULL
+              AND chunk.embedding_model = ${evaluationCase.embedding_model!}
+              AND chunk.embedding_dimensions = ${evaluationCase.query_embedding!.length}
+              AND ${access}
+          )
+          SELECT *, greatest(0, least(1, ((CASE WHEN lexical_score <= 0 THEN 0 ELSE lexical_score / (1 + lexical_score) END) * 0.5) + (vector_score * 0.5)))::double precision AS score
+          FROM candidates
+          ORDER BY score DESC, chunk_id ASC
+          LIMIT ${evaluationCase.max_results}
+        `.execute(this.db)
+      : await sql<IndexQualitySearchRow>`
+          SELECT
+            chunk.chunk_id,
+            chunk.memory_id,
+            chunk.citation_artifact_id,
+            chunk.citation_uri,
+            chunk.citation_digest,
+            chunk.citation_locator,
+            greatest(0, least(1, 1 - ((chunk.embedding <=> ${queryVector}::vector) / 2)))::double precision AS score
+          FROM questlab.memory_chunk AS chunk
+          JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
+          WHERE chunk.index_version_id = ${input.task.index_version_id}
+            AND chunk.chunk_level = 'child'
+            AND memory.status = 'active'
+            AND chunk.embedding IS NOT NULL
+            AND chunk.embedding_model = ${evaluationCase.embedding_model!}
+            AND chunk.embedding_dimensions = ${evaluationCase.query_embedding!.length}
+            AND ${access}
+          ORDER BY score DESC, chunk.chunk_id ASC
+          LIMIT ${evaluationCase.max_results}
+        `.execute(this.db);
+    return result.rows.map((row) => ({
+      chunk_id: row.chunk_id,
+      memory_id: row.memory_id,
+      score: Number(row.score),
       citation: {
         artifact_id: row.citation_artifact_id,
         uri: row.citation_uri,

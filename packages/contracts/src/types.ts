@@ -342,9 +342,11 @@ export interface IndexEvaluationCitationExpectation {
 
 export interface IndexEvaluationCase {
   readonly case_id: string;
-  readonly stage: "lexical";
+  readonly stage: "lexical" | "vector" | "hybrid";
   readonly query: string;
   readonly purpose: string;
+  readonly query_embedding?: readonly number[];
+  readonly embedding_model?: string;
   readonly principal: IndexEvaluationPrincipal;
   readonly max_results: number;
   readonly expected_memory_ids: readonly string[];

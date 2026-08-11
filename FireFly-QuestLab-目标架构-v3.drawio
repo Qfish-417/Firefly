@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="22">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="23">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -674,6 +674,46 @@
         <mxCell id="p22-t3" value="same transaction" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p22-1" source="p22-delete" target="p22-purged"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p22-t4" value="audit fact" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p22-1" source="p22-purged" target="p22-event"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p22-boundary" value="Always retained: index version ID, build ID, tenant/logical name, source watermark, configuration Digest, original counts and quality report. Never eligible: active, ready, building, failed, recently retired, already purged, or effectively held versions." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p22-1"><mxGeometry x="190" y="855" width="1220" height="65" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-vector-hybrid-fixed-evaluation" name="23-M5.7向量与混合固定评测">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p23-0"/><mxCell id="p23-1" parent="p23-0"/>
+        <mxCell id="p23-title" value="M5.7 Vector and Hybrid Fixed Evaluation: pin the query representation" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p23-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+
+        <mxCell id="p23-data-band" value="Digest-bound evaluation identity" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="45" y="85" width="1510" height="225" as="geometry"/></mxCell>
+        <mxCell id="p23-case" value="IndexEvaluationCase&#xa;stage = lexical | vector | hybrid&#xa;query + principal + expectations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="80" y="145" width="310" height="115" as="geometry"/></mxCell>
+        <mxCell id="p23-snapshot" value="Vector/Hybrid snapshot&#xa;query_embedding&#xa;embedding_model + dimension" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="470" y="145" width="290" height="115" as="geometry"/></mxCell>
+        <mxCell id="p23-canonical" value="Canonical JSON + SHA-256&#xa;any query vector/model change&#xa;creates a new Digest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;" vertex="1" parent="p23-1"><mxGeometry x="850" y="145" width="290" height="115" as="geometry"/></mxCell>
+        <mxCell id="p23-artifact" value="Immutable Evaluation Artifact&#xa;dataset identity + lineage&#xa;shared by all quality probes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="1230" y="145" width="290" height="115" as="geometry"/></mxCell>
+        <mxCell id="p23-d1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p23-1" source="p23-case" target="p23-snapshot"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-d2" value="bind" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p23-1" source="p23-snapshot" target="p23-canonical"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-d3" value="digest" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p23-1" source="p23-canonical" target="p23-artifact"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="p23-route-band" value="Building-only stage routing with the same tenant and Memory ACL" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="45" y="345" width="1510" height="325" as="geometry"/></mxCell>
+        <mxCell id="p23-identity" value="Building identity gate&#xa;version / tenant / logical name&#xa;config Digest / source watermark" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="70" y="445" width="280" height="120" as="geometry"/></mxCell>
+        <mxCell id="p23-router" value="Stage router&#xa;model + dimension match&#xa;index-kind capability check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="420" y="445" width="260" height="120" as="geometry"/></mxCell>
+        <mxCell id="p23-lexical" value="Lexical&#xa;PostgreSQL FTS&#xa;normalized rank" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p23-1"><mxGeometry x="770" y="385" width="220" height="90" as="geometry"/></mxCell>
+        <mxCell id="p23-vector" value="Vector&#xa;pgvector cosine&#xa;pinned query vector" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;" vertex="1" parent="p23-1"><mxGeometry x="770" y="495" width="220" height="90" as="geometry"/></mxCell>
+        <mxCell id="p23-hybrid" value="Hybrid&#xa;50% lexical + 50% vector&#xa;deterministic fused score" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="770" y="605" width="220" height="50" as="geometry"/></mxCell>
+        <mxCell id="p23-hits" value="Common citable hit contract&#xa;Chunk + Memory + score&#xa;Artifact Digest + locator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="1160" y="445" width="300" height="120" as="geometry"/></mxCell>
+        <mxCell id="p23-r1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p23-1" source="p23-identity" target="p23-router"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-r2a" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p23-1" source="p23-router" target="p23-lexical"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-r2b" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p23-1" source="p23-router" target="p23-vector"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-r2c" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p23-1" source="p23-router" target="p23-hybrid"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-r3a" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p23-1" source="p23-lexical" target="p23-hits"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-r3b" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p23-1" source="p23-vector" target="p23-hits"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-r3c" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p23-1" source="p23-hybrid" target="p23-hits"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="p23-gate-band" value="One immutable run, three independent checks, one activation boundary" style="swimlane;html=1;horizontal=1;startSize=36;rounded=0;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="45" y="705" width="1510" height="245" as="geometry"/></mxCell>
+        <mxCell id="p23-probes" value="ACL / Recall / Citation&#xa;shared result set&#xa;independent thresholds" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="170" y="780" width="300" height="110" as="geometry"/></mxCell>
+        <mxCell id="p23-report" value="IndexQualityReport&#xa;same Artifact evidence&#xa;any failure blocks activation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="650" y="780" width="300" height="110" as="geometry"/></mxCell>
+        <mxCell id="p23-active" value="Atomic activation&#xa;building -> active&#xa;evaluation path closes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p23-1"><mxGeometry x="1130" y="780" width="300" height="110" as="geometry"/></mxCell>
+        <mxCell id="p23-g1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p23-1" source="p23-probes" target="p23-report"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-g2" value="passed only" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p23-1" source="p23-report" target="p23-active"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p23-boundary" value="Current boundary: exact pgvector evaluation, not production ANN latency or recall. Rerank quality, multilingual calibration and alternative hybrid weights require separately versioned evaluation contracts." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p23-1"><mxGeometry x="310" y="905" width="980" height="30" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

@@ -110,6 +110,24 @@ test(
             digest: sourceArtifact.digest,
             locator: { section_path: "Solar Systems", chunk_level: "child" },
           }],
+        }, {
+          case_id: "index-eval-case.worker.integration.hybrid",
+          stage: "hybrid",
+          query: "solar daylight",
+          purpose: "index_quality_gate",
+          query_embedding: [1, 0, 0],
+          embedding_model: "embedding.worker.v1",
+          principal: { tenant_id: "tenant.worker", user_id: "user.worker.allowed" },
+          max_results: 10,
+          expected_memory_ids: ["memory.worker.source"],
+          forbidden_memory_ids: ["memory.worker.forbidden"],
+          expected_citations: [{
+            memory_id: "memory.worker.source",
+            artifact_id: sourceArtifact.artifact_id,
+            uri: sourceArtifact.uri,
+            digest: sourceArtifact.digest,
+            locator: { section_path: "Solar Systems", chunk_level: "child" },
+          }],
         }],
       } as const;
       const evaluationSet: IndexEvaluationSet = {

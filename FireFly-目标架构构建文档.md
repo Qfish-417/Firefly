@@ -350,7 +350,7 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 - 已实现版本化 `IndexQualityReport` 与高级 Ready Gate：结构、来源水位、ACL、Recall、Citation 检查必须齐全，分数/阈值/样本量/证据可审计，并与构建身份和配置 Digest 绑定。
 - 已实现删除目标扇出和逐目标 Ack；对象存储消费者已用 AWS S3 SDK 对真实 MinIO 验证，支持定向领取、退避、attempt 耗尽终态和 failed 目标 reconciliation。本地回执仍不等于全局删除完成。
 - 已实现 Markdown Parent/Child：Parent 保存章节上下文且无 Embedding，Child 保存召回粒度并引用同 Memory、同索引版本 Parent；扩展位于 Child 选证据之后，必须复检 active/tenant/ACL，共享 Parent 去重，超预算保留 Child。
-- 已实现 digest-bound `IndexEvaluationSet` 与 PostgreSQL lexical building-index evaluator：ACL/Recall/Citation Probe 共享真实结果，激活后专用评测通道关闭；vector/hybrid 固定评测仍待补齐。
+- 已实现 digest-bound `IndexEvaluationSet` 与 PostgreSQL lexical/vector/hybrid building-index evaluator：vector/hybrid 查询 Embedding 模型快照参与 Digest，ACL/Recall/Citation Probe 共享真实结果，激活后专用评测通道关闭。
 - 已实现 `DeletionReconciliationScheduler` 与独立进程入口：周期扫描 stale failed 删除目标、同实例防重入、失败继续、结构化观测和优雅停止；多实例一致性继续由数据库行锁、状态复核和幂等 Outbox 保证。
 - 已实现 retired 索引带保留期垃圾回收：显式 retention hold 表达评测/事故/法务/审计引用；Collector 只清理到期且无 hold 的派生 Chunk，保留版本身份、质量报告与原始计数，并通过 `purged_at` 和幂等 Outbox 记录事实。
 
@@ -388,11 +388,10 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 
 ### 当前施工顺序
 
-1. 在同一固定评测合同上增加 vector/hybrid evaluator，并把查询 Embedding 模型快照纳入评测身份。
-2. 以 Markdown Parent/Child 合同为基线，增加 PDF Layout、代码 AST 和表格结构化 Chunker；禁止把纯字符切片包装成结构化实现。
-3. 逐个实现 lexical/vector/cache/summary/evaluation 删除 Provider 与证据核验，并把 scheduler JSON 周期事件接入部署级指标、持久化账本和告警。
-4. 把 retired 回收扩展到外部 BM25/ANN Provider，并为 hold 生产者建立明确的审计/法务接入流程。
-5. 接入生产 BM25 Provider；pgvector 按模型/维度分区后再评估 HNSW，不把当前精确检索称为 ANN。
+1. 以 Markdown Parent/Child 合同为基线，增加 PDF Layout、代码 AST 和表格结构化 Chunker；禁止把纯字符切片包装成结构化实现。
+2. 逐个实现 lexical/vector/cache/summary/evaluation 删除 Provider 与证据核验，并把 scheduler JSON 周期事件接入部署级指标、持久化账本和告警。
+3. 把 retired 回收扩展到外部 BM25/ANN Provider，并为 hold 生产者建立明确的审计/法务接入流程。
+4. 接入生产 BM25 Provider；pgvector 按模型/维度分区后再评估 HNSW，不把当前精确检索称为 ANN。
 
 ## 12. 工具系统建设轨道
 

@@ -397,6 +397,26 @@ test("all v1 contract examples pass their JSON Schema", () => {
   }
 });
 
+test("vector and hybrid evaluation cases require a query embedding snapshot", () => {
+  const vectorCase = {
+    ...validIndexEvaluationSet.cases[0],
+    stage: "vector",
+    query_embedding: [1, 0, 0],
+    embedding_model: "embedding.contract.v1",
+  };
+  const hybridCase = { ...vectorCase, stage: "hybrid" };
+  assert.equal(validateContract("IndexEvaluationSet", { ...validIndexEvaluationSet, cases: [vectorCase] }).valid, true);
+  assert.equal(validateContract("IndexEvaluationSet", { ...validIndexEvaluationSet, cases: [hybridCase] }).valid, true);
+  assert.equal(validateContract("IndexEvaluationSet", {
+    ...validIndexEvaluationSet,
+    cases: [{ ...validIndexEvaluationSet.cases[0], stage: "vector" }],
+  }).valid, false);
+  assert.equal(validateContract("IndexEvaluationSet", {
+    ...validIndexEvaluationSet,
+    cases: [{ ...vectorCase, stage: "lexical" }],
+  }).valid, false);
+});
+
 test("a task without an idempotency key is rejected", () => {
   const task = { ...(validContracts.TaskEnvelope as Record<string, unknown>) };
   delete task.idempotency_key;
