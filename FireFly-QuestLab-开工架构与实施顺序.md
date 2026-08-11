@@ -319,7 +319,7 @@ M5 starts with the model invocation projection (`questlab.model_invocation`) so 
 - 已完成 digest-bound lexical/vector/hybrid 固定评测：评测集把 vector/hybrid 查询 Embedding 与模型快照纳入 Digest，PostgreSQL evaluator 按阶段执行 FTS、cosine 或确定性 50/50 融合，仍只访问任务绑定的 building 版本并使用真实 ACL，激活后不可继续读取。
 - 已完成删除 reconciliation 周期调度：同实例 tick 合并，多实例依靠行锁/状态复核/幂等 Outbox，失败周期可观测且不会杀死循环，支持 AbortSignal 停止和独立进程部署。
 - 已完成 retired 索引带保留期回收：显式审计 hold 阻断清理，active/未到期版本不入选，事务删除派生 Chunk 后保留版本身份与质量报告并发出幂等 Outbox 事实。
-- M5.8 已实现 PDF Layout、代码 AST 和表格结构化 Chunker；下一步接入真实 parser SourcePort，再接生产 BM25/ANN 和外部索引回收。
+- M5.8/M5.9 已实现 PDF Layout、代码 AST、表格和对话结构化 Chunker；下一步接入真实 parser SourcePort，再接生产 BM25/ANN 和外部索引回收。
 - 之后做长期记忆压缩、多模态派生索引和动态工具发现。
 - 动态加载只加载描述与受控 Provider，不把未知代码装入 Agent 主进程。
 
@@ -349,7 +349,7 @@ M5 starts with the model invocation projection (`questlab.model_invocation`) so 
 | M2.1 治理哨兵 | 规范、预算、因果图、Loop Sentinel、隔离 | 循环、风暴、自委派和预算耗尽均被确定性阻断 |
 | M3 插件闭环（完成） | Worktree、Docker Sandbox、门禁、Canary、Rollback | 缺陷基线被拒绝；候选四门禁通过；故障注入恢复指定 Digest |
 | M4 模型闭环（完成） | pi-ai Gateway、三个真实 Agent、Stub 后备、Engineer 隔离构建 | Provider 可替换；模型输出可追溯；真实 Commit、门禁失败和发布证据均受治理 |
-| M5 记忆工具（进行中） | 授权检索、聚合、版本索引、质量报告、后台 Worker、删除 Ack、Parent/Child 扩展 | 索引构建/激活、digest-bound lexical/vector/hybrid 质量评测、Markdown/PDF/代码/表格 Parent/Child、MinIO 删除恢复、周期 reconciliation 与本地旧版 GC 已通过；真实 parser SourcePort、BM25/ANN、外部索引回收与多模态待补齐 |
+| M5 记忆工具（进行中） | 授权检索、聚合、版本索引、质量报告、后台 Worker、删除 Ack、Parent/Child 扩展 | 索引构建/激活、digest-bound lexical/vector/hybrid 质量评测、Markdown/PDF/代码/表格/对话 Parent/Child、MinIO 删除恢复、周期 reconciliation 与本地旧版 GC 已通过；真实 parser SourcePort、BM25/ANN、外部索引回收与多模态待补齐 |
 
 不满足以下条件，不称为“自闭环”：
 

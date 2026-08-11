@@ -17,6 +17,7 @@ import {
   PdfLayoutChunker,
   CodeAstChunker,
   TableStructureChunker,
+  ConversationTurnChunker,
   indexEvaluationSetDigest,
   PlainTextParagraphChunker,
   RetiredIndexGarbageCollector,
@@ -153,6 +154,28 @@ test("structured chunkers support an explicit degraded text fallback", () => {
   assert.equal(chunks[0]?.citation.locator?.expected_structure, "pdf-layout");
   assert.equal(chunks[0]?.citation.locator?.degradation, "parser-unavailable");
   assert.deepEqual(chunks[0]?.structure_path, []);
+});
+
+test("conversation chunking preserves turn order, speaker identity and time locators", () => {
+  const chunks = new ConversationTurnChunker({ max_child_characters: 128, max_parent_characters: 180 }).chunk({
+    memory_id: "memory.worker.conversation",
+    content: "parser output",
+    source_type: "conversation",
+    citation: { artifact_id: "artifact.worker.conversation", uri: "s3://unit/session.json", digest },
+    structured: {
+      kind: "conversation",
+      turns: [
+        { turn_id: "turn-2", sequence: 2, speaker_id: "assistant", role: "assistant", content: "The result is ready.", started_at: "2026-08-11T10:01:00Z" },
+        { turn_id: "turn-1", sequence: 1, speaker_id: "user", role: "user", content: "Please check the result.", started_at: "2026-08-11T10:00:00Z", ended_at: "2026-08-11T10:00:10Z" },
+      ],
+    },
+  });
+
+  assert.deepEqual(chunks.map((chunk) => chunk.chunk_level), ["parent", "child", "child"]);
+  assert.match(chunks[1]?.content ?? "", /^\[user\/user #1\]/u);
+  assert.equal(chunks[1]?.citation.locator?.turn_id, "turn-1");
+  assert.equal(chunks[1]?.citation.locator?.started_at, "2026-08-11T10:00:00Z");
+  assert.equal(chunks[1]?.parent_ordinal, 0);
 });
 
 test("ready gate requires every source document to produce a Chunk", () => {

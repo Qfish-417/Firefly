@@ -28,7 +28,7 @@ export interface IndexSourceDocument {
   readonly structured?: IndexStructuredSource;
 }
 
-export type IndexStructuredSource = IndexPdfLayoutSource | IndexCodeAstSource | IndexTableSource;
+export type IndexStructuredSource = IndexPdfLayoutSource | IndexCodeAstSource | IndexTableSource | IndexConversationSource;
 
 export interface IndexPdfLayoutSource {
   readonly kind: "pdf-layout";
@@ -78,6 +78,21 @@ export interface IndexTable {
   readonly name: string;
   readonly headers: readonly string[];
   readonly rows: readonly (readonly string[])[];
+}
+
+export interface IndexConversationSource {
+  readonly kind: "conversation";
+  readonly turns: readonly IndexConversationTurn[];
+}
+
+export interface IndexConversationTurn {
+  readonly turn_id: string;
+  readonly sequence: number;
+  readonly speaker_id: string;
+  readonly role?: "user" | "assistant" | "system" | "tool";
+  readonly content: string;
+  readonly started_at?: string;
+  readonly ended_at?: string;
 }
 
 export type StructuredChunkerFallbackMode = "strict" | "degraded";
@@ -663,6 +678,119 @@ export class TableStructureChunker implements IndexChunkerPort {
     }
     return drafts;
   }
+}
+
+export class ConversationTurnChunker implements IndexChunkerPort {
+  private readonly maxChildCharacters: number;
+  private readonly maxParentCharacters: number;
+  private readonly fallbackMode: StructuredChunkerFallbackMode;
+
+  constructor(options: StructuredChunkerOptions = {}) {
+    this.maxChildCharacters = options.max_child_characters ?? 1_200;
+    this.maxParentCharacters = options.max_parent_characters ?? 4_800;
+    this.fallbackMode = options.fallback_mode ?? "strict";
+    validateChunkLimits(this.maxChildCharacters, this.maxParentCharacters, "Conversation");
+  }
+
+  chunk(document: IndexSourceDocument): readonly IndexChunkDraft[] {
+    const source = structuredSourceOrFallback(document, "conversation", this.fallbackMode);
+    if (!source) return degradedTextChunks(document, "conversation", this.maxChildCharacters);
+    const turns = [...source.turns].sort((left, right) => left.sequence - right.sequence || left.turn_id.localeCompare(right.turn_id));
+    validateConversationTurns(turns);
+    const drafts: IndexChunkDraft[] = [];
+    let ordinal = 0;
+    for (const group of groupConversationTurns(turns, this.maxParentCharacters)) {
+      const parentOrdinal = ordinal++;
+      const path = ["conversation", `turns ${group[0]!.sequence}-${group[group.length - 1]!.sequence}`];
+      const parentContent = group.map(formatConversationTurn).join("\n\n");
+      drafts.push(conversationDraft(document, parentOrdinal, "parent", path, parentContent, group[0]!, group[group.length - 1]!));
+      const children = group.flatMap((turn) => splitLongBlock(formatConversationTurn(turn), this.maxChildCharacters)
+        .map((content, part) => ({ turn, content, part })));
+      for (const child of children) {
+        drafts.push(conversationDraft(document, ordinal++, "child", [...path, child.turn.turn_id], child.content,
+          child.turn, child.turn, parentOrdinal, child.part));
+      }
+    }
+    return drafts;
+  }
+}
+
+function validateConversationTurns(turns: readonly IndexConversationTurn[]): void {
+  const ids = new Set<string>();
+  const sequences = new Set<number>();
+  for (const turn of turns) {
+    if (!turn.turn_id.trim() || ids.has(turn.turn_id) || !Number.isInteger(turn.sequence) || turn.sequence < 0 ||
+      sequences.has(turn.sequence) || !turn.speaker_id.trim() || !turn.content.trim()) {
+      throw new IndexBuildWorkerError("INVALID_CONVERSATION_TURN", "Conversation turns require unique ordered identity, speaker and content", false);
+    }
+    ids.add(turn.turn_id);
+    sequences.add(turn.sequence);
+    if (turn.started_at && Number.isNaN(Date.parse(turn.started_at))) {
+      throw new IndexBuildWorkerError("INVALID_CONVERSATION_TIME", "Conversation turn timestamps must be valid ISO dates", false);
+    }
+    if (turn.ended_at && Number.isNaN(Date.parse(turn.ended_at))) {
+      throw new IndexBuildWorkerError("INVALID_CONVERSATION_TIME", "Conversation turn timestamps must be valid ISO dates", false);
+    }
+  }
+}
+
+function groupConversationTurns(
+  turns: readonly IndexConversationTurn[],
+  maxCharacters: number,
+): readonly (readonly IndexConversationTurn[])[] {
+  const groups: IndexConversationTurn[][] = [];
+  let current: IndexConversationTurn[] = [];
+  let size = 0;
+  for (const turn of turns) {
+    const formatted = formatConversationTurn(turn);
+    const addition = formatted.length + (current.length > 0 ? 2 : 0);
+    if (current.length > 0 && size + addition > maxCharacters) {
+      groups.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(turn);
+    size += formatted.length + (current.length > 1 ? 2 : 0);
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+function formatConversationTurn(turn: IndexConversationTurn): string {
+  const role = turn.role ? `/${turn.role}` : "";
+  return `[${turn.speaker_id}${role} #${turn.sequence}] ${turn.content.trim()}`;
+}
+
+function conversationDraft(
+  document: IndexSourceDocument,
+  ordinal: number,
+  level: "parent" | "child",
+  path: readonly string[],
+  content: string,
+  first: IndexConversationTurn,
+  last: IndexConversationTurn,
+  parentOrdinal?: number,
+  part?: number,
+): IndexChunkDraft {
+  return {
+    memory_id: document.memory_id,
+    ordinal,
+    chunk_level: level,
+    ...(parentOrdinal === undefined ? {} : { parent_ordinal: parentOrdinal }),
+    structure_path: path,
+    content,
+    source_type: document.source_type,
+    entity_keys: document.entity_keys ?? [],
+    citation: withStructureLocator(document.citation, path, level, first.sequence, part, {
+      turn_id: first.turn_id,
+      turn_range_start: first.sequence,
+      turn_range_end: last.sequence,
+      speaker_id: first.speaker_id,
+      ...(first.started_at ? { started_at: first.started_at } : {}),
+      ...(last.ended_at ? { ended_at: last.ended_at } : {}),
+    }),
+    token_count: Math.max(1, Math.ceil(content.length / 4)),
+  };
 }
 
 function structuredSourceOrFallback<K extends IndexStructuredSource["kind"]>(

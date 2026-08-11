@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="24">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="25">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -740,6 +740,28 @@
         <mxCell id="p24-e8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p24-1" source="p24-parent" target="p24-locator"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p24-e9" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p24-1" source="p24-parent" target="p24-index"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p24-boundary" value="Boundary: parser provenance and structure are part of the build input. Any parser/model change requires a new source watermark or configuration Digest and a new quality report." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p24-1"><mxGeometry x="260" y="910" width="1080" height="35" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-conversation-chunker" name="25-M5.9 Conversation Turn Chunker">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p25-0"/><mxCell id="p25-1" parent="p25-0"/>
+        <mxCell id="p25-title" value="M5.9 Conversation Turn Chunker: preserve attribution and temporal context" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p25-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+        <mxCell id="p25-input" value="Conversation source&#xa;turn_id + sequence + speaker/role&#xa;optional started_at / ended_at" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p25-1"><mxGeometry x="540" y="105" width="520" height="110" as="geometry"/></mxCell>
+        <mxCell id="p25-validate" value="Deterministic validation&#xa;unique turn identity and sequence&#xa;valid timestamps and non-empty content" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p25-1"><mxGeometry x="90" y="310" width="330" height="125" as="geometry"/></mxCell>
+        <mxCell id="p25-group" value="Contiguous turn windows&#xa;stable sequence ordering&#xa;Parent character budget" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p25-1"><mxGeometry x="500" y="310" width="330" height="125" as="geometry"/></mxCell>
+        <mxCell id="p25-child" value="Child recall units&#xa;turn boundary first&#xa;long turn split retains turn_id" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p25-1"><mxGeometry x="910" y="310" width="330" height="125" as="geometry"/></mxCell>
+        <mxCell id="p25-fallback" value="Parser unavailable&#xa;strict: fail closed&#xa;degraded: plain text + marker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=13;fontStyle=1;" vertex="1" parent="p25-1"><mxGeometry x="1310" y="310" width="220" height="125" as="geometry"/></mxCell>
+        <mxCell id="p25-locator" value="Citation Locator&#xa;turn_id / speaker_id / sequence&#xa;turn range + time range" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;fontStyle=1;" vertex="1" parent="p25-1"><mxGeometry x="350" y="555" width="360" height="125" as="geometry"/></mxCell>
+        <mxCell id="p25-index" value="Index Build Worker&#xa;Parent context, Child embedding&#xa;active-index and ACL gates unchanged" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p25-1"><mxGeometry x="850" y="555" width="430" height="125" as="geometry"/></mxCell>
+        <mxCell id="p25-boundary" value="Conversation parser, transcript ingestion and diarization remain SourcePort responsibilities; the Worker consumes only immutable, versioned parser output." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p25-1"><mxGeometry x="260" y="820" width="1080" height="50" as="geometry"/></mxCell>
+        <mxCell id="p25-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p25-1" source="p25-input" target="p25-validate"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p25-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p25-1" source="p25-validate" target="p25-group"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p25-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p25-1" source="p25-group" target="p25-child"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p25-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;dashed=1;" edge="1" parent="p25-1" source="p25-input" target="p25-fallback"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p25-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p25-1" source="p25-child" target="p25-locator"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p25-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p25-1" source="p25-locator" target="p25-index"><mxGeometry relative="1" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

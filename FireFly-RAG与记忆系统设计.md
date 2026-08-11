@@ -506,6 +506,8 @@ Overlap 根据句法和语义跨界决定，不采用固定字符比例。列表
 
 M5.8 已补齐三类结构化 Chunker：`PdfLayoutChunker` 消费页码、布局块、标题层级、bbox 和 region 标识；`CodeAstChunker` 消费语言、AST 节点、符号路径和起止行；`TableStructureChunker` 消费 sheet/table、表头、行组和列坐标。三者复用 Parent/Child 合同，Parent 只保存上下文、Child 才参与召回和 Embedding，Citation Locator 保留原始结构坐标。缺少 parser output 时默认返回不可重试的 `STRUCTURED_SOURCE_MISSING`；只有显式 `fallback_mode=degraded` 才退回纯文本，并写入降级标记，禁止静默伪装成结构化结果。
 
+M5.9 已补齐 `ConversationTurnChunker`：按稳定 sequence 排序并保留 turn、speaker、role 和时间范围；Parent 保存连续对话窗口，Child 以轮次为优先边界参与召回，超长单轮才在轮次内部拆分。严格/降级策略与其他结构化 Chunker 一致，降级结果不声明虚假的说话人或时间结构。
+
 索引与查询遵循不对称职责：Parent 不生成 Embedding，也不进入 FTS/pgvector 候选；只有 Child 用于精确召回。Ready Gate 要求每个文档至少有一个 Child、父子引用闭合、Parent 不携带 Embedding，且每个 Parent 至少拥有一个 Child。Indexer 在写入 Child 前校验其 Parent 属于同一 Memory 和同一索引版本，禁止通过父引用跨越授权或版本边界。
 
 运行时扩展顺序固定为：
@@ -810,7 +812,7 @@ rag-memory/
 - `DeletionReconciliationScheduler` 与独立进程入口已实现周期扫描、同实例 tick 合并、失败继续、结构化周期观测和 AbortSignal 停止；真实 PostgreSQL 集成已验证 failed 目标经 scheduler 重排后被恢复 Worker 完成。
 - 迁移 011、显式 retention hold 与 `RetiredIndexGarbageCollector` 已实现带保留期的 retired 投影回收；真实 PostgreSQL 集成已验证 active、未到期和审计 hold 均阻断清理，释放 hold 后仅删除到期 Chunk，并保留版本证据与幂等 Outbox 事实。
 
-尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、对话 Chunker、Neighbor/Entity/Temporal/Region 扩展、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
+尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、Neighbor/Entity/Temporal/Region 扩展、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。
 
 - 下一批优先接入真实 PDF/OCR、代码解析器和表格解析器的 SourcePort，再接生产 BM25/ANN Provider 与外部索引回收。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
