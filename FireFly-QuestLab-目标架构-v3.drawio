@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="35">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="36">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -966,6 +966,31 @@
         <mxCell id="p35-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p35-1" source="p35-structure" target="p35-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p35-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p35-1" source="p35-validation" target="p35-failure"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p35-boundary" value="Boundary: sheet/table values are indexed. Merged-cell semantics, charts, embedded images, macros and formula recalculation remain outside this parser." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p35-1"><mxGeometry x="200" y="920" width="1200" height="35" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-governed-http-ocr" name="36-M5.19 Governed HTTP OCR Layout">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p36-0"/><mxCell id="p36-1" parent="p36-0"/>
+        <mxCell id="p36-title" value="M5.19 Governed OCR: native text first, verified binary OCR only for scanned documents" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p36-1"><mxGeometry x="90" y="20" width="1420" height="50" as="geometry"/></mxCell>
+        <mxCell id="p36-artifact" value="Immutable binary Artifact&#xa;s3:// hydration | byte limit&#xa;Citation SHA-256 verification" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p36-1"><mxGeometry x="60" y="150" width="300" height="140" as="geometry"/></mxCell>
+        <mxCell id="p36-native" value="PDF.js native extraction&#xa;born-digital text + point bbox&#xa;page/item/text budgets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p36-1"><mxGeometry x="450" y="150" width="310" height="140" as="geometry"/></mxCell>
+        <mxCell id="p36-route" value="Explicit route decision&#xa;success -> native layout&#xa;NO_EXTRACTABLE_TEXT -> OCR&#xa;all other errors fail closed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p36-1"><mxGeometry x="850" y="140" width="330" height="160" as="geometry"/></mxCell>
+        <mxCell id="p36-provider" value="HttpOcrLayoutParser&#xa;fixed HTTPS endpoint | no redirects&#xa;multipart metadata + verified bytes&#xa;timeout and response byte limits" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p36-1"><mxGeometry x="1220" y="360" width="310" height="170" as="geometry"/></mxCell>
+        <mxCell id="p36-contract" value="firefly.ocr-layout.v1 validation&#xa;echoed digest + provider/model identity&#xa;contiguous page/block reading order&#xa;pixel size | unique region | bbox | confidence" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p36-1"><mxGeometry x="830" y="430" width="350" height="180" as="geometry"/></mxCell>
+        <mxCell id="p36-layout" value="Unified IndexPdfLayoutSource&#xa;native or OCR extraction provenance&#xa;page geometry + blocks + quality metadata" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p36-1"><mxGeometry x="410" y="450" width="340" height="150" as="geometry"/></mxCell>
+        <mxCell id="p36-chunker" value="PdfLayoutChunker&#xa;Parent page context + Child recall&#xa;Citation keeps provider/model/page/bbox/confidence/language" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p36-1"><mxGeometry x="410" y="730" width="500" height="140" as="geometry"/></mxCell>
+        <mxCell id="p36-ops" value="Deployment governance&#xa;credential rotation | outbound allowlist | rate limit&#xa;data residency + retention | provider observability" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=13;" vertex="1" parent="p36-1"><mxGeometry x="1040" y="730" width="430" height="140" as="geometry"/></mxCell>
+        <mxCell id="p36-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p36-1" source="p36-artifact" target="p36-native"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p36-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p36-1" source="p36-native" target="p36-route"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p36-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p36-1" source="p36-route" target="p36-provider"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p36-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p36-1" source="p36-provider" target="p36-contract"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p36-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p36-1" source="p36-contract" target="p36-layout"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p36-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p36-1" source="p36-route" target="p36-layout"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p36-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p36-1" source="p36-layout" target="p36-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p36-e8" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#5E6C84;" edge="1" parent="p36-1" source="p36-provider" target="p36-ops"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p36-boundary" value="Boundary: OCR is derived evidence and never repairs malformed, oversized or unverified PDFs. The concrete OCR engine remains replaceable behind this contract." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p36-1"><mxGeometry x="220" y="925" width="1160" height="35" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

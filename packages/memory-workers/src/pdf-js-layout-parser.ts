@@ -89,6 +89,7 @@ export class PdfJsLayoutParser implements IndexSourceParserPort {
       const pages = [];
       for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
         const page = await pdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1 });
         const text = await page.getTextContent();
         const items: PdfTextItem[] = [];
         for (const item of text.items) {
@@ -99,12 +100,22 @@ export class PdfJsLayoutParser implements IndexSourceParserPort {
         if (itemCount > this.maxTextItems || characterCount > this.maxTextCharacters) {
           throw new PdfJsLayoutParserError("TEXT_LIMIT_EXCEEDED", "PDF text exceeds the configured item or character limit");
         }
-        pages.push({ page: pageNumber, blocks: lineBlocks(items, pageNumber) });
+        pages.push({
+          page: pageNumber,
+          width: viewport.width,
+          height: viewport.height,
+          coordinate_unit: "point" as const,
+          blocks: lineBlocks(items, pageNumber),
+        });
       }
       if (pages.every((page) => page.blocks.length === 0)) {
         throw new PdfJsLayoutParserError("NO_EXTRACTABLE_TEXT", "PDF contains no extractable text and requires an OCR provider");
       }
-      return { kind: "pdf-layout", pages };
+      return {
+        kind: "pdf-layout",
+        pages,
+        extraction: { method: "native", provider_id: this.parser_id },
+      };
     } catch (error) {
       if (error instanceof PdfJsLayoutParserError) throw error;
       throw new PdfJsLayoutParserError("PDF_PARSE_FAILED", safeErrorMessage(error));
@@ -153,8 +164,8 @@ function lineBlocks(items: readonly PdfTextItem[], page: number): readonly Index
       bbox: [
         Math.min(...line.map((item) => item.x1)),
         Math.min(...line.map((item) => item.y1)),
-        Math.max(...line.map((item) => item.x2)),
-        Math.max(...line.map((item) => item.y2)),
+        Math.max(...line.map((item) => item.x2)) - Math.min(...line.map((item) => item.x1)),
+        Math.max(...line.map((item) => item.y2)) - Math.min(...line.map((item) => item.y1)),
       ],
       region_id: `page-${page}-line-${index + 1}`,
     };

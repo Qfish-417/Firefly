@@ -5,6 +5,7 @@ export * from "./csv-table-parser.ts";
 export * from "./transcript-json-parser.ts";
 export * from "./binary-object-source.ts";
 export * from "./pdf-js-layout-parser.ts";
+export * from "./http-ocr-layout-parser.ts";
 export * from "./xlsx-table-parser.ts";
 export * from "./index-quality-probes.ts";
 export * from "./deletion-worker.ts";

@@ -36,11 +36,22 @@ export type IndexStructuredSource = IndexPdfLayoutSource | IndexCodeAstSource | 
 export interface IndexPdfLayoutSource {
   readonly kind: "pdf-layout";
   readonly pages: readonly IndexPdfPage[];
+  readonly extraction?: IndexPdfExtraction;
+}
+
+export interface IndexPdfExtraction {
+  readonly method: "native" | "ocr";
+  readonly provider_id: string;
+  readonly model_id?: string;
+  readonly model_version?: string;
 }
 
 export interface IndexPdfPage {
   readonly page: number;
   readonly blocks: readonly IndexPdfLayoutBlock[];
+  readonly width?: number;
+  readonly height?: number;
+  readonly coordinate_unit?: "point" | "pixel" | "normalized";
 }
 
 export interface IndexPdfLayoutBlock {
@@ -49,6 +60,8 @@ export interface IndexPdfLayoutBlock {
   readonly bbox?: readonly [number, number, number, number];
   readonly heading_level?: number;
   readonly region_id?: string;
+  readonly confidence?: number;
+  readonly language?: string;
 }
 
 export interface IndexCodeAstSource {
@@ -583,11 +596,11 @@ export class PdfLayoutChunker implements IndexChunkerPort {
         for (const group of parentGroups) {
           const parentOrdinal = ordinal++;
           const parentContent = group.map((block) => block.text).join("\n\n").trim();
-          drafts.push(this.pdfDraft(document, parentOrdinal, "parent", path, parentContent, page.page, group[0]));
+          drafts.push(this.pdfDraft(document, parentOrdinal, "parent", path, parentContent, page, source.extraction, group[0]));
           const childBlocks = group.flatMap((block) => splitLongBlock(block.text, this.maxChildCharacters));
           for (const [childPart, childText] of childBlocks.entries()) {
             const content = `${path.join(" > ")}\n\n${childText}`.trim();
-            drafts.push(this.pdfDraft(document, ordinal++, "child", path, content, page.page,
+            drafts.push(this.pdfDraft(document, ordinal++, "child", path, content, page, source.extraction,
               group[Math.min(childPart, group.length - 1)], parentOrdinal, childPart));
           }
         }
@@ -605,6 +618,8 @@ export class PdfLayoutChunker implements IndexChunkerPort {
           text: block.text.trim(),
           ...(block.bbox ? { bbox: block.bbox } : {}),
           ...(block.region_id ? { region_id: block.region_id } : {}),
+          ...(block.confidence === undefined ? {} : { confidence: block.confidence }),
+          ...(block.language ? { language: block.language } : {}),
         });
       }
       flush();
@@ -618,7 +633,8 @@ export class PdfLayoutChunker implements IndexChunkerPort {
     level: "parent" | "child",
     path: readonly string[],
     content: string,
-    page: number,
+    page: IndexPdfPage,
+    extraction: IndexPdfExtraction | undefined,
     block: PdfBlockWithPath | undefined,
     parentOrdinal?: number,
     chunkPart?: number,
@@ -632,8 +648,11 @@ export class PdfLayoutChunker implements IndexChunkerPort {
       content,
       source_type: document.source_type,
       entity_keys: document.entity_keys ?? [],
-      citation: withStructureLocator(document.citation, path, level, page, chunkPart, {
-        page,
+      citation: withStructureLocator(document.citation, path, level, page.page, chunkPart, {
+        page: page.page,
+        ...(page.width === undefined ? {} : { page_width: page.width }),
+        ...(page.height === undefined ? {} : { page_height: page.height }),
+        ...(page.coordinate_unit ? { coordinate_unit: page.coordinate_unit } : {}),
         ...(block?.bbox ? {
           bbox_x: block.bbox[0],
           bbox_y: block.bbox[1],
@@ -641,6 +660,14 @@ export class PdfLayoutChunker implements IndexChunkerPort {
           bbox_height: block.bbox[3],
         } : {}),
         ...(block?.region_id ? { region_id: block.region_id } : {}),
+        ...(block?.confidence === undefined ? {} : { confidence: block.confidence }),
+        ...(block?.language ? { language: block.language } : {}),
+        ...(extraction ? {
+          extraction_method: extraction.method,
+          extraction_provider: extraction.provider_id,
+          ...(extraction.model_id ? { extraction_model: extraction.model_id } : {}),
+          ...(extraction.model_version ? { extraction_model_version: extraction.model_version } : {}),
+        } : {}),
       }),
       token_count: Math.max(1, Math.ceil(content.length / 4)),
     };
@@ -651,6 +678,8 @@ interface PdfBlockWithPath {
   readonly text: string;
   readonly bbox?: readonly [number, number, number, number];
   readonly region_id?: string;
+  readonly confidence?: number;
+  readonly language?: string;
 }
 
 export class CodeAstChunker implements IndexChunkerPort {
