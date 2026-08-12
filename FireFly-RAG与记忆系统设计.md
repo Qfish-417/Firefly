@@ -524,7 +524,21 @@ Child recall -> fusion -> Child ACL -> evidence selection
 
 扩展发生在候选融合、Child 授权和动态选证据之后，避免先扩展造成上下文膨胀。多个 Child 指向同一 Parent 时只加入一次；Parent 超过剩余上下文预算时保留已授权 Child，而不是截断 Parent 或突破预算。扩展器返回的 Evidence ID 必须保持不可变，Gateway 对 Parent 再次授权并拒绝任何超预算、身份冲突或越权结果。
 
-### 10.3 版本与重建
+### 10.3 受治理的证据上下文扩展
+
+Parent/Child 只是结构关系，不应成为唯一扩展机制。已选择的 Child 或事实证据可以沿四类显式关系补充上下文：`region` 用于 PDF/表格/图像区域，`neighbor` 用于相邻 Chunk 或对话轮次，`entity` 用于同一实体或概念，`temporal` 用于前后事件与时间窗口。默认优先级为 `region -> neighbor -> entity -> temporal`。
+
+扩展器只接收已授权锚点，不执行开放式二次检索。候选按关系优先级、score 降序、Evidence ID 升序稳定排序，然后按每个 anchor 上限截断并按 ID 去重。相同 Evidence ID 的 content、citation URI 或 digest 不一致时立即 fail closed。
+
+```text
+Child/fact recall -> fusion -> initial ACL -> dynamic evidence selection
+-> deterministic relation expansion -> final ACL/active-index check
+-> immutable citation validation -> max_context_tokens -> EvidencePack
+```
+
+Gateway 先保留初始证据的 token 预算，再把候选逐个放入剩余预算；放不下的候选跳过，不能截断证据或突破预算。扩展器支持 `AbortSignal`，取消时不返回可生成的半成品。扩展 TopK 因此是动态 token 预算下的候选上限，而不是固定送入模型的切片数量。
+
+### 10.4 版本与重建
 
 - `document_id` 稳定，`document_version` 随内容变化。
 - Chunk ID 建议基于文档版本、结构路径和内容 Hash。

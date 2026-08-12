@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DeterministicEvidenceExpander,
   RetrievalGateway,
   RetrievalPolicyError,
   type RetrievalHit,
@@ -152,6 +153,96 @@ test("conflicting immutable evidence identities fail closed", async () => {
   await assert.rejects(
     gateway.retrieve(baseRequest),
     (error: unknown) => error instanceof RetrievalPolicyError,
+  );
+});
+
+test("deterministic expansion applies relation priority and stable score/id ordering", async () => {
+  const anchor = hit("anchor", 1, "concept:anchor");
+  const expander = new DeterministicEvidenceExpander({
+    candidates: [
+      { anchor_id: anchor.id, relation: "entity", hit: hit("entity.z", 0.95, "concept:z") },
+      { anchor_id: anchor.id, relation: "region", hit: hit("region.low", 0.2, "concept:r1") },
+      { anchor_id: anchor.id, relation: "region", hit: hit("region.high", 0.9, "concept:r2") },
+      { anchor_id: anchor.id, relation: "neighbor", hit: hit("neighbor", 1, "concept:n") },
+      { anchor_id: anchor.id, relation: "entity", hit: hit("entity.a", 0.95, "concept:a") },
+    ],
+  });
+
+  const expanded = await expander.expand({
+    hits: [anchor],
+    principal: baseRequest.principal,
+    purpose: baseRequest.purpose,
+    max_tokens: 1_000,
+  });
+
+  assert.deepEqual(expanded.map((candidate) => candidate.id), [
+    "anchor",
+    "region.high",
+    "region.low",
+    "neighbor",
+    "entity.a",
+    "entity.z",
+  ]);
+});
+
+test("deterministic expansion truncates candidates at the remaining token budget", async () => {
+  const anchor = hit("anchor", 1, "concept:anchor");
+  const first = hit("first", 0.9, "concept:first");
+  const second = hit("second", 0.8, "concept:second");
+  const expander = new DeterministicEvidenceExpander({
+    candidates: [
+      { anchor_id: anchor.id, relation: "neighbor", hit: first },
+      { anchor_id: anchor.id, relation: "neighbor", hit: second },
+    ],
+  });
+
+  const expanded = await expander.expand({
+    hits: [anchor],
+    principal: baseRequest.principal,
+    purpose: baseRequest.purpose,
+    max_tokens: anchor.token_count + first.token_count,
+  });
+
+  assert.deepEqual(expanded.map((candidate) => candidate.id), ["anchor", "first"]);
+});
+
+test("deterministic expansion rejects conflicting immutable evidence IDs", async () => {
+  const anchor = hit("anchor", 1, "concept:anchor");
+  const original = hit("same", 0.9, "concept:same");
+  const conflicting = { ...original, content: "different immutable content" };
+  const expander = new DeterministicEvidenceExpander({
+    candidates: [
+      { anchor_id: anchor.id, relation: "neighbor", hit: original },
+      { anchor_id: anchor.id, relation: "entity", hit: conflicting },
+    ],
+  });
+
+  await assert.rejects(
+    expander.expand({
+      hits: [anchor],
+      principal: baseRequest.principal,
+      purpose: baseRequest.purpose,
+      max_tokens: 1_000,
+    }),
+    (error: unknown) => error instanceof RetrievalPolicyError && error.message.includes("conflicting immutable content"),
+  );
+});
+
+test("deterministic expansion honors AbortSignal", async () => {
+  const anchor = hit("anchor", 1, "concept:anchor");
+  const controller = new AbortController();
+  controller.abort(new Error("cancelled"));
+  const expander = new DeterministicEvidenceExpander({ candidates: [] });
+
+  await assert.rejects(
+    expander.expand({
+      hits: [anchor],
+      principal: baseRequest.principal,
+      purpose: baseRequest.purpose,
+      max_tokens: 1_000,
+      signal: controller.signal,
+    }),
+    /cancelled/,
   );
 });
 

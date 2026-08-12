@@ -97,6 +97,102 @@ export interface EvidenceExpansionPort {
   }): Promise<readonly RetrievalHit[]>;
 }
 
+export type EvidenceExpansionRelation = "neighbor" | "region" | "entity" | "temporal";
+
+const expansionRelations: readonly EvidenceExpansionRelation[] = ["neighbor", "region", "entity", "temporal"];
+
+export interface EvidenceExpansionCandidate {
+  readonly anchor_id: string;
+  readonly relation: EvidenceExpansionRelation;
+  readonly hit: RetrievalHit;
+}
+
+export interface DeterministicEvidenceExpanderOptions {
+  readonly candidates: readonly EvidenceExpansionCandidate[];
+  readonly relation_order?: readonly EvidenceExpansionRelation[];
+  readonly max_candidates_per_anchor?: number;
+}
+
+/** Provider-neutral expansion ordering and budget policy. */
+export class DeterministicEvidenceExpander implements EvidenceExpansionPort {
+  private readonly byAnchor: ReadonlyMap<string, readonly EvidenceExpansionCandidate[]>;
+  private readonly relationRank: ReadonlyMap<EvidenceExpansionRelation, number>;
+  private readonly maxCandidatesPerAnchor: number;
+
+  constructor(options: DeterministicEvidenceExpanderOptions) {
+    const order = options.relation_order ?? ["region", "neighbor", "entity", "temporal"];
+    if (new Set(order).size !== order.length || order.some((relation) => !isExpansionRelation(relation))) {
+      throw new RetrievalPolicyError("Expansion relation order must contain each relation at most once");
+    }
+    const maxCandidates = options.max_candidates_per_anchor ?? 8;
+    if (!Number.isInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 100) {
+      throw new RetrievalPolicyError("max_candidates_per_anchor must be between 1 and 100");
+    }
+    const grouped = new Map<string, EvidenceExpansionCandidate[]>();
+    for (const candidate of options.candidates) {
+      if (!candidate.anchor_id || !isExpansionRelation(candidate.relation) || !validHit(candidate.hit)) {
+        throw new RetrievalPolicyError("Expansion candidates require an anchor, relation and valid hit");
+      }
+      const list = grouped.get(candidate.anchor_id) ?? [];
+      list.push(candidate);
+      grouped.set(candidate.anchor_id, list);
+    }
+    this.byAnchor = new Map([...grouped.entries()].map(([anchor, candidates]) => [anchor, [...candidates]]));
+    this.relationRank = new Map(order.map((relation, index) => [relation, index]));
+    this.maxCandidatesPerAnchor = maxCandidates;
+  }
+
+  async expand(input: {
+    readonly hits: readonly RetrievalHit[];
+    readonly principal: RetrievalPrincipal;
+    readonly purpose: string;
+    readonly max_tokens: number;
+    readonly signal?: AbortSignal;
+  }): Promise<readonly RetrievalHit[]> {
+    input.signal?.throwIfAborted();
+    if (!input.purpose.trim() || !Number.isInteger(input.max_tokens) || input.max_tokens <= 0) {
+      throw new RetrievalPolicyError("Context expansion requires purpose and a positive token budget");
+    }
+    const selected = new Map<string, RetrievalHit>();
+    let usedTokens = 0;
+    for (const hit of input.hits) {
+      if (!validHit(hit)) throw new RetrievalPolicyError("Expansion input contains an invalid hit");
+      if (selected.has(hit.id)) continue;
+      usedTokens += hit.token_count;
+      selected.set(hit.id, hit);
+    }
+    if (usedTokens > input.max_tokens) throw new RetrievalPolicyError("Context expansion input exceeds token budget");
+    for (const anchor of input.hits) {
+      const candidates = [...(this.byAnchor.get(anchor.id) ?? [])]
+        .sort((left, right) =>
+          (this.relationRank.get(left.relation) ?? Number.MAX_SAFE_INTEGER) -
+            (this.relationRank.get(right.relation) ?? Number.MAX_SAFE_INTEGER) ||
+          right.hit.score - left.hit.score ||
+          compareIds(left.hit.id, right.hit.id),
+        )
+        .slice(0, this.maxCandidatesPerAnchor);
+      for (const candidate of candidates) {
+        input.signal?.throwIfAborted();
+        const existing = selected.get(candidate.hit.id);
+        if (existing) {
+          if (
+            existing.content !== candidate.hit.content ||
+            existing.citation.uri !== candidate.hit.citation.uri ||
+            existing.citation.digest !== candidate.hit.citation.digest
+          ) {
+            throw new RetrievalPolicyError(`Expanded evidence ID ${candidate.hit.id} has conflicting immutable content`);
+          }
+          continue;
+        }
+        if (candidate.hit.token_count > input.max_tokens - usedTokens) continue;
+        selected.set(candidate.hit.id, candidate.hit);
+        usedTokens += candidate.hit.token_count;
+      }
+    }
+    return [...selected.values()];
+  }
+}
+
 export interface RetrievalGatewayOptions {
   readonly retrievers: readonly Retriever[];
   readonly authorization: RetrievalAuthorizationPort;
@@ -344,6 +440,14 @@ function validHit(hit: RetrievalHit): boolean {
     hit.citation.uri &&
     /^sha256:[a-f0-9]{64}$/.test(hit.citation.digest),
   );
+}
+
+function isExpansionRelation(value: string): value is EvidenceExpansionRelation {
+  return expansionRelations.includes(value as EvidenceExpansionRelation);
+}
+
+function compareIds(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function validateExpandedHits(hits: readonly RetrievalHit[], maxTokens: number): readonly RetrievalHit[] {

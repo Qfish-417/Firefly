@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="27">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="28">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -806,6 +806,28 @@
         <mxCell id="p27-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p27-1" source="p27-activation" target="p27-active"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p27-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;dashed=1;" edge="1" parent="p27-1" source="p27-build" target="p27-error"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p27-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;dashed=1;" edge="1" parent="p27-1" source="p27-activation" target="p27-error"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-deterministic-expansion" name="28-M5.11 Deterministic Evidence Expansion">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p28-0"/><mxCell id="p28-1" parent="p28-0"/>
+        <mxCell id="p28-title" value="M5.11 Deterministic Evidence Expansion: bounded context after evidence selection" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p28-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+        <mxCell id="p28-anchor" value="Selected evidence anchors&#xa;Child or structured fact&#xa;initial ACL already passed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p28-1"><mxGeometry x="540" y="105" width="520" height="110" as="geometry"/></mxCell>
+        <mxCell id="p28-relations" value="Explicit candidate relations&#xa;region | neighbor | entity | temporal&#xa;provider adapters only supply candidates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p28-1"><mxGeometry x="500" y="300" width="600" height="125" as="geometry"/></mxCell>
+        <mxCell id="p28-order" value="Deterministic policy&#xa;relation priority -> score desc -> ID asc&#xa;per-anchor candidate cap + immutable ID check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p28-1"><mxGeometry x="120" y="535" width="400" height="135" as="geometry"/></mxCell>
+        <mxCell id="p28-budget" value="Remaining token budget&#xa;max_context_tokens hard ceiling&#xa;skip candidates that do not fit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p28-1"><mxGeometry x="600" y="535" width="400" height="135" as="geometry"/></mxCell>
+        <mxCell id="p28-guard" value="Gateway final guard&#xa;ACL + active index + tenant/Memory&#xa;Citation and EvidencePack contract" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p28-1"><mxGeometry x="1080" y="535" width="400" height="135" as="geometry"/></mxCell>
+        <mxCell id="p28-output" value="EvidencePack&#xa;generation only when sufficient&#xa;AbortSignal cancellation fails closed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p28-1"><mxGeometry x="540" y="780" width="520" height="115" as="geometry"/></mxCell>
+        <mxCell id="p28-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p28-1" source="p28-anchor" target="p28-relations"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p28-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p28-1" source="p28-relations" target="p28-order"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p28-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p28-1" source="p28-relations" target="p28-budget"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p28-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p28-1" source="p28-relations" target="p28-guard"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p28-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p28-1" source="p28-order" target="p28-output"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p28-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p28-1" source="p28-budget" target="p28-output"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p28-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p28-1" source="p28-guard" target="p28-output"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p28-boundary" value="Expansion never becomes unrestricted Agent-side retrieval. Structured counts and temporal truth remain Aggregator responsibilities; adapters cannot bypass Gateway policy." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p28-1"><mxGeometry x="250" y="925" width="1100" height="35" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

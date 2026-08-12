@@ -105,6 +105,8 @@ npm install
 npm run check
 ```
 
+M5.11 retrieval context expansion is governed by the Gateway: deterministic region, neighbor, entity and temporal candidates are ranked, deduplicated, budgeted and ACL rechecked. See [ADR 0025](./docs/adr/0025-deterministic-evidence-expansion.md) and diagram page 28.
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell

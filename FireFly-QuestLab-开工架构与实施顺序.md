@@ -394,6 +394,12 @@ M5 starts with the model invocation projection (`questlab.model_invocation`) so 
 3. Actions、Secrets、Environments 和 Branch Protection 在实际使用前分别确认，不默认扩大权限。
 4. 任何凭据只进入本机凭据管理器或 GitHub Secret，不进入 `.env` 示例、测试夹具和 Agent 记忆。
 
+### M5.11 确定性证据上下文扩展
+
+在 Child 召回和动态选证据之后增加 `DeterministicEvidenceExpander`，支持 Region、Neighbor、Entity、Temporal 四种关系。扩展候选由 Provider 适配器提供，Gateway 负责固定排序、去重、不可变证据冲突检测、剩余 token 预算和最终 ACL。这样可以逐步接入关系图、事件时间线和 PDF 布局索引，而不把 Provider 细节泄露到三个 Agent 或 Worker。
+
+编码顺序：先完成 `@firefly/retrieval-service` 的确定性合同和单元测试，再接入 PostgreSQL relation/region 查询，最后为真实 Graph/外部索引增加 Adapter 与质量评测。任何新扩展关系都必须新增固定评测样例，验证 Recall、Citation、ACL 和预算四项指标。
+
 ## 10. 文档事实源
 
 | 问题 | 文档 |

@@ -367,6 +367,17 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 - 实现 Fusion、Evidence Expansion、Rerank 和 Sufficiency Gate。
 - 证据不足时重规划或澄清，不强制生成答案。
 
+#### R2.1 已落地：确定性证据扩展（M5.11）
+
+`RetrievalGateway` 在动态选证据之后调用可选的 `EvidenceExpansionPort`。首个实现 `DeterministicEvidenceExpander` 是 provider-neutral 策略组件，不依赖图数据库、向量库或模型；它只消费带不可变 Citation 的已召回证据，并按 `region -> neighbor -> entity -> temporal` 扩展。
+
+- 候选按关系优先级、score 和 ID 稳定排序，并限制每个 anchor 的候选数。
+- `max_context_tokens` 是硬上限；放不下的候选跳过，初始证据超预算直接失败。
+- 扩展后重新执行 ACL；Evidence ID 的 content、URI、digest 冲突直接 fail closed。
+- 所有异步 Provider 透传 `AbortSignal`，取消不返回可生成的半成品。
+
+后续接入 Graph、事件时间线或布局索引时，只实现候选来源 Adapter，不改变 Gateway 的排序、预算、授权和合同校验。
+
 ### R3：多层记忆压缩
 
 - 实现访问频率、时间衰减、情感/业务强度、独特性、效用和可信度信号。
