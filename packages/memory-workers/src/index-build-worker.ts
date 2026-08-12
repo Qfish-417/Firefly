@@ -21,6 +21,8 @@ import type { IndexMemoryChunkInput, PostgresMemoryIndexer } from "@firefly/retr
 export interface IndexSourceDocument {
   readonly memory_id: string;
   readonly content: string;
+  /** Optional immutable binary source bytes, hydrated and digest-verified before parser execution. */
+  readonly content_bytes?: Uint8Array;
   readonly source_type: string;
   readonly entity_keys?: readonly string[];
   readonly citation: EvidenceCitation;
@@ -1170,7 +1172,7 @@ function validateDocuments(documents: readonly IndexSourceDocument[]): void {
     throw new IndexBuildWorkerError("DUPLICATE_SOURCE", "A build source returned the same Memory more than once", false);
   }
   for (const document of documents) {
-    if (!document.memory_id || !document.content.trim() || !document.source_type) {
+    if (!document.memory_id || (!document.content.trim() && !document.content_bytes?.byteLength) || !document.source_type) {
       throw new IndexBuildWorkerError("INVALID_SOURCE", "Index source documents require identity, content and type", false);
     }
     assertContract("EvidenceCitation", document.citation);

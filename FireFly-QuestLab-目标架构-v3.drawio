@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="33">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="34">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -926,6 +926,26 @@
         <mxCell id="p33-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p33-1" source="p33-structure" target="p33-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p33-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p33-1" source="p33-validation" target="p33-failure"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p33-boundary" value="Boundary: this parser validates normalized transcript JSON. It does not transcribe audio, infer speakers or manufacture timestamps." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p33-1"><mxGeometry x="260" y="920" width="1080" height="35" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-pdfjs-binary-parser" name="34-M5.17 Binary Hydration and PDF.js Layout">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p34-0"/><mxCell id="p34-1" parent="p34-0"/>
+        <mxCell id="p34-title" value="M5.17 Binary Hydration + PDF.js Layout: verify bytes before structural extraction" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p34-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+        <mxCell id="p34-object" value="Controlled object store&#xa;s3:// artifact URI&#xa;bounded streaming read" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p34-1"><mxGeometry x="70" y="180" width="300" height="130" as="geometry"/></mxCell>
+        <mxCell id="p34-verify" value="BinaryContentHydratingIndexSourcePort&#xa;max bytes + SHA-256 Citation digest&#xa;unverified bytes never reach parser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p34-1"><mxGeometry x="450" y="170" width="390" height="150" as="geometry"/></mxCell>
+        <mxCell id="p34-pdfjs" value="PDF.js&#xa;real page text extraction&#xa;page / item / character budgets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p34-1"><mxGeometry x="920" y="180" width="300" height="130" as="geometry"/></mxCell>
+        <mxCell id="p34-structure" value="IndexPdfLayoutSource&#xa;page + paragraph line + bbox + region_id&#xa;immutable Citation remains attached" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p34-1"><mxGeometry x="520" y="450" width="560" height="140" as="geometry"/></mxCell>
+        <mxCell id="p34-chunker" value="PdfLayoutChunker&#xa;Parent page context + Child layout recall&#xa;page/bbox/region Citation Locator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p34-1"><mxGeometry x="520" y="720" width="560" height="130" as="geometry"/></mxCell>
+        <mxCell id="p34-failure" value="Fail closed&#xa;digest mismatch | malformed PDF | no text | limits&#xa;scanned pages require separate OCR Provider" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C9372C;fontSize=13;" vertex="1" parent="p34-1"><mxGeometry x="1240" y="430" width="280" height="160" as="geometry"/></mxCell>
+        <mxCell id="p34-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p34-1" source="p34-object" target="p34-verify"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p34-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p34-1" source="p34-verify" target="p34-pdfjs"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p34-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p34-1" source="p34-pdfjs" target="p34-structure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p34-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p34-1" source="p34-structure" target="p34-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p34-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p34-1" source="p34-verify" target="p34-failure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p34-boundary" value="Boundary: PDF text/layout is complete for born-digital PDFs. OCR, embedded table semantics and workbook formats remain separate providers." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p34-1"><mxGeometry x="220" y="920" width="1160" height="35" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>
