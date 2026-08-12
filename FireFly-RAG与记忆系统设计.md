@@ -832,7 +832,7 @@ rag-memory/
 
 尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。Neighbor/Entity/Temporal/Region 的确定性策略与 PostgreSQL 候选源边界已完成，生产 Graph/时间线/布局 Provider 仍待接入。
 
-- 下一批优先接入真实 PDF/OCR、代码解析器、表格解析器和转录 Provider，再接生产 BM25/ANN Provider 与外部索引回收。
+- M5.13 已提供固定 HTTPS Endpoint、source-type allowlist、超时、响应大小和版本化 JSON 校验的 `HttpIndexSourceParser`；下一批部署并接入真实 PDF/OCR、代码解析器、表格解析器和转录引擎，再接生产 BM25/ANN Provider 与外部索引回收。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 已以 Markdown 验证 Parent/Child、RRF、确定性 Count 聚合和引用闭环；其他内容类型按相同合同逐个接入。
