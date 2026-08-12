@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { setTimeout as waitFor } from "node:timers/promises";
 
-import type { PurgedRetrievalIndex, RetrievalIndexRepository } from "@firefly/persistence";
+import type { MaintenanceCycleRepository, PurgedRetrievalIndex, RetrievalIndexRepository } from "@firefly/persistence";
 
 export interface RetiredIndexGarbageCollectionCycle {
   readonly cycle_id: string;
@@ -24,6 +24,7 @@ export interface RetiredIndexGarbageCollectionCycle {
 export interface RetiredIndexGarbageCollectionSnapshot {
   readonly running: boolean;
   readonly observer_failures: number;
+  readonly ledger_failures: number;
   readonly last_cycle?: RetiredIndexGarbageCollectionCycle;
 }
 
@@ -31,6 +32,8 @@ export interface RetiredIndexGarbageCollectorOptions {
   readonly collector_id: string;
   readonly instance_id: string;
   readonly indexes: Pick<RetrievalIndexRepository, "purgeRetiredIndexes">;
+  readonly ledger?: Pick<MaintenanceCycleRepository, "record">;
+  readonly ledger_failures?: (error: unknown) => void;
   readonly interval_ms?: number;
   readonly retention_ms?: number;
   readonly batch_limit?: number;
@@ -46,6 +49,7 @@ export class RetiredIndexGarbageCollector {
   private sequence = 0;
   private observerFailures = 0;
   private lastCycle: RetiredIndexGarbageCollectionCycle | undefined;
+  private ledgerFailures = 0;
 
   constructor(options: RetiredIndexGarbageCollectorOptions) {
     validateOptions(options);
@@ -56,6 +60,7 @@ export class RetiredIndexGarbageCollector {
     return {
       running: this.loopRunning || Boolean(this.activeCycle),
       observer_failures: this.observerFailures,
+      ledger_failures: this.ledgerFailures,
       ...(this.lastCycle ? { last_cycle: this.lastCycle } : {}),
     };
   }
@@ -125,6 +130,30 @@ export class RetiredIndexGarbageCollector {
       this.options.observe?.(cycle);
     } catch {
       this.observerFailures += 1;
+    }
+    if (this.options.ledger) {
+      try {
+        await this.options.ledger.record({
+          cycle_id: cycle.cycle_id,
+          cycle_kind: "retired_index_gc",
+          worker_id: cycle.collector_id,
+          instance_id: cycle.instance_id,
+          status: cycle.status,
+          started_at: new Date(cycle.started_at),
+          completed_at: new Date(cycle.completed_at),
+          payload: {
+            retired_before: cycle.retired_before,
+            batch_limit: cycle.batch_limit,
+            purged_index_count: cycle.purged_index_count,
+            deleted_chunk_count: cycle.deleted_chunk_count,
+            purged_index_ids: cycle.purged_index_ids,
+          },
+          ...(cycle.error ? { error: cycle.error } : {}),
+        });
+      } catch (error) {
+        this.ledgerFailures += 1;
+        try { this.options.ledger_failures?.(error); } catch { /* observer boundary */ }
+      }
     }
     return cycle;
   }

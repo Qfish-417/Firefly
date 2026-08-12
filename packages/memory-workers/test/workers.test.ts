@@ -447,6 +447,7 @@ test("deletion reconciliation coalesces concurrent cycles and exposes a stable s
     resolveRequeue = resolve;
   });
   const observed: string[] = [];
+  const ledger: string[] = [];
   const scheduler = new DeletionReconciliationScheduler({
     scheduler_id: "scheduler.worker.unit",
     instance_id: "scheduler.worker.unit.instance-a",
@@ -462,6 +463,7 @@ test("deletion reconciliation coalesces concurrent cycles and exposes a stable s
     batch_limit: 25,
     now: () => new Date("2026-08-10T12:00:00.000Z"),
     observe: (cycle) => observed.push(cycle.cycle_id),
+    ledger: { record: async (cycle) => { ledger.push(cycle.cycle_id); return cycle as never; } },
   });
 
   const first = scheduler.runOnce();
@@ -478,6 +480,7 @@ test("deletion reconciliation coalesces concurrent cycles and exposes a stable s
   assert.equal(scheduler.snapshot().running, false);
   assert.equal(scheduler.snapshot().last_cycle?.cycle_id, cycle.cycle_id);
   assert.deepEqual(observed, [cycle.cycle_id]);
+  assert.deepEqual(ledger, [cycle.cycle_id]);
 });
 
 test("deletion reconciliation records failures and stops its loop on cancellation", async () => {
@@ -521,6 +524,7 @@ test("retired-index garbage collection coalesces cycles and reports bounded purg
   const pending = new Promise<readonly PurgedRetrievalIndex[]>((resolve) => {
     resolvePurge = resolve;
   });
+  const ledger: string[] = [];
   const collector = new RetiredIndexGarbageCollector({
     collector_id: "index-gc.worker.unit",
     instance_id: "index-gc.worker.unit.instance-a",
@@ -532,6 +536,7 @@ test("retired-index garbage collection coalesces cycles and reports bounded purg
         return pending;
       },
     },
+    ledger: { record: async (cycle) => { ledger.push(cycle.cycle_id); return cycle as never; } },
     retention_ms: 604_800_000,
     batch_limit: 25,
     now: () => new Date("2026-08-10T12:00:00.000Z"),
@@ -555,6 +560,7 @@ test("retired-index garbage collection coalesces cycles and reports bounded purg
   assert.equal(cycle.purged_index_count, 1);
   assert.equal(cycle.deleted_chunk_count, 7);
   assert.deepEqual(cycle.purged_index_ids, ["index.worker.retired"]);
+  assert.deepEqual(ledger, [cycle.cycle_id]);
   await Promise.resolve();
   assert.equal(collector.snapshot().running, false);
 });

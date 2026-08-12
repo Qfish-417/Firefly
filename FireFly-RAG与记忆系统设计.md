@@ -625,7 +625,7 @@ M5.6 把 retired 版本回收定义为“清理可重建投影，保留审计元
 
 当前 `DeletionPropagationWorker` 按 `payload.target` 定向领取任务，不允许不同目标的消费者互相抢占。`ObjectStoreDeletionConsumer` 使用任务中的 `ArtifactRef` 定位并去重 `s3://bucket/key`，由官方 AWS S3 SDK 删除 MinIO/S3 对象；缺少对象引用时 fail closed。Provider 删除失败才写 failed Ack 并退避重试；Ack、数据库或 `markPublished` 失败不伪装成 Provider 失败。若 completed Ack 已提交但发布标记失败，重放识别目标已完成后只补发布。超过 attempt 上限的事件进入 discarded 终态，`reconcileFailedDeletionTargets` 对超时 failed 目标加行锁复核并创建幂等的新任务。
 
-M5.5 的 `DeletionReconciliationScheduler` 已把上述修复函数接入周期运行层。`runOnce` 合并同一实例内的并发调用；多实例同时扫描时仍由目标行锁、failed 状态复核和确定性 Outbox ID 防止重复副作用。每个周期记录 scheduler/instance/cycle 身份、stale cutoff、batch limit、重排数量、起止时间和失败摘要；Observer 故障只增加本地计数，不反写已经发生的数据库事实。`run(AbortSignal)` 在失败周期后继续等待下一次 tick，并在取消后不再开启新周期。独立入口 `npm run memory:reconcile` 只要求 `DATABASE_URL`，其他间隔、陈旧阈值和批量参数均显式校验。持久化调度账本、部署级指标后端、告警规则和 Provider 删除证据真实性核验仍待实现。
+M5.5 的 `DeletionReconciliationScheduler` 已把上述修复函数接入周期运行层。`runOnce` 合并同一实例内的并发调用；多实例同时扫描时仍由目标行锁、failed 状态复核和确定性 Outbox ID 防止重复副作用。每个周期记录 scheduler/instance/cycle 身份、stale cutoff、batch limit、重排数量、起止时间和失败摘要；Observer 故障只增加本地计数，不反写已经发生的数据库事实。`run(AbortSignal)` 在失败周期后继续等待下一次 tick，并在取消后不再开启新周期。迁移 012 增加 `maintenance_cycle` 持久化账本，reconciliation 与 retired-index GC 均按 cycle_id 幂等写入；账本故障只增加 `ledger_failures`，不改变维护事实。部署级指标后端、告警规则和 Provider 删除证据真实性核验仍待实现。
 
 ### 12.5 模型边界
 

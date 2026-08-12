@@ -1,4 +1,4 @@
-import { RetrievalIndexRepository, createDatabase } from "@firefly/persistence";
+import { MaintenanceCycleRepository, RetrievalIndexRepository, createDatabase } from "@firefly/persistence";
 
 import { RetiredIndexGarbageCollector } from "./retired-index-gc.ts";
 
@@ -15,6 +15,7 @@ const collector = new RetiredIndexGarbageCollector({
   collector_id: collectorId,
   instance_id: instanceId,
   indexes: new RetrievalIndexRepository(db),
+  ledger: new MaintenanceCycleRepository(db),
   interval_ms: integerEnvironment("MEMORY_INDEX_GC_INTERVAL_MS", 3_600_000),
   retention_ms: integerEnvironment("MEMORY_INDEX_GC_RETENTION_MS", 604_800_000),
   batch_limit: integerEnvironment("MEMORY_INDEX_GC_BATCH_SIZE", 100),

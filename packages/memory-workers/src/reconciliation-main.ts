@@ -1,4 +1,4 @@
-import { MemoryRepository, createDatabase } from "@firefly/persistence";
+import { MaintenanceCycleRepository, MemoryRepository, createDatabase } from "@firefly/persistence";
 
 import { DeletionReconciliationScheduler } from "./reconciliation-scheduler.ts";
 
@@ -15,6 +15,7 @@ const scheduler = new DeletionReconciliationScheduler({
   scheduler_id: schedulerId,
   instance_id: instanceId,
   memories: new MemoryRepository(db),
+  ledger: new MaintenanceCycleRepository(db),
   interval_ms: integerEnvironment("MEMORY_RECONCILIATION_INTERVAL_MS", 60_000),
   stale_after_ms: integerEnvironment("MEMORY_RECONCILIATION_STALE_AFTER_MS", 300_000),
   batch_limit: integerEnvironment("MEMORY_RECONCILIATION_BATCH_SIZE", 100),

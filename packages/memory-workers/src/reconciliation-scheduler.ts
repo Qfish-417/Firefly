@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { setTimeout as waitFor } from "node:timers/promises";
 
-import type { MemoryRepository } from "@firefly/persistence";
+import type { MaintenanceCycleRepository, MemoryRepository } from "@firefly/persistence";
 
 export interface DeletionReconciliationCycle {
   readonly cycle_id: string;
@@ -22,6 +22,7 @@ export interface DeletionReconciliationCycle {
 export interface DeletionReconciliationSnapshot {
   readonly running: boolean;
   readonly observer_failures: number;
+  readonly ledger_failures: number;
   readonly last_cycle?: DeletionReconciliationCycle;
 }
 
@@ -29,6 +30,8 @@ export interface DeletionReconciliationSchedulerOptions {
   readonly scheduler_id: string;
   readonly instance_id: string;
   readonly memories: Pick<MemoryRepository, "reconcileFailedDeletionTargets">;
+  readonly ledger?: Pick<MaintenanceCycleRepository, "record">;
+  readonly ledger_failures?: (error: unknown) => void;
   readonly interval_ms?: number;
   readonly stale_after_ms?: number;
   readonly batch_limit?: number;
@@ -44,6 +47,7 @@ export class DeletionReconciliationScheduler {
   private sequence = 0;
   private observerFailures = 0;
   private lastCycle: DeletionReconciliationCycle | undefined;
+  private ledgerFailures = 0;
 
   constructor(options: DeletionReconciliationSchedulerOptions) {
     validateOptions(options);
@@ -54,6 +58,7 @@ export class DeletionReconciliationScheduler {
     return {
       running: this.loopRunning || Boolean(this.activeCycle),
       observer_failures: this.observerFailures,
+      ledger_failures: this.ledgerFailures,
       ...(this.lastCycle ? { last_cycle: this.lastCycle } : {}),
     };
   }
@@ -131,6 +136,28 @@ export class DeletionReconciliationScheduler {
       this.options.observe?.(cycle);
     } catch {
       this.observerFailures += 1;
+    }
+    if (this.options.ledger) {
+      try {
+        await this.options.ledger.record({
+          cycle_id: cycle.cycle_id,
+          cycle_kind: "deletion_reconciliation",
+          worker_id: cycle.scheduler_id,
+          instance_id: cycle.instance_id,
+          status: cycle.status,
+          started_at: new Date(cycle.started_at),
+          completed_at: new Date(cycle.completed_at),
+          payload: {
+            stale_before: cycle.stale_before,
+            batch_limit: cycle.batch_limit,
+            requeued_count: cycle.requeued_count,
+          },
+          ...(cycle.error ? { error: cycle.error } : {}),
+        });
+      } catch (error) {
+        this.ledgerFailures += 1;
+        try { this.options.ledger_failures?.(error); } catch { /* observer boundary */ }
+      }
     }
     return cycle;
   }

@@ -454,6 +454,19 @@ export interface MemoryDeletionReceiptTable {
   propagation_completed_at: Timestamp | null;
 }
 
+export interface MaintenanceCycleTable {
+  cycle_id: string;
+  cycle_kind: "deletion_reconciliation" | "retired_index_gc";
+  worker_id: string;
+  instance_id: string;
+  status: "completed" | "failed";
+  started_at: Timestamp;
+  completed_at: Timestamp;
+  payload: JsonDocument;
+  error: JsonDocument | null;
+  created_at: Generated<Timestamp>;
+}
+
 export interface MemoryDeletionTargetTable {
   deletion_id: string;
   target:
@@ -546,6 +559,7 @@ export interface QuestLabDatabase {
   "questlab.memory_deletion_target": MemoryDeletionTargetTable;
   "questlab.retrieval_index_version": RetrievalIndexVersionTable;
   "questlab.retrieval_index_retention_hold": RetrievalIndexRetentionHoldTable;
+  "questlab.maintenance_cycle": MaintenanceCycleTable;
 }
 
 export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {

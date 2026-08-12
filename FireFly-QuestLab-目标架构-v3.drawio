@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="28">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="29">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -828,6 +828,26 @@
         <mxCell id="p28-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p28-1" source="p28-budget" target="p28-output"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p28-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p28-1" source="p28-guard" target="p28-output"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p28-boundary" value="Expansion never becomes unrestricted Agent-side retrieval. Structured counts and temporal truth remain Aggregator responsibilities; adapters cannot bypass Gateway policy." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p28-1"><mxGeometry x="250" y="925" width="1100" height="35" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-maintenance-ledger" name="29-M5.12 Durable Maintenance Cycle Ledger">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p29-0"/><mxCell id="p29-1" parent="p29-0"/>
+        <mxCell id="p29-title" value="M5.12 Durable Maintenance Cycle Ledger: audit survives worker restart" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p29-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+        <mxCell id="p29-reconcile" value="Deletion Reconciliation&#xa;cycle_id + status + requeued count&#xa;retry repair targets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p29-1"><mxGeometry x="120" y="150" width="360" height="125" as="geometry"/></mxCell>
+        <mxCell id="p29-gc" value="Retired Index GC&#xa;cycle_id + status + purge totals&#xa;retention/hold boundary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p29-1"><mxGeometry x="620" y="150" width="360" height="125" as="geometry"/></mxCell>
+        <mxCell id="p29-port" value="MaintenanceCycleRepository&#xa;idempotent record(cycle)&#xa;immutable identity conflict fails closed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p29-1"><mxGeometry x="1120" y="150" width="360" height="125" as="geometry"/></mxCell>
+        <mxCell id="p29-table" value="questlab.maintenance_cycle&#xa;worker + instance + timestamps&#xa;bounded payload + structured error" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p29-1"><mxGeometry x="480" y="430" width="640" height="145" as="geometry"/></mxCell>
+        <mxCell id="p29-query" value="Operator query&#xa;history survives process restart&#xa;kind/time/ID ordered listing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;" vertex="1" parent="p29-1"><mxGeometry x="210" y="720" width="360" height="120" as="geometry"/></mxCell>
+        <mxCell id="p29-failure" value="Ledger failure&#xa;ledger_failures metric&#xa;maintenance result is preserved" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=13;fontStyle=1;" vertex="1" parent="p29-1"><mxGeometry x="1030" y="720" width="360" height="120" as="geometry"/></mxCell>
+        <mxCell id="p29-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p29-1" source="p29-reconcile" target="p29-port"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p29-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p29-1" source="p29-gc" target="p29-port"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p29-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p29-1" source="p29-port" target="p29-table"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p29-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p29-1" source="p29-table" target="p29-query"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p29-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;dashed=1;" edge="1" parent="p29-1" source="p29-port" target="p29-failure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p29-boundary" value="The ledger records maintenance facts, not queue state or Outbox delivery. It is bounded, replay-safe and independent from the underlying repair/GC result." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p29-1"><mxGeometry x="260" y="920" width="1080" height="35" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

@@ -8,6 +8,7 @@ export * from "./plugin-release-repository.ts";
 export * from "./retrieval-index-repository.ts";
 export * from "./migrate.ts";
 export * from "./memory-repository.ts";
+export * from "./maintenance-cycle-repository.ts";
 export * from "./model-invocation-repository.ts";
 export * from "./vertical-slice-repository.ts";
 export * from "./workflow-task-repository.ts";
