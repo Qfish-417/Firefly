@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="31">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="32">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -886,6 +886,26 @@
         <mxCell id="p31-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p31-1" source="p31-parser" target="p31-structure"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p31-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p31-1" source="p31-structure" target="p31-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p31-boundary" value="This parser provides syntactic structure. Cross-file type checking, semantic symbol resolution and non-JS languages remain separate providers." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p31-1"><mxGeometry x="260" y="920" width="1080" height="35" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-csv-table-parser" name="32-M5.15 CSV Table Parser">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p32-0"/><mxCell id="p32-1" parent="p32-0"/>
+        <mxCell id="p32-title" value="M5.15 CSV Table Parser: standards-compliant parsing with deterministic table boundaries" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p32-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+        <mxCell id="p32-source" value="CSV source&#xa;text/csv | application/csv&#xa;immutable Citation + bounded characters" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p32-1"><mxGeometry x="80" y="180" width="300" height="130" as="geometry"/></mxCell>
+        <mxCell id="p32-parser" value="csv-parse&#xa;BOM + quoted delimiters&#xa;embedded newline + escaped quote" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p32-1"><mxGeometry x="470" y="180" width="300" height="130" as="geometry"/></mxCell>
+        <mxCell id="p32-validation" value="Deterministic validation&#xa;non-empty unique headers | exact row width&#xa;row / column / cell hard limits" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p32-1"><mxGeometry x="860" y="180" width="330" height="130" as="geometry"/></mxCell>
+        <mxCell id="p32-structure" value="IndexTableSource&#xa;sheet = CSV | table from Citation path/URI&#xa;headers + rows, no inferred types" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p32-1"><mxGeometry x="520" y="450" width="560" height="140" as="geometry"/></mxCell>
+        <mxCell id="p32-chunker" value="TableStructureChunker&#xa;Parent schema context + Child row groups&#xa;sheet/table/row/column Citation Locator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p32-1"><mxGeometry x="520" y="720" width="560" height="130" as="geometry"/></mxCell>
+        <mxCell id="p32-failure" value="Fail closed&#xa;syntax | header ambiguity | width mismatch | resource limit&#xa;only ParserBackedIndexSourcePort may apply explicit degraded policy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C9372C;fontSize=13;" vertex="1" parent="p32-1"><mxGeometry x="1240" y="410" width="280" height="180" as="geometry"/></mxCell>
+        <mxCell id="p32-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p32-1" source="p32-source" target="p32-parser"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p32-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p32-1" source="p32-parser" target="p32-validation"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p32-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p32-1" source="p32-validation" target="p32-structure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p32-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p32-1" source="p32-structure" target="p32-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p32-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p32-1" source="p32-validation" target="p32-failure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p32-boundary" value="Boundary: XLSX, formulas, merged cells and multi-sheet workbooks require separate parser providers under the same port." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p32-1"><mxGeometry x="260" y="920" width="1080" height="35" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

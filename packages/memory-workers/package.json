@@ -12,6 +12,7 @@
     "@firefly/model-gateway": "0.1.0",
     "@firefly/persistence": "0.1.0",
     "@firefly/retrieval-postgres": "0.1.0",
+    "csv-parse": "^6.2.1",
     "typescript": "^5.9.0"
   }
 }

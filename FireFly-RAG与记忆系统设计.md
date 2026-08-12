@@ -510,6 +510,8 @@ M5.9 已补齐 `ConversationTurnChunker`：按稳定 sequence 排序并保留 tu
 
 解析器接入通过 `ParserBackedIndexSourcePort` 完成：它按 `source_type` 选择 `IndexSourceParserPort`，校验 typed `IndexStructuredSource`，保留 Source 顺序并记录 `parser-missing`、`parser-failed` 或 `parser-invalid-output`。`parser_failure_mode=strict` 默认阻断构建；显式 `degraded` 才把原文交给 Chunker 的降级路径。Worker 不绑定 PDF/OCR、AST、表格或转录的第三方实现。
 
+M5.15 已接入真实 CSV 表格 Parser：使用成熟 `csv-parse` 处理 BOM、引号内分隔符、嵌入换行和双引号转义，首行作为表头，后续记录作为数据行。空表头、忽略大小写的重复表头、行宽不一致、语法错误以及 source/row/column/cell 上限超限均不可重试并 fail closed。Parser 输出单个 `CSV` Sheet，表名优先由配置指定，否则从不可变 Citation path/URI 确定性推导，再交给 `TableStructureChunker` 生成 Parent/Child 和行列定位。它不覆盖 XLSX、多 Sheet、公式或合并单元格，这些格式继续通过独立 Provider 接入。
+
 降级索引还受独立激活策略约束：`allow_degraded_build` 控制是否允许完成降级构建，`allow_degraded_activation` 控制是否允许自动激活；两者默认关闭。即使允许构建，未单独授权激活也会记录 `DEGRADED_INDEX_ACTIVATION_NOT_ALLOWED` 并阻断 active 切换。
 
 索引与查询遵循不对称职责：Parent 不生成 Embedding，也不进入 FTS/pgvector 候选；只有 Child 用于精确召回。Ready Gate 要求每个文档至少有一个 Child、父子引用闭合、Parent 不携带 Embedding，且每个 Parent 至少拥有一个 Child。Indexer 在写入 Child 前校验其 Parent 属于同一 Memory 和同一索引版本，禁止通过父引用跨越授权或版本边界。
@@ -832,7 +834,7 @@ rag-memory/
 
 尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。Neighbor/Entity/Temporal/Region 的确定性策略与 PostgreSQL 候选源边界已完成，生产 Graph/时间线/布局 Provider 仍待接入。
 
-- M5.13 已提供固定 HTTPS Endpoint、source-type allowlist、超时、响应大小和版本化 JSON 校验的 `HttpIndexSourceParser`；M5.14 已使用官方 TypeScript Compiler API 落地 TS/TSX/JS/JSX 真实 AST Parser。下一批部署并接入真实 PDF/OCR、表格解析器和转录引擎，再接生产 BM25/ANN Provider 与外部索引回收。
+- M5.13 已提供固定 HTTPS Endpoint、source-type allowlist、超时、响应大小和版本化 JSON 校验的 `HttpIndexSourceParser`；M5.14 已使用官方 TypeScript Compiler API 落地 TS/TSX/JS/JSX 真实 AST Parser；M5.15 已使用 `csv-parse` 落地严格 CSV 单表 Parser。下一批部署并接入真实 PDF/OCR、XLSX 工作簿和转录引擎，再接生产 BM25/ANN Provider 与外部索引回收。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 已以 Markdown 验证 Parent/Child、RRF、确定性 Count 聚合和引用闭环；其他内容类型按相同合同逐个接入。
