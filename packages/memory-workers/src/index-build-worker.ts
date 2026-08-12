@@ -99,6 +99,17 @@ export interface IndexTable {
 export interface IndexConversationSource {
   readonly kind: "conversation";
   readonly turns: readonly IndexConversationTurn[];
+  readonly duration_ms?: number;
+  readonly language?: string;
+  readonly extraction?: IndexConversationExtraction;
+}
+
+export interface IndexConversationExtraction {
+  readonly method: "asr";
+  readonly provider_id: string;
+  readonly model_id?: string;
+  readonly model_version?: string;
+  readonly diarization: boolean;
 }
 
 export interface IndexConversationTurn {
@@ -109,6 +120,10 @@ export interface IndexConversationTurn {
   readonly content: string;
   readonly started_at?: string;
   readonly ended_at?: string;
+  readonly start_ms?: number;
+  readonly end_ms?: number;
+  readonly confidence?: number;
+  readonly language?: string;
 }
 
 export type StructuredChunkerFallbackMode = "strict" | "degraded";
@@ -815,12 +830,31 @@ export class ConversationTurnChunker implements IndexChunkerPort {
       const parentOrdinal = ordinal++;
       const path = ["conversation", `turns ${group[0]!.sequence}-${group[group.length - 1]!.sequence}`];
       const parentContent = group.map(formatConversationTurn).join("\n\n");
-      drafts.push(conversationDraft(document, parentOrdinal, "parent", path, parentContent, group[0]!, group[group.length - 1]!));
+      drafts.push(conversationDraft(
+        document,
+        parentOrdinal,
+        "parent",
+        path,
+        parentContent,
+        group[0]!,
+        group[group.length - 1]!,
+        conversationEvidenceMetadata(source, group),
+      ));
       const children = group.flatMap((turn) => splitLongBlock(formatConversationTurn(turn), this.maxChildCharacters)
         .map((content, part) => ({ turn, content, part })));
       for (const child of children) {
-        drafts.push(conversationDraft(document, ordinal++, "child", [...path, child.turn.turn_id], child.content,
-          child.turn, child.turn, parentOrdinal, child.part));
+        drafts.push(conversationDraft(
+          document,
+          ordinal++,
+          "child",
+          [...path, child.turn.turn_id],
+          child.content,
+          child.turn,
+          child.turn,
+          conversationEvidenceMetadata(source, [child.turn]),
+          parentOrdinal,
+          child.part,
+        ));
       }
     }
     return drafts;
@@ -842,6 +876,14 @@ function validateConversationTurns(turns: readonly IndexConversationTurn[]): voi
     }
     if (turn.ended_at && Number.isNaN(Date.parse(turn.ended_at))) {
       throw new IndexBuildWorkerError("INVALID_CONVERSATION_TIME", "Conversation turn timestamps must be valid ISO dates", false);
+    }
+    if ((turn.start_ms === undefined) !== (turn.end_ms === undefined) ||
+      (turn.start_ms !== undefined && (!Number.isSafeInteger(turn.start_ms) || turn.start_ms < 0 ||
+        !Number.isSafeInteger(turn.end_ms) || turn.end_ms! <= turn.start_ms))) {
+      throw new IndexBuildWorkerError("INVALID_CONVERSATION_TIME", "Conversation media offsets must be ordered non-negative milliseconds", false);
+    }
+    if (turn.confidence !== undefined && (!Number.isFinite(turn.confidence) || turn.confidence < 0 || turn.confidence > 1)) {
+      throw new IndexBuildWorkerError("INVALID_CONVERSATION_CONFIDENCE", "Conversation confidence must be between 0 and 1", false);
     }
   }
 }
@@ -881,6 +923,7 @@ function conversationDraft(
   content: string,
   first: IndexConversationTurn,
   last: IndexConversationTurn,
+  evidenceMetadata: Readonly<Record<string, string | number>>,
   parentOrdinal?: number,
   part?: number,
 ): IndexChunkDraft {
@@ -900,8 +943,33 @@ function conversationDraft(
       speaker_id: first.speaker_id,
       ...(first.started_at ? { started_at: first.started_at } : {}),
       ...(last.ended_at ? { ended_at: last.ended_at } : {}),
+      ...evidenceMetadata,
     }),
     token_count: Math.max(1, Math.ceil(content.length / 4)),
+  };
+}
+
+function conversationEvidenceMetadata(
+  source: IndexConversationSource,
+  turns: readonly IndexConversationTurn[],
+): Readonly<Record<string, string | number>> {
+  const starts = turns.map((turn) => turn.start_ms).filter((value): value is number => value !== undefined);
+  const ends = turns.map((turn) => turn.end_ms).filter((value): value is number => value !== undefined);
+  const confidences = turns.map((turn) => turn.confidence).filter((value): value is number => value !== undefined);
+  const languages = [...new Set(turns.map((turn) => turn.language).filter((value): value is string => Boolean(value)))];
+  return {
+    ...(starts.length > 0 ? { media_start_ms: Math.min(...starts) } : {}),
+    ...(ends.length > 0 ? { media_end_ms: Math.max(...ends) } : {}),
+    ...(confidences.length > 0 ? { confidence: Math.min(...confidences) } : {}),
+    ...(languages.length === 1 ? { language: languages[0]! } : source.language ? { language: source.language } : {}),
+    ...(source.duration_ms === undefined ? {} : { media_duration_ms: source.duration_ms }),
+    ...(source.extraction ? {
+      extraction_method: source.extraction.method,
+      extraction_provider: source.extraction.provider_id,
+      diarization: source.extraction.diarization ? "enabled" : "disabled",
+      ...(source.extraction.model_id ? { extraction_model: source.extraction.model_id } : {}),
+      ...(source.extraction.model_version ? { extraction_model_version: source.extraction.model_version } : {}),
+    } : {}),
   };
 }
 

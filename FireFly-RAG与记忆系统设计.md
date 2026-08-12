@@ -508,7 +508,7 @@ M5.8 已补齐三类结构化 Chunker：`PdfLayoutChunker` 消费页码、布局
 
 M5.9 已补齐 `ConversationTurnChunker`：按稳定 sequence 排序并保留 turn、speaker、role 和时间范围；Parent 保存连续对话窗口，Child 以轮次为优先边界参与召回，超长单轮才在轮次内部拆分。严格/降级策略与其他结构化 Chunker 一致，降级结果不声明虚假的说话人或时间结构。
 
-M5.16 已补齐版本化转录 JSON Parser：使用专用 MIME 接收 `schema_version: 1` 的规范包络，逐轮保留稳定 `turn_id`、非负 sequence、`speaker_id`、内容、可选受控 role 与 ISO 时间。Parser 不根据 speaker 名称推断 user/assistant；未知版本、空转录、重复 turn/sequence、非法 role、无效或倒置时间以及 source/turn/content 上限超限均 fail closed。真实 ASR、说话人分离和消息系统导出器仍位于 Provider 边界，必须映射为该包络并保留原始 Artifact Citation 与 Digest。
+M5.16 已补齐版本化转录 JSON Parser：使用专用 MIME 接收 `schema_version: 1` 的规范包络，逐轮保留稳定 `turn_id`、非负 sequence、`speaker_id`、内容、可选受控 role 与 ISO 时间。Parser 不根据 speaker 名称推断 user/assistant；未知版本、空转录、重复 turn/sequence、非法 role、无效或倒置时间以及 source/turn/content 上限超限均 fail closed。消息系统导出器仍位于 Provider 边界；音频 ASR/说话人分离现由 M5.20 的受治理 Adapter 映射为同一 `IndexConversationSource`，两者都必须保留原始 Artifact Citation 与 Digest。
 
 M5.17 已补齐二进制来源装载与真实 PDF.js Layout Parser：`BinaryContentHydratingIndexSourcePort` 仅从受控 `s3://` 对象读取 bytes，限制最大字节数并在 Parser 前核验 Citation 的 SHA-256 digest；`PdfJsLayoutParser` 使用 PDF.js 提取页码、文本行和 bbox，保留 `region_id` 并执行 page/text/item 预算。缺少 bytes、对象 URI 非法、digest 不符、畸形 PDF、资源超限或没有可提取文本时均 fail closed；扫描 PDF 明确转入独立 OCR Provider，不把空结果伪装成结构化成功。
 
@@ -517,6 +517,10 @@ M5.18 已接入真实 ExcelJS XLSX Parser：复用二进制 Hydration 与 digest
 M5.19 已补齐受治理 OCR Provider 合同：`HttpOcrLayoutParser` 只向固定 HTTPS Endpoint 发送经 Hydration 和 Citation SHA-256 双重核验的二进制 Artifact，使用 multipart 将不可变元数据与原始 bytes 分离。Provider 必须返回 `schema_version=1`、`contract=firefly.ocr-layout.v1`、输入 digest、Provider/模型身份、从 1 连续递增的页码、页尺寸、pixel 坐标单位，以及逐 Block 连续阅读顺序、类型、文本、`[x,y,width,height]` bbox、区域 ID、置信度和可选语言。客户端对响应字节、页数、Block 数、文本量、顺序唯一性和坐标边界进行严格校验；任何 digest 不符、顺序不稳定、越界 bbox、非法置信度、空文本或超限都 fail closed。
 
 `PdfTextOrOcrParser` 的路由是确定性的：先使用 PDF.js 处理 born-digital PDF，仅在其明确返回 `NO_EXTRACTABLE_TEXT` 时调用 OCR；畸形 PDF、超限、缺少 bytes 等错误不会被 OCR 掩盖。两条路径统一输出 `IndexPdfLayoutSource`，`PdfLayoutChunker` 将 extraction method/provider/model、页尺寸、坐标单位、置信度和语言继续写入 Citation Locator。当前完成的是 Provider 边界和可测试合同，生产环境仍需选型并部署具体 OCR 引擎，同时通过密钥轮换、出站 allowlist、限流和数据驻留策略治理。
+
+M5.20 已补齐受治理 ASR/说话人分离 Provider 合同：`HttpAsrDiarizationParser` 复用二进制 Hydration 与 Citation digest 核验，只把受限音频 bytes 发送给固定 HTTPS Endpoint。Provider 必须返回 `schema_version=1`、`contract=firefly.asr-diarization.v1`、输入 digest、Provider/模型身份、diarization 状态、音频总时长，以及从 1 连续递增的规范 Turn。每个 Turn 必须包含唯一 ID、speaker ID、文本、毫秒级起止区间和 `[0,1]` 置信度，可选语言；关闭 diarization 时不得返回多个 speaker。响应字节、音频时长、Turn/说话人数和文本量都有硬上限。
+
+ASR 输出直接映射为 `IndexConversationSource`，不把 speaker 名称推断为 user/assistant role，也不制造绝对时间。`ConversationTurnChunker` 将媒体起止偏移、最小置信度、语言、音频时长、Provider/模型版本和 diarization 状态写入 Citation Locator，使语音证据可以回放原始时间范围并审计派生模型。当前完成的是可替换 Provider 边界，生产环境仍需部署具体 ASR/diarization 引擎并配置密钥轮换、速率限制、数据驻留、音频保留和人工复核策略。
 
 解析器接入通过 `ParserBackedIndexSourcePort` 完成：它按 `source_type` 选择 `IndexSourceParserPort`，校验 typed `IndexStructuredSource`，保留 Source 顺序并记录 `parser-missing`、`parser-failed` 或 `parser-invalid-output`。`parser_failure_mode=strict` 默认阻断构建；显式 `degraded` 才把原文交给 Chunker 的降级路径。Worker 不绑定 PDF/OCR、AST、表格或转录的第三方实现。
 
@@ -844,7 +848,7 @@ rag-memory/
 
 尚未完成：生产 BM25 Provider、按模型/维度分区的 pgvector ANN、持久化调度账本与部署告警、外部索引 Provider 的 retired 数据清理、其他删除目标 Provider、Provider 证据核验和多模态派生索引。Neighbor/Entity/Temporal/Region 的确定性策略与 PostgreSQL 候选源边界已完成，生产 Graph/时间线/布局 Provider 仍待接入。
 
-- M5.13 已提供固定 HTTPS Endpoint、source-type allowlist、超时、响应大小和版本化 JSON 校验的 `HttpIndexSourceParser`；M5.14 已使用官方 TypeScript Compiler API 落地 TS/TSX/JS/JSX 真实 AST Parser；M5.15 已使用 `csv-parse` 落地严格 CSV 单表 Parser；M5.16 已落地版本化转录 JSON Parser；M5.17 已落地二进制 digest 核验和 PDF.js Layout Parser；M5.18 已落地 ExcelJS XLSX Parser；M5.19 已落地受治理 HTTP OCR Layout Provider 合同及 PDF.js→OCR 显式路由。下一批部署具体 OCR 服务并接入真实 ASR 与说话人分离引擎，再接生产 BM25/ANN Provider 与外部索引回收。
+- M5.13 已提供固定 HTTPS Endpoint、source-type allowlist、超时、响应大小和版本化 JSON 校验的 `HttpIndexSourceParser`；M5.14 已使用官方 TypeScript Compiler API 落地 TS/TSX/JS/JSX 真实 AST Parser；M5.15 已使用 `csv-parse` 落地严格 CSV 单表 Parser；M5.16 已落地版本化转录 JSON Parser；M5.17 已落地二进制 digest 核验和 PDF.js Layout Parser；M5.18 已落地 ExcelJS XLSX Parser；M5.19 已落地受治理 HTTP OCR Layout Provider 合同及 PDF.js→OCR 显式路由；M5.20 已落地受治理 HTTP ASR/说话人分离 Provider 合同。下一批部署具体 OCR/ASR 服务，再接生产 BM25/ANN Provider 与外部索引回收。
 - PostgreSQL 保存元数据、ACL、Fact/Event 和 Lineage。
 - MinIO 保存原文，ES + 当前向量库完成文本检索。
 - 已以 Markdown 验证 Parent/Child、RRF、确定性 Count 聚合和引用闭环；其他内容类型按相同合同逐个接入。
