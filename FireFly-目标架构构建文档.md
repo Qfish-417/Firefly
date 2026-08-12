@@ -343,7 +343,7 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 
 - 已建立 `MemoryRecord`、`QueryPlan`、`EvidenceCitation`、`StructuredResult` 和 `EvidencePack` v1 Schema。
 - PostgreSQL 已保存 ACL、Fact/Event、Chunk 和索引版本；MinIO/S3 对象删除路径已接入，完整对象写入与 Lineage 管理仍待实现。
-- 已实现 PostgreSQL FTS 基线 + pgvector 精确检索、RRF、双重 ACL 和引用；Markdown、PDF Layout、代码 AST、表格与对话已采用只召回 Child、按预算扩展 Parent 的结构化分块，`ParserBackedIndexSourcePort` 已提供真实 parser 的插拔边界。解析器不可用时默认严格失败，只有显式 degraded 策略才允许带标记的纯文本降级。
+- 已实现 PostgreSQL FTS 基线 + pgvector 精确检索、RRF、双重 ACL 和引用；Markdown、PDF Layout、代码 AST、表格与对话已采用只召回 Child、按预算扩展 Parent 的结构化分块，`ParserBackedIndexSourcePort` 已提供真实 parser 的插拔边界。解析器不可用时默认严格失败，只有显式 degraded 策略才允许带标记的纯文本降级。M5.11 增加了 PostgreSQL 关系候选源，并复用 Gateway 的确定性排序、预算和最终 ACL。
 - 已完成一个 `COUNT DISTINCT` 聚合用例，禁止由 LLM 自行计数。
 - 降级 parser 输出与 active 索引已分离治理：构建和激活分别需要显式授权，默认 fail closed。
 - 已实现 `building -> ready -> active -> retired/failed` 索引生命周期，正式查询只读单一 active 版本。
@@ -376,7 +376,7 @@ RocketMQ、Milvus、Elasticsearch 可在闭环需要真实吞吐与检索质量�
 - 扩展后重新执行 ACL；Evidence ID 的 content、URI、digest 冲突直接 fail closed。
 - 所有异步 Provider 透传 `AbortSignal`，取消不返回可生成的半成品。
 
-后续接入 Graph、事件时间线或布局索引时，只实现候选来源 Adapter，不改变 Gateway 的排序、预算、授权和合同校验。
+当前 PostgreSQL 实现为 `PostgresRelationExpansionCandidateSource`，从 active `memory_chunk` 读取 Region、Neighbor、Entity 和显式时间定位候选，并复用 Memory ACL。后续接入 Graph、事件时间线或布局索引时，只实现候选来源 Adapter，不改变 Gateway 的排序、预算、授权和合同校验。
 
 ### R3：多层记忆压缩
 

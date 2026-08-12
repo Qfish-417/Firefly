@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CandidateSourceEvidenceExpander,
   DeterministicEvidenceExpander,
   RetrievalGateway,
   RetrievalPolicyError,
@@ -244,6 +245,30 @@ test("deterministic expansion honors AbortSignal", async () => {
     }),
     /cancelled/,
   );
+});
+
+test("candidate-source expansion resolves provider candidates through the deterministic policy", async () => {
+  const anchor = hit("anchor", 1, "concept:anchor");
+  let requestedLimit = 0;
+  const expander = new CandidateSourceEvidenceExpander({
+    listCandidates: async (input) => {
+      requestedLimit = input.max_candidates_per_anchor;
+      return [
+        { anchor_id: anchor.id, relation: "entity", hit: hit("entity", 1, "concept:entity") },
+        { anchor_id: anchor.id, relation: "region", hit: hit("region", 0.2, "concept:region") },
+      ];
+    },
+  }, { max_candidates_per_anchor: 4 });
+
+  const expanded = await expander.expand({
+    hits: [anchor],
+    principal: baseRequest.principal,
+    purpose: baseRequest.purpose,
+    max_tokens: 1_000,
+  });
+
+  assert.equal(requestedLimit, 4);
+  assert.deepEqual(expanded.map((candidate) => candidate.id), ["anchor", "region", "entity"]);
 });
 
 test("invalid structured aggregator output is blocked at the contract boundary", async () => {

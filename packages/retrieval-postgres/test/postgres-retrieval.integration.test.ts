@@ -11,7 +11,7 @@ import {
   createDatabase,
   migrateToLatest,
 } from "@firefly/persistence";
-import { RetrievalGateway, type RetrievalHit } from "@firefly/retrieval-service";
+import { CandidateSourceEvidenceExpander, RetrievalGateway, type RetrievalHit } from "@firefly/retrieval-service";
 import { sql } from "kysely";
 
 import {
@@ -20,6 +20,7 @@ import {
   PostgresMemoryAuthorization,
   PostgresMemoryIndexer,
   PostgresParentChildExpander,
+  PostgresRelationExpansionCandidateSource,
   PostgresRetrievalPolicyError,
   PostgresVectorRetriever,
 } from "../src/index.ts";
@@ -112,10 +113,15 @@ test(
         "# Solar Output\n\nSolar output changes with daylight. Battery reserves support the full night cycle.",
       );
       await indexer.index(publicParent);
+      const publicChild = chunk("public", "memory.retrieval.public", "Solar output changes with daylight.", [1, 0, 0], 1);
       await indexer.index({
-        ...chunk("public", "memory.retrieval.public", "Solar output changes with daylight.", [1, 0, 0], 1),
+        ...publicChild,
         parent_chunk_id: publicParent.chunk_id,
         structure_path: ["Solar Output"],
+        citation: {
+          ...publicChild.citation,
+          locator: { ...publicChild.citation.locator, region_id: "solar-output" },
+        },
       });
       const privateChunk = chunk(
         "private",
@@ -250,6 +256,62 @@ test(
       assert.deepEqual(expandedPack.evidence.map((item) => item.evidence_id), [publicParent.chunk_id]);
       assert.match(expandedPack.evidence[0]?.untrusted_content ?? "", /Battery reserves support the full night cycle/);
       assert.equal(expandedPack.evidence[0]?.citation.locator?.chunk_level, "parent");
+
+      const neighbor = chunk(
+        "public-neighbor",
+        "memory.retrieval.public",
+        "Battery reserve context for the active region.",
+        [0, 1, 0],
+        2,
+      );
+      await indexer.index({
+        ...neighbor,
+        parent_chunk_id: publicParent.chunk_id,
+        structure_path: ["Solar Output"],
+        entity_keys: publicChild.entity_keys,
+        citation: {
+          ...neighbor.citation,
+          locator: { ...neighbor.citation.locator, region_id: "solar-output" },
+        },
+      });
+      const relationCandidates = await new PostgresRelationExpansionCandidateSource({ db }).listCandidates({
+        hits: [publicHit],
+        principal,
+        purpose: call.purpose,
+        max_candidates_per_anchor: 4,
+      });
+      assert.deepEqual(relationCandidates.map((candidate) => ({
+        anchor_id: candidate.anchor_id,
+        relation: candidate.relation,
+        hit_id: candidate.hit.id,
+      })), [{
+        anchor_id: "chunk.public",
+        relation: "region",
+        hit_id: "chunk.public-neighbor",
+      }]);
+      const relationGateway = new RetrievalGateway({
+        retrievers: [lexical],
+        authorization,
+        expander: new CandidateSourceEvidenceExpander(
+          new PostgresRelationExpansionCandidateSource({ db }),
+        ),
+      });
+      const relationPack = await relationGateway.retrieve({
+        query_id: "query.retrieval.region-expansion",
+        original_query: "solar output",
+        intent: "fact_lookup",
+        agent_id: "learning-director",
+        principal,
+        purpose: call.purpose,
+        token_budget: 1_000,
+        estimated_chunk_tokens: 80,
+        require_citations: true,
+        filters: { memory_id: "memory.retrieval.public" },
+      });
+      assert.deepEqual(relationPack.evidence.map((item) => item.evidence_id), [
+        "chunk.public",
+        "chunk.public-neighbor",
+      ]);
 
       const buildV2 = indexBuild("v2", "tenant.retrieval", "watermark.02");
       await indexes.createBuild(buildV2);

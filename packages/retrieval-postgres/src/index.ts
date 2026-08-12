@@ -4,6 +4,9 @@ import type { EvidenceCitation, IndexBuildTask, IndexEvaluationCase } from "@fir
 import type { EmbeddingPort, ModelBudget } from "@firefly/model-gateway";
 import type { QuestLabDatabase } from "@firefly/persistence";
 import type {
+  EvidenceExpansionCandidate,
+  EvidenceExpansionCandidateSource,
+  EvidenceExpansionRelation,
   EvidenceExpansionPort,
   RetrievalAuthorizationPort,
   RetrievalHit,
@@ -66,6 +69,19 @@ export interface PostgresIndexQualityEvaluationHit {
 
 interface ParentExpansionRow extends Omit<MemorySearchRow, "score"> {
   readonly child_id: string;
+}
+
+interface RelationExpansionRow extends Omit<MemorySearchRow, "score"> {
+  readonly anchor_id: string;
+  readonly relation: EvidenceExpansionRelation;
+  readonly relation_score: number | string;
+}
+
+export interface PostgresRelationExpansionCandidateSourceOptions {
+  readonly db: Kysely<QuestLabDatabase>;
+  readonly logical_name?: string;
+  readonly region_locator_key?: string;
+  readonly temporal_locator_key?: string;
 }
 
 export class PostgresRetrievalPolicyError extends Error {
@@ -553,6 +569,151 @@ export class PostgresMemoryAuthorization implements RetrievalAuthorizationPort {
       LIMIT 1
     `.execute(this.db);
     return result.rows.length === 1;
+  }
+}
+
+export class PostgresRelationExpansionCandidateSource implements EvidenceExpansionCandidateSource {
+  private readonly db: Kysely<QuestLabDatabase>;
+  private readonly logicalName: string;
+  private readonly regionLocatorKey: string;
+  private readonly temporalLocatorKey: string;
+
+  constructor(options: PostgresRelationExpansionCandidateSourceOptions) {
+    this.db = options.db;
+    this.logicalName = options.logical_name ?? "memory.hybrid";
+    this.regionLocatorKey = options.region_locator_key ?? "region_id";
+    this.temporalLocatorKey = options.temporal_locator_key ?? "started_at";
+    if (!this.logicalName.trim() || !this.regionLocatorKey.trim() || !this.temporalLocatorKey.trim()) {
+      throw new PostgresRetrievalPolicyError("Relation expansion keys and logical index name are required");
+    }
+  }
+
+  async listCandidates(input: {
+    readonly hits: readonly RetrievalHit[];
+    readonly principal: RetrievalPrincipal;
+    readonly purpose: string;
+    readonly max_candidates_per_anchor: number;
+    readonly signal?: AbortSignal;
+  }): Promise<readonly EvidenceExpansionCandidate[]> {
+    input.signal?.throwIfAborted();
+    if (
+      !input.purpose.trim() ||
+      !Number.isInteger(input.max_candidates_per_anchor) ||
+      input.max_candidates_per_anchor < 1 ||
+      input.max_candidates_per_anchor > 100
+    ) {
+      throw new PostgresRetrievalPolicyError("Relation expansion requires purpose and a bounded candidate limit");
+    }
+    if (input.hits.length === 0) return [];
+    const anchorIds = [...new Set(input.hits.map((hit) => hit.id))];
+    const access = readableMemoryPredicate(input.principal);
+    const rows = await sql<RelationExpansionRow>`
+      WITH anchors AS (
+        SELECT
+          chunk.chunk_id AS anchor_id,
+          chunk.memory_id,
+          chunk.index_version_id,
+          chunk.ordinal,
+          chunk.entity_keys,
+          chunk.citation_locator
+        FROM questlab.memory_chunk AS chunk
+        WHERE chunk.chunk_id IN (${sql.join(anchorIds)})
+      ), ranked AS (
+        SELECT
+          anchor.anchor_id,
+          CASE
+            WHEN candidate.citation_locator ->> ${this.regionLocatorKey} IS NOT NULL
+              AND candidate.citation_locator ->> ${this.regionLocatorKey}
+                = anchor.citation_locator ->> ${this.regionLocatorKey}
+              THEN 'region'
+            WHEN abs(candidate.ordinal - anchor.ordinal) = 1 THEN 'neighbor'
+            WHEN candidate.entity_keys && anchor.entity_keys THEN 'entity'
+            ELSE 'temporal'
+          END AS relation,
+          CASE
+            WHEN candidate.citation_locator ->> ${this.regionLocatorKey} IS NOT NULL
+              AND candidate.citation_locator ->> ${this.regionLocatorKey}
+                = anchor.citation_locator ->> ${this.regionLocatorKey}
+              THEN 1.0
+            WHEN abs(candidate.ordinal - anchor.ordinal) = 1 THEN 0.8
+            WHEN candidate.entity_keys && anchor.entity_keys THEN 0.6
+            ELSE 0.4
+          END AS relation_score,
+          candidate.chunk_id,
+          candidate.content,
+          candidate.token_count,
+          candidate.source_type,
+          candidate.entity_keys,
+          candidate.citation_artifact_id,
+          candidate.citation_uri,
+          candidate.citation_digest,
+          candidate.citation_locator,
+          row_number() OVER (
+            PARTITION BY anchor.anchor_id
+            ORDER BY
+              CASE
+                WHEN candidate.citation_locator ->> ${this.regionLocatorKey} IS NOT NULL
+                  AND candidate.citation_locator ->> ${this.regionLocatorKey}
+                    = anchor.citation_locator ->> ${this.regionLocatorKey}
+                  THEN 1
+                WHEN abs(candidate.ordinal - anchor.ordinal) = 1 THEN 2
+                WHEN candidate.entity_keys && anchor.entity_keys THEN 3
+                ELSE 4
+              END,
+              candidate.chunk_id
+          ) AS candidate_rank
+        FROM anchors AS anchor
+        JOIN questlab.memory_chunk AS candidate
+          ON candidate.memory_id = anchor.memory_id
+          AND candidate.index_version_id = anchor.index_version_id
+          AND candidate.chunk_id <> anchor.anchor_id
+        JOIN questlab.memory_record AS memory ON memory.memory_id = candidate.memory_id
+        JOIN questlab.retrieval_index_version AS index_version
+          ON index_version.index_version_id = candidate.index_version_id
+        WHERE candidate.chunk_level = 'child'
+          AND memory.status = 'active'
+          AND index_version.status = 'active'
+          AND (memory.scope = 'public' OR index_version.tenant_id = ${input.principal.tenant_id})
+          AND index_version.logical_name = ${this.logicalName}
+          AND ${access}
+          AND (
+            (
+              candidate.citation_locator ->> ${this.regionLocatorKey} IS NOT NULL
+              AND candidate.citation_locator ->> ${this.regionLocatorKey}
+                = anchor.citation_locator ->> ${this.regionLocatorKey}
+            )
+            OR abs(candidate.ordinal - anchor.ordinal) = 1
+            OR candidate.entity_keys && anchor.entity_keys
+            OR (
+              candidate.citation_locator ->> ${this.temporalLocatorKey} IS NOT NULL
+              AND candidate.citation_locator ->> ${this.temporalLocatorKey}
+                = anchor.citation_locator ->> ${this.temporalLocatorKey}
+            )
+          )
+      )
+      SELECT
+        anchor_id,
+        relation,
+        relation_score,
+        chunk_id,
+        content,
+        token_count,
+        source_type,
+        entity_keys,
+        citation_artifact_id,
+        citation_uri,
+        citation_digest,
+        citation_locator
+      FROM ranked
+      WHERE candidate_rank <= ${input.max_candidates_per_anchor}
+      ORDER BY anchor_id, candidate_rank
+    `.execute(this.db);
+    input.signal?.throwIfAborted();
+    return rows.rows.map((row) => ({
+      anchor_id: row.anchor_id,
+      relation: row.relation,
+      hit: toHit(row, Number(row.relation_score)),
+    }));
   }
 }
 

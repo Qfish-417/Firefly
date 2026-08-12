@@ -9,6 +9,7 @@ import type { Kysely } from "kysely";
 import {
   PostgresLexicalRetriever,
   PostgresMemoryIndexer,
+  PostgresRelationExpansionCandidateSource,
   PostgresRetrievalPolicyError,
   PostgresVectorRetriever,
 } from "../src/index.ts";
@@ -109,6 +110,29 @@ test("Parent Chunk validation rejects retrieval embeddings before database acces
       },
       embedding: [1, 0, 0],
       embedding_model: "embedding.unit.v1",
+    }),
+    (error: unknown) => error instanceof PostgresRetrievalPolicyError,
+  );
+});
+
+test("relation expansion candidate source validates policy before querying", async () => {
+  assert.throws(
+    () => new PostgresRelationExpansionCandidateSource({ db: unavailableDb, region_locator_key: "" }),
+    (error: unknown) => error instanceof PostgresRetrievalPolicyError,
+  );
+  const source = new PostgresRelationExpansionCandidateSource({ db: unavailableDb });
+  assert.deepEqual(await source.listCandidates({
+    hits: [],
+    principal: { tenant_id: "tenant.unit" },
+    purpose: "test",
+    max_candidates_per_anchor: 4,
+  }), []);
+  await assert.rejects(
+    source.listCandidates({
+      hits: [],
+      principal: { tenant_id: "tenant.unit" },
+      purpose: "",
+      max_candidates_per_anchor: 4,
     }),
     (error: unknown) => error instanceof PostgresRetrievalPolicyError,
   );

@@ -107,6 +107,16 @@ export interface EvidenceExpansionCandidate {
   readonly hit: RetrievalHit;
 }
 
+export interface EvidenceExpansionCandidateSource {
+  listCandidates(input: {
+    readonly hits: readonly RetrievalHit[];
+    readonly principal: RetrievalPrincipal;
+    readonly purpose: string;
+    readonly max_candidates_per_anchor: number;
+    readonly signal?: AbortSignal;
+  }): Promise<readonly EvidenceExpansionCandidate[]>;
+}
+
 export interface DeterministicEvidenceExpanderOptions {
   readonly candidates: readonly EvidenceExpansionCandidate[];
   readonly relation_order?: readonly EvidenceExpansionRelation[];
@@ -190,6 +200,56 @@ export class DeterministicEvidenceExpander implements EvidenceExpansionPort {
       }
     }
     return [...selected.values()];
+  }
+}
+
+export interface CandidateSourceEvidenceExpanderOptions {
+  readonly relation_order?: readonly EvidenceExpansionRelation[];
+  readonly max_candidates_per_anchor?: number;
+}
+
+/** Resolves provider candidates through the shared deterministic policy. */
+export class CandidateSourceEvidenceExpander implements EvidenceExpansionPort {
+  private readonly source: EvidenceExpansionCandidateSource;
+  private readonly relationOrder: readonly EvidenceExpansionRelation[];
+  private readonly maxCandidatesPerAnchor: number;
+
+  constructor(source: EvidenceExpansionCandidateSource, options: CandidateSourceEvidenceExpanderOptions = {}) {
+    this.source = source;
+    this.relationOrder = options.relation_order ?? ["region", "neighbor", "entity", "temporal"];
+    this.maxCandidatesPerAnchor = options.max_candidates_per_anchor ?? 8;
+    if (
+      new Set(this.relationOrder).size !== this.relationOrder.length ||
+      this.relationOrder.some((relation) => !isExpansionRelation(relation)) ||
+      !Number.isInteger(this.maxCandidatesPerAnchor) ||
+      this.maxCandidatesPerAnchor < 1 ||
+      this.maxCandidatesPerAnchor > 100
+    ) {
+      throw new RetrievalPolicyError("Invalid evidence expansion source policy");
+    }
+  }
+
+  async expand(input: {
+    readonly hits: readonly RetrievalHit[];
+    readonly principal: RetrievalPrincipal;
+    readonly purpose: string;
+    readonly max_tokens: number;
+    readonly signal?: AbortSignal;
+  }): Promise<readonly RetrievalHit[]> {
+    input.signal?.throwIfAborted();
+    const candidates = await this.source.listCandidates({
+      hits: input.hits,
+      principal: input.principal,
+      purpose: input.purpose,
+      max_candidates_per_anchor: this.maxCandidatesPerAnchor,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    input.signal?.throwIfAborted();
+    return new DeterministicEvidenceExpander({
+      candidates,
+      relation_order: this.relationOrder,
+      max_candidates_per_anchor: this.maxCandidatesPerAnchor,
+    }).expand(input);
   }
 }
 
