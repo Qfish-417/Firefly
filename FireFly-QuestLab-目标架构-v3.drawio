@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="34">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="35">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -946,6 +946,26 @@
         <mxCell id="p34-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p34-1" source="p34-structure" target="p34-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p34-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p34-1" source="p34-verify" target="p34-failure"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p34-boundary" value="Boundary: PDF text/layout is complete for born-digital PDFs. OCR, embedded table semantics and workbook formats remain separate providers." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p34-1"><mxGeometry x="220" y="920" width="1160" height="35" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-exceljs-xlsx-parser" name="35-M5.18 ExcelJS XLSX Parser">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p35-0"/><mxCell id="p35-1" parent="p35-0"/>
+        <mxCell id="p35-title" value="M5.18 ExcelJS XLSX Parser: verified workbook bytes to deterministic table evidence" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p35-1"><mxGeometry x="100" y="20" width="1400" height="50" as="geometry"/></mxCell>
+        <mxCell id="p35-source" value="Verified XLSX bytes&#xa;Binary Hydration + SHA-256 already passed&#xa;XLSX / macro-enabled MIME allowlist" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p35-1"><mxGeometry x="70" y="180" width="330" height="140" as="geometry"/></mxCell>
+        <mxCell id="p35-parser" value="ExcelJS Workbook Parser&#xa;non-empty worksheets + typed cell values&#xa;formula cached result only; never execute" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p35-1"><mxGeometry x="500" y="180" width="360" height="140" as="geometry"/></mxCell>
+        <mxCell id="p35-validation" value="Deterministic validation&#xa;unique headers + rectangular rows&#xa;sheet/table/row/column/cell limits" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p35-1"><mxGeometry x="960" y="180" width="360" height="140" as="geometry"/></mxCell>
+        <mxCell id="p35-structure" value="IndexTableSource&#xa;Worksheet -> named Sheet + Table&#xa;headers + normalized rows" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p35-1"><mxGeometry x="520" y="450" width="560" height="140" as="geometry"/></mxCell>
+        <mxCell id="p35-chunker" value="TableStructureChunker&#xa;Parent schema context + Child row groups&#xa;sheet/table/row/column Citation Locator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p35-1"><mxGeometry x="520" y="720" width="560" height="130" as="geometry"/></mxCell>
+        <mxCell id="p35-failure" value="Fail closed&#xa;missing formula result | bad headers | unsupported cell | limits&#xa;macros, formulas and external links never execute" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C9372C;fontSize=13;" vertex="1" parent="p35-1"><mxGeometry x="1230" y="430" width="290" height="170" as="geometry"/></mxCell>
+        <mxCell id="p35-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p35-1" source="p35-source" target="p35-parser"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p35-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p35-1" source="p35-parser" target="p35-validation"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p35-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p35-1" source="p35-validation" target="p35-structure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p35-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p35-1" source="p35-structure" target="p35-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p35-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p35-1" source="p35-validation" target="p35-failure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p35-boundary" value="Boundary: sheet/table values are indexed. Merged-cell semantics, charts, embedded images, macros and formula recalculation remain outside this parser." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p35-1"><mxGeometry x="200" y="920" width="1200" height="35" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>
