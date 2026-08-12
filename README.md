@@ -111,6 +111,8 @@ M5.12 maintenance cycles are durable: migration 012 adds an idempotent `maintena
 
 M5.13 adds a governed HTTP parser provider boundary with fixed HTTPS endpoints, MIME allowlists, timeout/response limits, no redirects and versioned structured JSON. Strict or explicit degraded behavior remains owned by `ParserBackedIndexSourcePort`. See [ADR 0027](./docs/adr/0027-governed-http-parser-provider.md).
 
+M5.14 includes a real TypeScript/JavaScript parser based on the official Compiler API. It emits declaration/member structure, signatures and exact line ranges with bounded source, node and depth limits. See [ADR 0028](./docs/adr/0028-typescript-compiler-api-parser.md).
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell

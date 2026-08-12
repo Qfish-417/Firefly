@@ -319,7 +319,7 @@ M5 starts with the model invocation projection (`questlab.model_invocation`) so 
 - 已完成 digest-bound lexical/vector/hybrid 固定评测：评测集把 vector/hybrid 查询 Embedding 与模型快照纳入 Digest，PostgreSQL evaluator 按阶段执行 FTS、cosine 或确定性 50/50 融合，仍只访问任务绑定的 building 版本并使用真实 ACL，激活后不可继续读取。
 - 已完成删除 reconciliation 周期调度：同实例 tick 合并，多实例依靠行锁/状态复核/幂等 Outbox，失败周期可观测且不会杀死循环，支持 AbortSignal 停止和独立进程部署。
 - 已完成 retired 索引带保留期回收：显式审计 hold 阻断清理，active/未到期版本不入选，事务删除派生 Chunk 后保留版本身份与质量报告并发出幂等 Outbox 事实。
-- M5.8/M5.9/M5.10 已实现 PDF Layout、代码 AST、表格和对话结构化 Chunker、`ParserBackedIndexSourcePort` 以及严格/降级策略；M5.11 已接入确定性关系扩展和 PostgreSQL 候选源；M5.12 已增加 reconciliation/retired-index GC 持久化维护账本；M5.13 已提供受治理 HTTP Parser Adapter。下一步部署具体 parser 引擎，再接生产 BM25/ANN 和外部索引回收。
+- M5.8/M5.9/M5.10 已实现 PDF Layout、代码 AST、表格和对话结构化 Chunker、`ParserBackedIndexSourcePort` 以及严格/降级策略；M5.11 已接入确定性关系扩展和 PostgreSQL 候选源；M5.12 已增加 reconciliation/retired-index GC 持久化维护账本；M5.13 已提供受治理 HTTP Parser Adapter；M5.14 已落地真实 TypeScript/JavaScript AST Parser。下一步部署 PDF/OCR、表格和转录引擎，再接生产 BM25/ANN 和外部索引回收。
 - 降级索引构建与激活已拆分为两个显式授权，任何 parser outage 不会无声替换 active 版本。
 - 之后做长期记忆压缩、多模态派生索引和动态工具发现。
 - 动态加载只加载描述与受控 Provider，不把未知代码装入 Agent 主进程。
