@@ -127,6 +127,8 @@ M5.20 adds a governed `HttpAsrDiarizationParser`. Verified audio is sent to a fi
 
 M5.21 adds a text-first production index-build boundary. `PostgresMemoryIndexSourcePort` resolves active public/tenant Memories to persisted Artifact identities, verifies source watermarks, SHA-256 text bytes and UTF-8, and rejects non-text input until a governed parser produces text. Run the non-activating worker with `npm run memory:index-build`; see [ADR 0035](./docs/adr/0035-text-first-runtime-boundary.md).
 
+M5.22 adds an explicit text Embedding boundary. `HttpEmbeddingProvider` targets a governed OpenAI-compatible endpoint, validates vector count, ordering, dimensions and budgets, and is optional in both the index Worker and Retrieval API. pi-ai remains the generation/streaming gateway; vector/hybrid retrieval requires `EMBEDDING_ENDPOINT`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` and the retrieval-side `EMBEDDING_MODEL_SNAPSHOT`; see [ADR 0036](./docs/adr/0036-text-embedding-provider-boundary.md).
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell
