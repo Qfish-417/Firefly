@@ -125,6 +125,8 @@ M5.19 adds a governed `HttpOcrLayoutParser` and an explicit `PdfTextOrOcrParser`
 
 M5.20 adds a governed `HttpAsrDiarizationParser`. Verified audio is sent to a fixed HTTPS endpoint and normalized into deterministic timed turns with explicit speaker identity, confidence, language and provider/model lineage before `ConversationTurnChunker`. See [ADR 0034](./docs/adr/0034-governed-http-asr-diarization-provider.md).
 
+M5.21 adds a text-first production index-build boundary. `PostgresMemoryIndexSourcePort` resolves active public/tenant Memories to persisted Artifact identities, verifies source watermarks, SHA-256 text bytes and UTF-8, and rejects non-text input until a governed parser produces text. Run the non-activating worker with `npm run memory:index-build`; see [ADR 0035](./docs/adr/0035-text-first-runtime-boundary.md).
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell

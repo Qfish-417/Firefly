@@ -20,6 +20,7 @@ export type {
   QueryPlan,
   StructuredResult,
 } from "@firefly/contracts";
+export * from "./http-api.ts";
 
 export type SearchStage = Exclude<RetrievalStage, "structured">;
 

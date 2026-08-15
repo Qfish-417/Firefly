@@ -13,3 +13,4 @@ export * from "./deletion-worker.ts";
 export * from "./reconciliation-scheduler.ts";
 export * from "./retired-index-gc.ts";
 export * from "./s3-object-store.ts";
+export * from "./postgres-index-source.ts";
