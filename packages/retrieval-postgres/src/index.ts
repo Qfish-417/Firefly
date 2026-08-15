@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
-import type { EvidenceCitation, IndexBuildTask, IndexEvaluationCase } from "@firefly/contracts";
+import type { EvidenceCitation, IndexBuildTask, IndexEvaluationCase, StructuredResult } from "@firefly/contracts";
 import type { EmbeddingPort, ModelBudget } from "@firefly/model-gateway";
-import type { QuestLabDatabase } from "@firefly/persistence";
+import { MemoryRepository, type QuestLabDatabase } from "@firefly/persistence";
 import type {
   EvidenceExpansionCandidate,
   EvidenceExpansionCandidateSource,
@@ -13,6 +13,8 @@ import type {
   RetrievalPrincipal,
   Retriever,
   RetrieverCall,
+  RetrievalRequest,
+  StructuredAggregatorPort,
 } from "@firefly/retrieval-service";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 
@@ -570,6 +572,46 @@ export class PostgresMemoryAuthorization implements RetrievalAuthorizationPort {
     `.execute(this.db);
     return result.rows.length === 1;
   }
+}
+
+export class PostgresStructuredEventAggregator implements StructuredAggregatorPort {
+  private readonly memories: Pick<MemoryRepository, "aggregateReadableEvents">;
+
+  constructor(db: Kysely<QuestLabDatabase>) {
+    this.memories = new MemoryRepository(db);
+  }
+
+  async aggregate(input: { readonly request: RetrievalRequest; readonly signal?: AbortSignal }): Promise<StructuredResult> {
+    input.signal?.throwIfAborted();
+    if (input.request.intent !== "count_events") {
+      throw new PostgresRetrievalPolicyError(`Structured intent ${input.request.intent} is not implemented`);
+    }
+    const filters = input.request.structured_filters;
+    if (!filters?.subject_id || !filters.event_type) {
+      throw new PostgresRetrievalPolicyError("count_events requires structured_filters.subject_id and event_type");
+    }
+    const result = await this.memories.aggregateReadableEvents(input.request.principal, {
+      subject_id: filters.subject_id,
+      event_type: filters.event_type,
+      ...(filters.from ? { from: parseInstant(filters.from, "from") } : {}),
+      ...(filters.to ? { to: parseInstant(filters.to, "to") } : {}),
+      include_conflicts: filters.include_conflicts ?? false,
+    });
+    input.signal?.throwIfAborted();
+    return {
+      operation: "count_distinct",
+      value: result.value,
+      included_ids: result.included_event_ids,
+      excluded_reasons: result.excluded_conflict_count > 0 ? [`${result.excluded_conflict_count} conflicting events excluded`] : [],
+      conflicts: result.conflict_event_ids,
+    };
+  }
+}
+
+function parseInstant(value: string, name: string): Date {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) throw new PostgresRetrievalPolicyError(`${name} must be an ISO timestamp`);
+  return parsed;
 }
 
 export class PostgresRelationExpansionCandidateSource implements EvidenceExpansionCandidateSource {

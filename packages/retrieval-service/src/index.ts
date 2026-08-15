@@ -45,6 +45,13 @@ export interface RetrievalRequest {
   readonly evidence_coverage_target?: number;
   readonly require_citations: boolean;
   readonly filters?: Readonly<Record<string, string | number | boolean>>;
+  readonly structured_filters?: {
+    readonly subject_id?: string;
+    readonly event_type?: string;
+    readonly from?: string;
+    readonly to?: string;
+    readonly include_conflicts?: boolean;
+  };
 }
 
 export interface RetrievalHit {

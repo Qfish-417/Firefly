@@ -3,7 +3,8 @@ import { once } from "node:events";
 import { request } from "node:http";
 import test from "node:test";
 
-import { createRetrievalApiServer, RetrievalGateway } from "../src/index.ts";
+import { createHmacRetrievalIdentityResolver, createRetrievalApiServer, RetrievalGateway } from "../src/index.ts";
+import { createHmac } from "node:crypto";
 
 test("retrieval HTTP API validates bodies, exposes health and returns governed packs", async () => {
   const gateway = new RetrievalGateway({
@@ -36,10 +37,36 @@ test("retrieval HTTP API validates bodies, exposes health and returns governed p
   }
 });
 
-async function httpJson(base: string, method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown }> {
+test("retrieval HTTP API replaces caller principal with a signed server identity", async () => {
+  const gateway = new RetrievalGateway({
+    retrievers: [{ id: "fake.lexical", stage: "lexical", retrieve: async (call) => [{ id: call.principal.tenant_id, content: "identity-bound", score: 1, token_count: 2, source_type: "text/plain", citation: { artifact_id: "a.identity", uri: "s3://bucket/identity.txt", digest: `sha256:${"c".repeat(64)}` } }] }],
+    authorization: { canRead: async () => true },
+  });
+  const secret = "identity-secret-012345678901234567890123";
+  const now = Date.parse("2026-08-15T00:00:00.000Z");
+  const claims = { principal: { tenant_id: "tenant.trusted", user_id: "user.trusted" }, agent_id: "learning-scientist", issued_at_ms: now, expires_at_ms: now + 60_000 };
+  const encoded = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const signature = createHmac("sha256", secret).update(encoded).digest("hex");
+  const server = createRetrievalApiServer(gateway, {
+    resolve_identity: createHmacRetrievalIdentityResolver(secret, { now: () => now }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  try {
+    const response = await httpJson(`http://127.0.0.1:${address.port}`, "POST", "/retrieval", { query_id: "q.identity.1", original_query: "identity", intent: "fact_lookup", agent_id: "learning-director", principal: { tenant_id: "tenant.attacker" }, purpose: "answer", token_budget: 500, estimated_chunk_tokens: 20, require_citations: true }, { "x-firefly-identity": encoded, "x-firefly-signature": signature });
+    assert.equal(response.status, 200);
+    assert.equal((response.body as { evidence: readonly { evidence_id: string }[] }).evidence[0]?.evidence_id, "tenant.trusted");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+async function httpJson(base: string, method: string, path: string, body?: unknown, extraHeaders: Record<string, string> = {}): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? undefined : JSON.stringify(body);
-    const req = request(`${base}${path}`, { method, headers: payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {} }, (res) => {
+    const req = request(`${base}${path}`, { method, headers: payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload), ...extraHeaders } : extraHeaders }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
       res.on("end", () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) }));

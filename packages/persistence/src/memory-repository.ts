@@ -63,6 +63,7 @@ export interface EventAggregate {
   readonly value: number;
   readonly included_event_ids: readonly string[];
   readonly excluded_conflict_count: number;
+  readonly conflict_event_ids: readonly string[];
 }
 
 export interface DeleteMemoryInput {
@@ -690,7 +691,6 @@ export class MemoryRepository {
       .$if(Boolean(query.event_type), (builder) => builder.where("event.event_type", "=", query.event_type!))
       .$if(Boolean(query.from), (builder) => builder.where("event.occurred_from", ">=", query.from!))
       .$if(Boolean(query.to), (builder) => builder.where("event.occurred_from", "<", query.to!))
-      .$if(!query.include_conflicts, (builder) => builder.where("event.conflict_status", "=", "none"))
       .where((expression) =>
         expression.or([
           expression("event.scope", "=", "public"),
@@ -708,15 +708,19 @@ export class MemoryRepository {
       )
       .orderBy("event.occurred_from", "asc")
       .execute();
+    const conflicts = rows.filter((event) => event.conflict_status !== "none");
     const unique = new Map<string, StructuredEvent>();
-    for (const row of rows) unique.set(row.dedupe_key, row);
+    for (const row of rows) {
+      if (query.include_conflicts || row.conflict_status === "none") unique.set(row.dedupe_key, row);
+    }
     const included = [...unique.values()];
     return {
       operation: "count_distinct",
       field: "dedupe_key",
       value: included.length,
       included_event_ids: included.map((event) => event.event_id),
-      excluded_conflict_count: rows.filter((event) => event.conflict_status !== "none").length,
+      excluded_conflict_count: conflicts.length,
+      conflict_event_ids: conflicts.map((event) => event.event_id),
     };
   }
 }
