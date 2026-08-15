@@ -7,6 +7,7 @@ const databaseUrl = requiredEnvironment("DATABASE_URL");
 const apiToken = requiredEnvironment("RETRIEVAL_API_TOKEN");
 const identitySecret = requiredEnvironment("RETRIEVAL_IDENTITY_HMAC_SECRET");
 const port = integerEnvironment("RETRIEVAL_PORT", 3200, 1, 65_535);
+const host = process.env.RETRIEVAL_HOST?.trim() || "127.0.0.1";
 const logicalName = process.env.RETRIEVAL_LOGICAL_NAME?.trim() || "memory.hybrid";
 const embedding = embeddingConfiguration();
 const db = createDatabase(databaseUrl);
@@ -30,7 +31,7 @@ const server = createRetrievalApiServer(gateway, {
 const shutdown = (): void => { server.close(() => { void db.destroy().finally(() => process.exit(0)); }); };
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
-server.listen(port, "127.0.0.1", () => process.stdout.write(`FireFly Retrieval API listening on http://127.0.0.1:${port}\n`));
+server.listen(port, host, () => process.stdout.write(`FireFly Retrieval API listening on http://${host}:${port}\n`));
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim();

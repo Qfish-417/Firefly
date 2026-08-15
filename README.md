@@ -145,6 +145,8 @@ npm run admin:start
 docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 ```
 
+The development Compose stack also builds and starts the database migration job, Retrieval API and non-activating index Worker. The Retrieval health endpoint is published at `http://127.0.0.1:53200/health`. Development defaults are provided for the API token and identity HMAC secret; override them outside local development. Optional vector search uses the M5.22 `EMBEDDING_*` configuration.
+
 M5.8 结构化 Chunker 已落地：`PdfLayoutChunker` 保留 page/bbox/heading/region，`CodeAstChunker` 保留 language/symbol/AST/line，`TableStructureChunker` 保留 sheet/table/header/row/column；默认在缺失 parser output 时 fail closed，也支持显式 `fallback_mode=degraded` 的纯文本降级并标记 Citation Locator。架构图新增第 24 页，决策记录见 [ADR 0021](./docs/adr/0021-structured-document-chunkers.md)。
 
 M5.9 已落地 `ConversationTurnChunker`：保留轮次、说话人、角色和时间定位，Parent 使用连续对话窗口，Child 优先按轮次召回；解析器不可用时同样只能显式降级并留下可审计标记。
