@@ -541,11 +541,46 @@ function validateExpandedHits(hits: readonly RetrievalHit[], maxTokens: number):
 }
 
 function validateRequest(request: RetrievalRequest, signal?: AbortSignal): void {
-  if (!request.query_id || !request.original_query.trim() || !request.purpose || !request.principal.tenant_id) {
+  if (
+    !request ||
+    typeof request.query_id !== "string" ||
+    !request.query_id.trim() ||
+    typeof request.original_query !== "string" ||
+    !request.original_query.trim() ||
+    typeof request.purpose !== "string" ||
+    !request.purpose.trim() ||
+    !request.principal ||
+    typeof request.principal.tenant_id !== "string" ||
+    !request.principal.tenant_id.trim()
+  ) {
     throw new RetrievalPolicyError("Retrieval request identity, query, principal and purpose are required");
   }
-  if (request.token_budget <= 0 || request.estimated_chunk_tokens <= 0) {
+  if (
+    !Number.isSafeInteger(request.token_budget) ||
+    !Number.isSafeInteger(request.estimated_chunk_tokens) ||
+    request.token_budget <= 0 ||
+    request.estimated_chunk_tokens <= 0
+  ) {
     throw new RetrievalPolicyError("Retrieval token budgets must be positive");
+  }
+  if (request.structured_filters !== undefined) {
+    const filters = request.structured_filters;
+    if (
+      !filters ||
+      typeof filters !== "object" ||
+      (filters.subject_id !== undefined && (typeof filters.subject_id !== "string" || !filters.subject_id.trim())) ||
+      (filters.event_type !== undefined && (typeof filters.event_type !== "string" || !filters.event_type.trim())) ||
+      (filters.from !== undefined && (typeof filters.from !== "string" || !filters.from.trim())) ||
+      (filters.to !== undefined && (typeof filters.to !== "string" || !filters.to.trim())) ||
+      (filters.include_conflicts !== undefined && typeof filters.include_conflicts !== "boolean")
+    ) {
+      throw new RetrievalPolicyError("Retrieval structured filters are invalid");
+    }
+    const from = filters.from === undefined ? undefined : new Date(filters.from);
+    const to = filters.to === undefined ? undefined : new Date(filters.to);
+    if ((from && !Number.isFinite(from.getTime())) || (to && !Number.isFinite(to.getTime())) || (from && to && from > to)) {
+      throw new RetrievalPolicyError("Retrieval structured filter timestamps are invalid");
+    }
   }
   if (signal?.aborted) throw signal.reason;
 }

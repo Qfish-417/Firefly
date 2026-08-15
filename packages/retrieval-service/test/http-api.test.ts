@@ -63,6 +63,58 @@ test("retrieval HTTP API replaces caller principal with a signed server identity
   }
 });
 
+test("retrieval HTTP API rejects malformed structured filters before gateway execution", async () => {
+  const gateway = new RetrievalGateway({
+    retrievers: [],
+    authorization: { canRead: async () => true },
+    aggregator: { aggregate: async () => ({ operation: "count_distinct", value: 0, included_ids: [], excluded_reasons: [], conflicts: [] }) },
+  });
+  const server = createRetrievalApiServer(gateway);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  try {
+    const base = `http://127.0.0.1:${address.port}`;
+    const missing = await httpJson(base, "POST", "/retrieval", {
+      query_id: "q.filters.missing", original_query: "count", intent: "count_events", agent_id: "learning-director",
+      principal: { tenant_id: "tenant.filters" }, purpose: "test", token_budget: 100, estimated_chunk_tokens: 10, require_citations: false,
+    });
+    assert.equal(missing.status, 400);
+    const reversed = await httpJson(base, "POST", "/retrieval", {
+      query_id: "q.filters.reversed", original_query: "count", intent: "count_events", agent_id: "learning-director",
+      principal: { tenant_id: "tenant.filters" }, purpose: "test", token_budget: 100, estimated_chunk_tokens: 10, require_citations: false,
+      structured_filters: { subject_id: "subject", event_type: "attempt", from: "2026-08-02T00:00:00Z", to: "2026-08-01T00:00:00Z" },
+    });
+    assert.equal(reversed.status, 400);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("retrieval HTTP API rejects a signed identity whose principal agent contradicts the claim", async () => {
+  const gateway = new RetrievalGateway({ retrievers: [], authorization: { canRead: async () => true } });
+  const secret = "identity-secret-012345678901234567890123";
+  const now = Date.parse("2026-08-15T00:00:00.000Z");
+  const claims = { principal: { tenant_id: "tenant.trusted", agent_id: "learning-director" }, agent_id: "learning-scientist", issued_at_ms: now, expires_at_ms: now + 60_000 };
+  const encoded = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const signature = createHmac("sha256", secret).update(encoded).digest("hex");
+  const server = createRetrievalApiServer(gateway, { resolve_identity: createHmacRetrievalIdentityResolver(secret, { now: () => now }) });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  try {
+    const response = await httpJson(`http://127.0.0.1:${address.port}`, "POST", "/retrieval", {
+      query_id: "q.identity.invalid", original_query: "identity", intent: "fact_lookup", agent_id: "learning-director",
+      principal: { tenant_id: "tenant.attacker" }, purpose: "answer", token_budget: 500, estimated_chunk_tokens: 20, require_citations: true,
+    }, { "x-firefly-identity": encoded, "x-firefly-signature": signature });
+    assert.equal(response.status, 401);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 async function httpJson(base: string, method: string, path: string, body?: unknown, extraHeaders: Record<string, string> = {}): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? undefined : JSON.stringify(body);

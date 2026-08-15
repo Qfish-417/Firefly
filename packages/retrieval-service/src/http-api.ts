@@ -15,6 +15,9 @@ export interface TrustedRetrievalIdentity {
   readonly agent_id: RetrievalRequest["agent_id"];
 }
 
+const agentIds = ["learning-director", "learning-scientist", "experience-engineer"] as const;
+const structuredFilterKeys = new Set(["subject_id", "event_type", "from", "to", "include_conflicts"]);
+
 /** Bounded HTTP/Agent-tool boundary around the governed RetrievalGateway. */
 export function createRetrievalApiServer(
   gateway: RetrievalGateway,
@@ -126,10 +129,11 @@ function parseRetrievalRequest(value: unknown, identityResolverConfigured = fals
   const requiredStrings = ["query_id", "original_query", "purpose"] as const;
   for (const key of requiredStrings) if (typeof item[key] !== "string" || !item[key].trim()) throw new SyntaxError(`${key} must be a non-empty string`);
   if (!["fact_lookup", "count_events", "comparison", "multi_hop", "exploratory", "temporal", "multimodal"].includes(item.intent as string)) throw new SyntaxError("intent is invalid");
-  if (!["learning-director", "learning-scientist", "experience-engineer"].includes(item.agent_id as string)) throw new SyntaxError("agent_id is invalid");
-  if (!identityResolverConfigured && (!item.principal || typeof item.principal !== "object" || typeof (item.principal as Record<string, unknown>).tenant_id !== "string")) throw new SyntaxError("principal.tenant_id is required");
+  if (!agentIds.includes(item.agent_id as typeof agentIds[number])) throw new SyntaxError("agent_id is invalid");
+  if (!identityResolverConfigured && !validPrincipal(item.principal, item.agent_id as RetrievalRequest["agent_id"])) throw new SyntaxError("principal is invalid");
   if (!Number.isInteger(item.token_budget) || (item.token_budget as number) <= 0 || !Number.isInteger(item.estimated_chunk_tokens) || (item.estimated_chunk_tokens as number) <= 0) throw new SyntaxError("token budgets must be positive integers");
   if (typeof item.require_citations !== "boolean") throw new SyntaxError("require_citations must be boolean");
+  validateStructuredFilters(item.structured_filters, item.intent as RetrievalRequest["intent"]);
   return item as unknown as RetrievalRequest;
 }
 
@@ -138,12 +142,56 @@ function validIdentityClaims(value: unknown): value is TrustedRetrievalIdentity 
   const item = value as Record<string, unknown>;
   const principal = item.principal as Record<string, unknown> | undefined;
   return Boolean(
-    principal && typeof principal.tenant_id === "string" && principal.tenant_id.trim() &&
-    ["learning-director", "learning-scientist", "experience-engineer"].includes(item.agent_id as string) &&
+    validPrincipal(principal, item.agent_id as RetrievalRequest["agent_id"]) &&
+    agentIds.includes(item.agent_id as typeof agentIds[number]) &&
     Number.isSafeInteger(item.issued_at_ms) && Number.isSafeInteger(item.expires_at_ms) &&
     (item.expires_at_ms as number) > (item.issued_at_ms as number) &&
     (item.expires_at_ms as number) - (item.issued_at_ms as number) <= 300_000
   );
+}
+
+function validPrincipal(value: unknown, expectedAgent?: RetrievalRequest["agent_id"]): value is RetrievalPrincipal {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const principal = value as Record<string, unknown>;
+  if (!validIdentifier(principal.tenant_id)) return false;
+  for (const key of ["user_id", "agent_id", "session_id"] as const) {
+    if (principal[key] !== undefined && !validIdentifier(principal[key])) return false;
+  }
+  if (principal.agent_id !== undefined && !agentIds.includes(principal.agent_id as typeof agentIds[number])) return false;
+  if (expectedAgent && principal.agent_id !== undefined && principal.agent_id !== expectedAgent) return false;
+  if (principal.role_ids !== undefined) {
+    if (!Array.isArray(principal.role_ids) || principal.role_ids.length > 64) return false;
+    if (new Set(principal.role_ids).size !== principal.role_ids.length || principal.role_ids.some((role) => !validIdentifier(role))) return false;
+  }
+  return true;
+}
+
+function validIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 256;
+}
+
+function validateStructuredFilters(value: unknown, intent: RetrievalRequest["intent"]): void {
+  if (value === undefined) {
+    if (intent === "count_events") throw new SyntaxError("count_events requires structured_filters");
+    return;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SyntaxError("structured_filters must be an object");
+  const filters = value as Record<string, unknown>;
+  if (Object.keys(filters).some((key) => !structuredFilterKeys.has(key))) throw new SyntaxError("structured_filters contains an unknown field");
+  for (const key of ["subject_id", "event_type", "from", "to"] as const) {
+    if (filters[key] !== undefined && !validIdentifier(filters[key])) throw new SyntaxError(`structured_filters.${key} must be a non-empty string`);
+  }
+  if (filters.include_conflicts !== undefined && typeof filters.include_conflicts !== "boolean") {
+    throw new SyntaxError("structured_filters.include_conflicts must be boolean");
+  }
+  const from = filters.from === undefined ? undefined : new Date(filters.from as string);
+  const to = filters.to === undefined ? undefined : new Date(filters.to as string);
+  if (from && !Number.isFinite(from.getTime())) throw new SyntaxError("structured_filters.from must be an ISO timestamp");
+  if (to && !Number.isFinite(to.getTime())) throw new SyntaxError("structured_filters.to must be an ISO timestamp");
+  if (from && to && from.getTime() > to.getTime()) throw new SyntaxError("structured_filters.from must not be after to");
+  if (intent === "count_events" && (!validIdentifier(filters.subject_id) || !validIdentifier(filters.event_type))) {
+    throw new SyntaxError("count_events requires structured_filters.subject_id and event_type");
+  }
 }
 
 function singleHeader(value: string | readonly string[] | undefined): string | undefined {
