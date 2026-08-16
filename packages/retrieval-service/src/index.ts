@@ -70,6 +70,16 @@ export interface RetrievalRequest {
         readonly from?: string;
         readonly to?: string;
         readonly include_conflicts?: boolean;
+      }
+    | {
+        readonly kind: "find_relation_path";
+        readonly start_node_id: string;
+        readonly target_node_id: string;
+        readonly predicates?: readonly string[];
+        readonly direction: "outbound" | "inbound" | "both";
+        readonly max_hops: number;
+        readonly as_of: string;
+        readonly include_conflicts?: boolean;
       };
 }
 

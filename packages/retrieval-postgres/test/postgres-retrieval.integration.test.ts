@@ -41,6 +41,7 @@ test(
       await sql`
         TRUNCATE TABLE
           questlab.outbox_event,
+          questlab.structured_edge,
           questlab.structured_event,
           questlab.retrieval_index_version,
           questlab.memory_record
@@ -356,6 +357,20 @@ test(
         source_memory_ids: [privateChunk.memory_id],
         confidence: 0.95,
       });
+      await memories.recordEdge({
+        edge_id: "edge.retrieval.private",
+        tenant_id: principal.tenant_id,
+        source_node_id: "concept.solar",
+        predicate: "prerequisite_of",
+        target_node_id: "concept.storage",
+        direction: "directed",
+        scope: "user_private",
+        owner_id: principal.user_id,
+        valid_from: new Date("2026-08-10T10:00:00Z"),
+        dedupe_key: "edge:solar:prerequisite:storage",
+        source_memory_ids: [privateChunk.memory_id],
+        confidence: 0.95,
+      });
       await assert.rejects(
         memories.deleteMemory({
           deletion_id: "deletion.retrieval.unauthorized",
@@ -379,6 +394,7 @@ test(
       });
       assert.equal(receipt.removed_chunk_count, 1);
       assert.equal(receipt.invalidated_event_count, 1);
+      assert.equal(receipt.invalidated_edge_count, 1);
       assert.equal(receipt.propagation_status, "pending");
       assert.equal(receipt.propagation_completed_at, null);
 
@@ -480,6 +496,7 @@ test(
       await sql`
         TRUNCATE TABLE
           questlab.outbox_event,
+          questlab.structured_edge,
           questlab.structured_event,
           questlab.retrieval_index_version,
           questlab.memory_record
@@ -541,6 +558,33 @@ test(
       await record({ event_id: "event.hidden.user", subject_id: "learner.left", owner_id: "user.hidden", occurred_from: "2026-08-05T01:00:00Z", dedupe_key: "lesson:left:hidden-user", source_memory_id: "memory.structured.hidden-user" });
       await record({ event_id: "event.hidden.tenant", tenant_id: "tenant.hidden", subject_id: "learner.left", owner_id: "user.foreign", occurred_from: "2026-08-06T01:00:00Z", dedupe_key: "lesson:left:hidden-tenant", source_memory_id: "memory.structured.hidden-tenant" });
 
+      const recordEdge = (input: {
+        readonly edge_id: string;
+        readonly source: string;
+        readonly target: string;
+        readonly owner_id?: string;
+        readonly source_memory_id?: string;
+        readonly valid_to?: string;
+      }) => memories.recordEdge({
+        edge_id: input.edge_id,
+        tenant_id: principal.tenant_id,
+        source_node_id: input.source,
+        predicate: "prerequisite_of",
+        target_node_id: input.target,
+        direction: "directed",
+        scope: "user_private",
+        owner_id: input.owner_id ?? principal.user_id,
+        valid_from: new Date("2026-08-01T00:00:00Z"),
+        ...(input.valid_to ? { valid_to: new Date(input.valid_to) } : {}),
+        dedupe_key: input.edge_id,
+        source_memory_ids: [input.source_memory_id ?? "memory.structured.owner"],
+        confidence: 0.95,
+      });
+      await recordEdge({ edge_id: "edge.graph.a-b", source: "concept.a", target: "concept.b" });
+      await recordEdge({ edge_id: "edge.graph.b-c", source: "concept.b", target: "concept.c" });
+      await recordEdge({ edge_id: "edge.graph.hidden", source: "concept.a", target: "concept.c", owner_id: "user.hidden", source_memory_id: "memory.structured.hidden-user" });
+      await recordEdge({ edge_id: "edge.graph.expired", source: "concept.a", target: "concept.c", valid_to: "2026-08-10T00:00:00Z" });
+
       const aggregator = new PostgresStructuredEventAggregator(db);
       const requestBase = {
         original_query: "structured truth",
@@ -600,6 +644,36 @@ test(
       assert.equal(absent.value, null);
       assert.deepEqual(absent.included_ids, []);
       assert.equal(absent.details?.kind === "temporal_event" ? absent.details.event_id : undefined, null);
+
+      const relationPath = await aggregator.aggregate({ request: {
+        ...requestBase,
+        query_id: "query.structured.path",
+        intent: "multi_hop",
+        structured_query: {
+          kind: "find_relation_path",
+          start_node_id: "concept.a",
+          target_node_id: "concept.c",
+          predicates: ["prerequisite_of"],
+          direction: "outbound",
+          max_hops: 3,
+          as_of: "2026-08-16T00:00:00Z",
+        },
+      } });
+      assert.equal(relationPath.value, 2);
+      assert.deepEqual(relationPath.included_ids, ["edge.graph.a-b", "edge.graph.b-c"]);
+      assert.deepEqual(relationPath.details, {
+        kind: "relation_path",
+        start_node_id: "concept.a",
+        target_node_id: "concept.c",
+        direction: "outbound",
+        found: true,
+        hop_count: 2,
+        node_ids: ["concept.a", "concept.b", "concept.c"],
+        path_hops: [
+          { edge_id: "edge.graph.a-b", from_node_id: "concept.a", to_node_id: "concept.b", predicate: "prerequisite_of" },
+          { edge_id: "edge.graph.b-c", from_node_id: "concept.b", to_node_id: "concept.c", predicate: "prerequisite_of" },
+        ],
+      });
 
       await assert.rejects(
         aggregator.aggregate({ request: {

@@ -7,6 +7,7 @@ import type { QuestLabDatabase } from "@firefly/persistence";
 import type { Kysely } from "kysely";
 
 import {
+  findDeterministicRelationPath,
   PostgresLexicalRetriever,
   PostgresMemoryIndexer,
   PostgresRelationExpansionCandidateSource,
@@ -174,6 +175,54 @@ test("structured aggregation validates direct callers before database access", a
     } as never }),
     (error: unknown) => error instanceof PostgresRetrievalPolicyError,
   );
+});
+
+test("relation path search is deterministic, bounded, conflict-aware and cycle-safe", () => {
+  const edge = (edgeId: string, source: string, target: string, conflict = false) => ({
+    edge_id: edgeId,
+    schema_version: 1 as const,
+    tenant_id: "tenant.unit",
+    source_node_id: source,
+    predicate: "depends_on",
+    target_node_id: target,
+    direction: "directed" as const,
+    scope: "tenant" as const,
+    owner_id: "tenant.unit",
+    valid_from: new Date("2026-08-01T00:00:00Z"),
+    valid_to: null,
+    dedupe_key: edgeId,
+    source_memory_ids: ["memory.unit"],
+    confidence: 1,
+    conflict_status: conflict ? "conflict" as const : "none" as const,
+    created_at: new Date("2026-08-01T00:00:00Z"),
+  });
+  const edges = [
+    edge("edge.d-c", "node.d", "node.c"),
+    edge("edge.c-a", "node.c", "node.a"),
+    edge("edge.a-d", "node.a", "node.d"),
+    edge("edge.b-c", "node.b", "node.c", true),
+    edge("edge.a-b", "node.a", "node.b"),
+  ];
+  const safe = findDeterministicRelationPath(edges, {
+    start_node_id: "node.a", target_node_id: "node.c", direction: "outbound", max_hops: 3, include_conflicts: false,
+  });
+  assert.equal(safe.found, true);
+  assert.deepEqual(safe.node_ids, ["node.a", "node.d", "node.c"]);
+  assert.deepEqual(safe.path_hops.map((hop) => hop.edge_id), ["edge.a-d", "edge.d-c"]);
+  assert.deepEqual(safe.conflict_ids, ["edge.b-c"]);
+  assert.equal(safe.excluded_conflict_count, 1);
+
+  const includingConflict = findDeterministicRelationPath(edges, {
+    start_node_id: "node.a", target_node_id: "node.c", direction: "outbound", max_hops: 3, include_conflicts: true,
+  });
+  assert.deepEqual(includingConflict.path_hops.map((hop) => hop.edge_id), ["edge.a-b", "edge.b-c"]);
+  assert.deepEqual(includingConflict.conflict_ids, ["edge.b-c"]);
+  assert.equal(findDeterministicRelationPath(edges, {
+    start_node_id: "node.a", target_node_id: "node.c", direction: "outbound", max_hops: 1, include_conflicts: false,
+  }).found, false);
+  assert.deepEqual(findDeterministicRelationPath(edges, {
+    start_node_id: "node.c", target_node_id: "node.a", direction: "inbound", max_hops: 3, include_conflicts: false,
+  }).node_ids, ["node.c", "node.d", "node.a"]);
 });
 
 function contentDigest(content: string): `sha256:${string}` {

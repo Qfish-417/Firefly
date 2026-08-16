@@ -285,7 +285,40 @@ export interface StructuredResult {
         readonly event_id: string | null;
         readonly occurred_from: string | null;
         readonly occurred_to: string | null;
+      }
+    | {
+        readonly kind: "relation_path";
+        readonly start_node_id: string;
+        readonly target_node_id: string;
+        readonly direction: "outbound" | "inbound" | "both";
+        readonly found: boolean;
+        readonly hop_count: number | null;
+        readonly node_ids: readonly string[];
+        readonly path_hops: readonly {
+          readonly edge_id: string;
+          readonly from_node_id: string;
+          readonly to_node_id: string;
+          readonly predicate: string;
+        }[];
       };
+}
+
+export interface StructuredEdge {
+  readonly schema_version: 1;
+  readonly edge_id: string;
+  readonly tenant_id: string;
+  readonly source_node_id: string;
+  readonly predicate: string;
+  readonly target_node_id: string;
+  readonly direction: "directed" | "bidirectional";
+  readonly scope: "public" | "tenant" | "agent_private" | "user_private" | "session";
+  readonly owner_id: string;
+  readonly valid_from: string;
+  readonly valid_to: string | null;
+  readonly dedupe_key: string;
+  readonly source_memory_ids: readonly string[];
+  readonly confidence: number;
+  readonly conflict_status: "none" | "conflict" | "superseded";
 }
 
 export interface EvidenceItem {
@@ -477,6 +510,7 @@ export type ContractName =
   | "QueryPlan"
   | "EvidenceCitation"
   | "StructuredResult"
+  | "StructuredEdge"
   | "EvidenceItem"
   | "EvidencePack"
   | "IndexBuildTask"

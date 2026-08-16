@@ -379,6 +379,23 @@ const validContracts: Record<ContractName, unknown> = {
     evidence_refs: [evidenceArtifact],
   },
   QueryPlan: validQueryPlan,
+  StructuredEdge: {
+    schema_version: 1,
+    edge_id: "edge.concept.prerequisite.01",
+    tenant_id: "tenant.questlab",
+    source_node_id: "concept.energy",
+    predicate: "prerequisite_of",
+    target_node_id: "concept.power",
+    direction: "directed",
+    scope: "tenant",
+    owner_id: "tenant.questlab",
+    valid_from: "2026-08-16T00:00:00Z",
+    valid_to: null,
+    dedupe_key: "edge:energy:prerequisite:power",
+    source_memory_ids: ["memory.curriculum.01"],
+    confidence: 0.98,
+    conflict_status: "none",
+  },
   EvidenceCitation: validEvidenceCitation,
   StructuredResult: validStructuredResult,
   EvidenceItem: validEvidenceItem,
@@ -520,6 +537,41 @@ test("comparison and temporal structured results require typed details", () => {
       occurred_to: null,
     },
   }).valid, true);
+});
+
+test("path structured results require typed bounded hops", () => {
+  const validPath = {
+    ...validStructuredResult,
+    operation: "path",
+    value: 2,
+    included_ids: ["edge.a-b", "edge.b-c"],
+    details: {
+      kind: "relation_path",
+      start_node_id: "node.a",
+      target_node_id: "node.c",
+      direction: "outbound",
+      found: true,
+      hop_count: 2,
+      node_ids: ["node.a", "node.b", "node.c"],
+      path_hops: [
+        { edge_id: "edge.a-b", from_node_id: "node.a", to_node_id: "node.b", predicate: "depends_on" },
+        { edge_id: "edge.b-c", from_node_id: "node.b", to_node_id: "node.c", predicate: "depends_on" },
+      ],
+    },
+  } as const;
+  assert.equal(validateContract("StructuredResult", validPath).valid, true);
+  assert.equal(validateContract("StructuredResult", { ...validStructuredResult, operation: "path", value: null }).valid, false);
+  assert.equal(validateContract("StructuredResult", {
+    ...validPath,
+    value: null,
+    included_ids: [],
+    details: { ...validPath.details, found: false, hop_count: null, node_ids: [], path_hops: [] },
+  }).valid, true);
+  assert.equal(validateContract("StructuredResult", {
+    ...validPath,
+    value: null,
+    details: { ...validPath.details, found: true, hop_count: null },
+  }).valid, false);
 });
 
 test("insufficient evidence can never authorize generation", () => {

@@ -202,6 +202,70 @@ test("retrieval HTTP API validates comparison and temporal queries before aggreg
   }
 });
 
+test("retrieval HTTP API validates and routes bounded multi-hop queries", async () => {
+  const received: unknown[] = [];
+  const gateway = new RetrievalGateway({
+    retrievers: [],
+    authorization: { canRead: async () => true },
+    aggregator: {
+      aggregate: async ({ request }) => {
+        received.push(request);
+        return {
+          operation: "path",
+          value: 2,
+          included_ids: ["edge.a-b", "edge.b-c"],
+          excluded_reasons: [],
+          conflicts: [],
+          details: {
+            kind: "relation_path",
+            start_node_id: "node.a",
+            target_node_id: "node.c",
+            direction: "outbound",
+            found: true,
+            hop_count: 2,
+            node_ids: ["node.a", "node.b", "node.c"],
+            path_hops: [
+              { edge_id: "edge.a-b", from_node_id: "node.a", to_node_id: "node.b", predicate: "depends_on" },
+              { edge_id: "edge.b-c", from_node_id: "node.b", to_node_id: "node.c", predicate: "depends_on" },
+            ],
+          },
+        };
+      },
+    },
+  });
+  const server = createRetrievalApiServer(gateway);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const base = `http://127.0.0.1:${address.port}`;
+  const common = {
+    original_query: "what depends on what",
+    agent_id: "learning-director",
+    principal: { tenant_id: "tenant.graph" },
+    purpose: "test",
+    token_budget: 100,
+    estimated_chunk_tokens: 10,
+    require_citations: false,
+  };
+  try {
+    const invalid = await httpJson(base, "POST", "/retrieval", {
+      ...common, query_id: "q.graph.invalid", intent: "multi_hop",
+      structured_query: { kind: "find_relation_path", start_node_id: "node.a", target_node_id: "node.c", direction: "outbound", max_hops: 7, as_of: "2026-08-16T00:00:00Z" },
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(received.length, 0);
+    const valid = await httpJson(base, "POST", "/retrieval", {
+      ...common, query_id: "q.graph.valid", intent: "multi_hop",
+      structured_query: { kind: "find_relation_path", start_node_id: "node.a", target_node_id: "node.c", predicates: ["depends_on"], direction: "outbound", max_hops: 3, as_of: "2026-08-16T00:00:00Z" },
+    });
+    assert.equal(valid.status, 200);
+    assert.equal(received.length, 1);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("retrieval HTTP API rejects a signed identity whose principal agent contradicts the claim", async () => {
   const gateway = new RetrievalGateway({ retrievers: [], authorization: { canRead: async () => true } });
   const secret = "identity-secret-012345678901234567890123";

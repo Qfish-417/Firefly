@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { EvidenceCitation, IndexBuildTask, IndexEvaluationCase, StructuredResult } from "@firefly/contracts";
 import type { EmbeddingPort, ModelBudget } from "@firefly/model-gateway";
-import { MemoryRepository, type QuestLabDatabase, type StructuredEvent } from "@firefly/persistence";
+import { MemoryRepository, type QuestLabDatabase, type StructuredEdge, type StructuredEvent } from "@firefly/persistence";
 import type {
   EvidenceExpansionCandidate,
   EvidenceExpansionCandidateSource,
@@ -575,10 +575,15 @@ export class PostgresMemoryAuthorization implements RetrievalAuthorizationPort {
 }
 
 export class PostgresStructuredEventAggregator implements StructuredAggregatorPort {
-  private readonly memories: Pick<MemoryRepository, "aggregateReadableEvents" | "listReadableEvents">;
+  private readonly memories: Pick<MemoryRepository, "aggregateReadableEvents" | "listReadableEvents" | "listReadableEdges">;
+  private readonly maxGraphEdges: number;
 
-  constructor(db: Kysely<QuestLabDatabase>) {
+  constructor(db: Kysely<QuestLabDatabase>, options: { readonly max_graph_edges?: number } = {}) {
     this.memories = new MemoryRepository(db);
+    this.maxGraphEdges = options.max_graph_edges ?? 5_000;
+    if (!Number.isInteger(this.maxGraphEdges) || this.maxGraphEdges < 1 || this.maxGraphEdges > 20_000) {
+      throw new PostgresRetrievalPolicyError("max_graph_edges must be between 1 and 20000");
+    }
   }
 
   async aggregate(input: { readonly request: RetrievalRequest; readonly signal?: AbortSignal }): Promise<StructuredResult> {
@@ -586,6 +591,7 @@ export class PostgresStructuredEventAggregator implements StructuredAggregatorPo
     if (input.request.intent === "count_events") return this.countEvents(input);
     if (input.request.intent === "comparison") return this.compareEventCounts(input);
     if (input.request.intent === "temporal") return this.selectEventTime(input);
+    if (input.request.intent === "multi_hop") return this.findRelationPath(input);
     throw new PostgresRetrievalPolicyError(`Structured intent ${input.request.intent} is not implemented`);
   }
 
@@ -671,6 +677,118 @@ export class PostgresStructuredEventAggregator implements StructuredAggregatorPo
       },
     };
   }
+
+  private async findRelationPath(input: { readonly request: RetrievalRequest; readonly signal?: AbortSignal }): Promise<StructuredResult> {
+    const query = input.request.structured_query;
+    if (!query || query.kind !== "find_relation_path" || !validStructuredIdentifier(query.start_node_id) ||
+      !validStructuredIdentifier(query.target_node_id) || query.start_node_id === query.target_node_id ||
+      !["outbound", "inbound", "both"].includes(query.direction) || !Number.isInteger(query.max_hops) || query.max_hops < 1 || query.max_hops > 6) {
+      throw new PostgresRetrievalPolicyError("multi_hop requires a valid bounded find_relation_path query");
+    }
+    if (query.predicates && (query.predicates.length < 1 || query.predicates.length > 32 ||
+      new Set(query.predicates).size !== query.predicates.length || query.predicates.some((predicate) => !validStructuredIdentifier(predicate)))) {
+      throw new PostgresRetrievalPolicyError("multi_hop predicates must be 1-32 unique identifiers");
+    }
+    const asOf = parseInstant(query.as_of, "as_of");
+    const rows = await this.memories.listReadableEdges(input.request.principal, {
+      as_of: asOf,
+      ...(query.predicates ? { predicates: query.predicates } : {}),
+      limit: this.maxGraphEdges + 1,
+    });
+    input.signal?.throwIfAborted();
+    if (rows.length > this.maxGraphEdges) throw new PostgresRetrievalPolicyError("Readable relation graph exceeds the governed edge limit");
+    const path = findDeterministicRelationPath(rows, {
+      start_node_id: query.start_node_id,
+      target_node_id: query.target_node_id,
+      direction: query.direction,
+      max_hops: query.max_hops,
+      include_conflicts: query.include_conflicts ?? false,
+    });
+    return {
+      operation: "path",
+      value: path.found ? path.path_hops.length : null,
+      included_ids: path.path_hops.map((hop) => hop.edge_id),
+      excluded_reasons: path.excluded_conflict_count > 0 ? [`${path.excluded_conflict_count} conflicting edges excluded`] : [],
+      conflicts: path.conflict_ids,
+      details: {
+        kind: "relation_path",
+        start_node_id: query.start_node_id,
+        target_node_id: query.target_node_id,
+        direction: query.direction,
+        found: path.found,
+        hop_count: path.found ? path.path_hops.length : null,
+        node_ids: path.node_ids,
+        path_hops: path.path_hops,
+      },
+    };
+  }
+}
+
+export interface RelationPathHop {
+  readonly edge_id: string;
+  readonly from_node_id: string;
+  readonly to_node_id: string;
+  readonly predicate: string;
+}
+
+export function findDeterministicRelationPath(edges: readonly StructuredEdge[], query: {
+  readonly start_node_id: string;
+  readonly target_node_id: string;
+  readonly direction: "outbound" | "inbound" | "both";
+  readonly max_hops: number;
+  readonly include_conflicts: boolean;
+}): { readonly found: boolean; readonly node_ids: readonly string[]; readonly path_hops: readonly RelationPathHop[]; readonly conflict_ids: readonly string[]; readonly excluded_conflict_count: number } {
+  const unique = new Map<string, StructuredEdge>();
+  const ordered = [...edges].sort((left, right) =>
+    left.source_node_id.localeCompare(right.source_node_id) || left.predicate.localeCompare(right.predicate) ||
+    left.target_node_id.localeCompare(right.target_node_id) || left.edge_id.localeCompare(right.edge_id));
+  for (const edge of ordered) if (!unique.has(edge.dedupe_key)) unique.set(edge.dedupe_key, edge);
+  const queue: { readonly node: string; readonly nodes: readonly string[]; readonly hops: readonly RelationPathHop[] }[] = [
+    { node: query.start_node_id, nodes: [query.start_node_id], hops: [] },
+  ];
+  const visited = new Set([query.start_node_id]);
+  const conflicts = new Set<string>();
+  let excludedConflictCount = 0;
+  let foundPath: { readonly nodes: readonly string[]; readonly hops: readonly RelationPathHop[] } | undefined;
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current.hops.length >= query.max_hops) continue;
+    for (const edge of unique.values()) {
+      const traversal = edgeTraversal(edge, current.node, query.direction);
+      if (!traversal) continue;
+      if (edge.conflict_status !== "none") {
+        const alreadySeen = conflicts.has(edge.edge_id);
+        conflicts.add(edge.edge_id);
+        if (!query.include_conflicts) {
+          if (!alreadySeen) excludedConflictCount += 1;
+          continue;
+        }
+      }
+      if (visited.has(traversal.to_node_id)) continue;
+      const hop = { edge_id: edge.edge_id, from_node_id: current.node, to_node_id: traversal.to_node_id, predicate: edge.predicate };
+      const hops = [...current.hops, hop];
+      const nodes = [...current.nodes, traversal.to_node_id];
+      if (traversal.to_node_id === query.target_node_id) {
+        foundPath ??= { nodes, hops };
+        visited.add(traversal.to_node_id);
+        continue;
+      }
+      visited.add(traversal.to_node_id);
+      queue.push({ node: traversal.to_node_id, nodes, hops });
+    }
+  }
+  if (foundPath) return { found: true, node_ids: foundPath.nodes, path_hops: foundPath.hops, conflict_ids: [...conflicts], excluded_conflict_count: excludedConflictCount };
+  return { found: false, node_ids: [], path_hops: [], conflict_ids: [...conflicts], excluded_conflict_count: excludedConflictCount };
+}
+
+function edgeTraversal(edge: StructuredEdge, nodeId: string, direction: "outbound" | "inbound" | "both"): { readonly to_node_id: string } | undefined {
+  if ((direction === "outbound" || direction === "both" || edge.direction === "bidirectional") && edge.source_node_id === nodeId) {
+    return { to_node_id: edge.target_node_id };
+  }
+  if ((direction === "inbound" || direction === "both" || edge.direction === "bidirectional") && edge.target_node_id === nodeId) {
+    return { to_node_id: edge.source_node_id };
+  }
+  return undefined;
 }
 
 function eventQuery(input: { readonly subject_id: string; readonly event_type: string; readonly from?: string; readonly to?: string; readonly include_conflicts?: boolean }) {

@@ -5,6 +5,7 @@ import {
   type DeletionPropagationTask,
   type ArtifactRef,
   type JsonObject,
+  type StructuredEdge as StructuredEdgeContract,
 } from "@firefly/contracts";
 import { sql, type Kysely, type Selectable } from "kysely";
 
@@ -14,12 +15,14 @@ import type {
   MemoryAclTable,
   MemoryRecordTable,
   QuestLabDatabase,
+  StructuredEdgeTable,
   StructuredEventTable,
 } from "./database.ts";
 import { enqueueOutbox } from "./event-repositories.ts";
 
 export type MemoryRecord = Selectable<MemoryRecordTable>;
 export type StructuredEvent = Selectable<StructuredEventTable>;
+export type StructuredEdge = Selectable<StructuredEdgeTable>;
 export type MemoryDeletionReceipt = Selectable<MemoryDeletionReceiptTable>;
 export type MemoryDeletionTarget = Selectable<MemoryDeletionTargetTable>;
 
@@ -64,6 +67,12 @@ export interface EventAggregate {
   readonly included_event_ids: readonly string[];
   readonly excluded_conflict_count: number;
   readonly conflict_event_ids: readonly string[];
+}
+
+export interface EdgeQuery {
+  readonly predicates?: readonly string[];
+  readonly as_of: Date;
+  readonly limit?: number;
 }
 
 export interface DeleteMemoryInput {
@@ -247,7 +256,7 @@ export class MemoryRepository {
     readonly confidence: number;
     readonly conflict_status?: StructuredEventTable["conflict_status"];
   }): Promise<StructuredEvent> {
-    await this.assertEventVisibility(input);
+    await this.assertStructuredSourceVisibility(input, "event");
     const inserted = await this.db
       .insertInto("questlab.structured_event")
       .values({
@@ -266,6 +275,70 @@ export class MemoryRepository {
       .selectAll()
       .where("event_id", "=", input.event_id)
       .executeTakeFirstOrThrow();
+  }
+
+  async recordEdge(input: {
+    readonly edge_id: string;
+    readonly tenant_id: string;
+    readonly source_node_id: string;
+    readonly predicate: string;
+    readonly target_node_id: string;
+    readonly direction: StructuredEdgeTable["direction"];
+    readonly scope: StructuredEdgeTable["scope"];
+    readonly owner_id: string;
+    readonly valid_from: Date;
+    readonly valid_to?: Date;
+    readonly dedupe_key: string;
+    readonly source_memory_ids: readonly string[];
+    readonly confidence: number;
+    readonly conflict_status?: StructuredEdgeTable["conflict_status"];
+  }): Promise<StructuredEdge> {
+    const contract: StructuredEdgeContract = {
+      schema_version: 1,
+      edge_id: input.edge_id,
+      tenant_id: input.tenant_id,
+      source_node_id: input.source_node_id,
+      predicate: input.predicate,
+      target_node_id: input.target_node_id,
+      direction: input.direction,
+      scope: input.scope,
+      owner_id: input.owner_id,
+      valid_from: input.valid_from.toISOString(),
+      valid_to: input.valid_to?.toISOString() ?? null,
+      dedupe_key: input.dedupe_key,
+      source_memory_ids: input.source_memory_ids,
+      confidence: input.confidence,
+      conflict_status: input.conflict_status ?? "none",
+    };
+    assertContract("StructuredEdge", contract);
+    if (input.source_node_id === input.target_node_id) throw new MemoryPolicyError("Structured edges cannot be self-referential");
+    if (input.valid_to && input.valid_to < input.valid_from) throw new MemoryPolicyError("Structured edge validity range is reversed");
+    await this.assertStructuredSourceVisibility(input, "edge");
+    const inserted = await this.db
+      .insertInto("questlab.structured_edge")
+      .values({
+        ...input,
+        schema_version: 1,
+        valid_to: input.valid_to ?? null,
+        source_memory_ids: JSON.stringify(input.source_memory_ids),
+        conflict_status: input.conflict_status ?? "none",
+      })
+      .onConflict((conflict) => conflict.column("edge_id").doNothing())
+      .returningAll()
+      .executeTakeFirst();
+    if (inserted) return inserted;
+    const existing = await this.db.selectFrom("questlab.structured_edge").selectAll().where("edge_id", "=", input.edge_id).executeTakeFirstOrThrow();
+    if (
+      existing.tenant_id !== input.tenant_id || existing.source_node_id !== input.source_node_id ||
+      existing.predicate !== input.predicate || existing.target_node_id !== input.target_node_id ||
+      existing.direction !== input.direction || existing.scope !== input.scope || existing.owner_id !== input.owner_id ||
+      existing.valid_from.getTime() !== input.valid_from.getTime() || existing.valid_to?.getTime() !== input.valid_to?.getTime() ||
+      existing.dedupe_key !== input.dedupe_key || !sameStrings(existing.source_memory_ids, input.source_memory_ids) ||
+      existing.confidence !== input.confidence || existing.conflict_status !== (input.conflict_status ?? "none")
+    ) {
+      throw new MemoryPolicyError(`Structured edge ID was reused with different content: ${input.edge_id}`);
+    }
+    return existing;
   }
 
   async deleteMemory(input: DeleteMemoryInput): Promise<MemoryDeletionReceipt> {
@@ -312,6 +385,10 @@ export class MemoryRepository {
         .deleteFrom("questlab.structured_event")
         .where(sql<boolean>`source_memory_ids @> ${JSON.stringify([input.memory_id])}::jsonb`)
         .executeTakeFirst();
+      const invalidatedEdges = await trx
+        .deleteFrom("questlab.structured_edge")
+        .where(sql<boolean>`source_memory_ids @> ${JSON.stringify([input.memory_id])}::jsonb`)
+        .executeTakeFirst();
       await trx
         .updateTable("questlab.memory_record")
         .set({
@@ -333,6 +410,7 @@ export class MemoryRepository {
           reason: input.reason,
           removed_chunk_count: Number(removedChunks.numDeletedRows),
           invalidated_event_count: Number(invalidatedEvents.numDeletedRows),
+          invalidated_edge_count: Number(invalidatedEdges.numDeletedRows),
           completed_at: occurredAt,
           propagation_status: input.propagation_targets.length > 0 ? "pending" : "completed",
           propagation_completed_at: input.propagation_targets.length > 0 ? null : occurredAt,
@@ -392,6 +470,7 @@ export class MemoryRepository {
           content_digest: memory.content_digest,
           removed_chunk_count: receipt.removed_chunk_count,
           invalidated_event_count: receipt.invalidated_event_count,
+          invalidated_edge_count: receipt.invalidated_edge_count,
         },
         artifact_refs: [],
       });
@@ -629,14 +708,14 @@ export class MemoryRepository {
     return { receipt, targets };
   }
 
-  private async assertEventVisibility(input: {
+  private async assertStructuredSourceVisibility(input: {
     readonly tenant_id: string;
     readonly scope: StructuredEventTable["scope"];
     readonly owner_id: string;
     readonly source_memory_ids: readonly string[];
-  }): Promise<void> {
+  }, factKind: "event" | "edge"): Promise<void> {
     if (input.source_memory_ids.length === 0) {
-      throw new MemoryPolicyError("Structured events must retain at least one source memory");
+      throw new MemoryPolicyError(`Structured ${factKind}s must retain at least one source memory`);
     }
     const sources = await this.db
       .selectFrom("questlab.memory_record")
@@ -647,11 +726,11 @@ export class MemoryRepository {
       new Set(input.source_memory_ids).size !== input.source_memory_ids.length ||
       sources.length !== input.source_memory_ids.length
     ) {
-      throw new MemoryPolicyError("Structured event references a missing source memory");
+      throw new MemoryPolicyError(`Structured ${factKind} references a missing source memory`);
     }
     for (const source of sources) {
       if ((source.scope !== "public" && source.tenant_id !== input.tenant_id) || source.status === "deleted") {
-        throw new MemoryPolicyError("Structured event source crosses tenant or deletion boundary");
+        throw new MemoryPolicyError(`Structured ${factKind} source crosses tenant or deletion boundary`);
       }
       const allowed =
         input.scope === "public"
@@ -669,7 +748,7 @@ export class MemoryRepository {
                 : source.scope === "public" ||
                   (source.scope === "session" && source.owner_id === input.owner_id);
       if (!allowed) {
-        throw new MemoryPolicyError("Structured event visibility is broader than a source memory");
+        throw new MemoryPolicyError(`Structured ${factKind} visibility is broader than a source memory`);
       }
     }
   }
@@ -731,6 +810,41 @@ export class MemoryRepository {
       )
       .orderBy("event.occurred_from", "asc")
       .orderBy("event.event_id", "asc")
+      .execute();
+  }
+
+  async listReadableEdges(principal: MemoryPrincipal, query: EdgeQuery): Promise<readonly StructuredEdge[]> {
+    if (!Number.isFinite(query.as_of.getTime())) throw new MemoryPolicyError("Edge query as_of must be a valid timestamp");
+    if (query.predicates && (query.predicates.length > 32 || new Set(query.predicates).size !== query.predicates.length)) {
+      throw new MemoryPolicyError("Edge query predicates must be unique and contain at most 32 values");
+    }
+    const limit = query.limit ?? 5_001;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20_001) throw new MemoryPolicyError("Edge query limit is invalid");
+    return this.db
+      .selectFrom("questlab.structured_edge as edge")
+      .selectAll("edge")
+      .where((expression) => expression.or([
+        expression("edge.scope", "=", "public"),
+        expression("edge.tenant_id", "=", principal.tenant_id),
+      ]))
+      .$if(Boolean(query.predicates?.length), (builder) => builder.where("edge.predicate", "in", query.predicates!))
+      .where("edge.valid_from", "<=", query.as_of)
+      .where((expression) => expression.or([
+        expression("edge.valid_to", "is", null),
+        expression("edge.valid_to", ">", query.as_of),
+      ]))
+      .where((expression) => expression.or([
+        expression("edge.scope", "=", "public"),
+        expression.and([expression("edge.scope", "=", "tenant"), expression("edge.owner_id", "=", principal.tenant_id)]),
+        ...(principal.user_id ? [expression.and([expression("edge.scope", "=", "user_private"), expression("edge.owner_id", "=", principal.user_id)])] : []),
+        ...(principal.agent_id ? [expression.and([expression("edge.scope", "=", "agent_private"), expression("edge.owner_id", "=", principal.agent_id)])] : []),
+        ...(principal.session_id ? [expression.and([expression("edge.scope", "=", "session"), expression("edge.owner_id", "=", principal.session_id)])] : []),
+      ]))
+      .orderBy("edge.source_node_id")
+      .orderBy("edge.predicate")
+      .orderBy("edge.target_node_id")
+      .orderBy("edge.edge_id")
+      .limit(limit)
       .execute();
   }
 }

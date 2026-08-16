@@ -197,12 +197,32 @@ function validateStructuredFilters(value: unknown, intent: RetrievalRequest["int
 
 function validateStructuredQuery(value: unknown, intent: RetrievalRequest["intent"]): void {
   if (value === undefined) {
-    if (intent === "comparison" || intent === "temporal") throw new SyntaxError(`${intent} requires structured_query`);
+    if (intent === "comparison" || intent === "temporal" || intent === "multi_hop") throw new SyntaxError(`${intent} requires structured_query`);
     return;
   }
-  if (intent !== "comparison" && intent !== "temporal") throw new SyntaxError("structured_query is not supported for this intent");
+  if (intent !== "comparison" && intent !== "temporal" && intent !== "multi_hop") throw new SyntaxError("structured_query is not supported for this intent");
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new SyntaxError("structured_query must be an object");
   const query = value as Record<string, unknown>;
+  if (intent === "multi_hop") {
+    const allowed = new Set(["kind", "start_node_id", "target_node_id", "predicates", "direction", "max_hops", "as_of", "include_conflicts"]);
+    if (Object.keys(query).some((key) => !allowed.has(key)) || query.kind !== "find_relation_path") {
+      throw new SyntaxError("structured_query kind or fields do not match multi_hop intent");
+    }
+    if (!validIdentifier(query.start_node_id) || !validIdentifier(query.target_node_id) || query.start_node_id === query.target_node_id) {
+      throw new SyntaxError("multi_hop requires two different node IDs");
+    }
+    if (query.direction !== "outbound" && query.direction !== "inbound" && query.direction !== "both") throw new SyntaxError("multi_hop direction is invalid");
+    if (!Number.isInteger(query.max_hops) || (query.max_hops as number) < 1 || (query.max_hops as number) > 6) throw new SyntaxError("multi_hop max_hops must be between 1 and 6");
+    if (!validIdentifier(query.as_of) || !Number.isFinite(new Date(query.as_of).getTime())) throw new SyntaxError("multi_hop as_of must be an ISO timestamp");
+    if (query.predicates !== undefined) {
+      if (!Array.isArray(query.predicates) || query.predicates.length < 1 || query.predicates.length > 32 ||
+        new Set(query.predicates).size !== query.predicates.length || query.predicates.some((predicate) => !validIdentifier(predicate))) {
+        throw new SyntaxError("multi_hop predicates must be 1-32 unique identifiers");
+      }
+    }
+    if (query.include_conflicts !== undefined && typeof query.include_conflicts !== "boolean") throw new SyntaxError("structured_query.include_conflicts must be boolean");
+    return;
+  }
   const commonKeys = ["kind", "event_type", "from", "to", "include_conflicts"];
   const expectedKind = intent === "comparison" ? "compare_event_counts" : "select_event_time";
   const intentKeys = intent === "comparison"

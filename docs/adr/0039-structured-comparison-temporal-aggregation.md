@@ -23,4 +23,4 @@ Conflict IDs are always returned. By default conflicting rows are excluded and t
 - Comparison and temporal `StructuredResult` values are machine-readable and JSON Schema rejects missing or mismatched detail variants.
 - Stable ordering and dedupe rules make retries reproducible, including first/last selection.
 - Unresolved conflicts remain visible and cannot silently authorize a generated answer.
-- Graph traversal is intentionally unavailable until its truth and authorization model is explicit.
+- Graph traversal was intentionally unavailable at M5.25 until its truth and authorization model became explicit; [ADR 0040](./0040-versioned-structured-edge-multi-hop.md) completes that follow-up with a separate `StructuredEdge` fact layer.

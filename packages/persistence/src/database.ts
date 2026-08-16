@@ -7,6 +7,7 @@ import type { EvolutionRunState, PluginReleaseState } from "@firefly/learning-do
 export type Timestamp = Date;
 export type JsonDocument = JSONColumnType<JsonObject, JsonObject, JsonObject>;
 export type JsonList = JSONColumnType<readonly JsonObject[], string, string>;
+export type JsonStringList = JSONColumnType<readonly string[], string, string>;
 
 export interface EvolutionRunTable {
   id: string;
@@ -410,7 +411,26 @@ export interface StructuredEventTable {
   occurred_from: Timestamp;
   occurred_to: Timestamp | null;
   dedupe_key: string;
-  source_memory_ids: JsonList;
+  source_memory_ids: JsonStringList;
+  confidence: number;
+  conflict_status: "none" | "conflict" | "superseded";
+  created_at: Generated<Timestamp>;
+}
+
+export interface StructuredEdgeTable {
+  edge_id: string;
+  schema_version: 1;
+  tenant_id: string;
+  source_node_id: string;
+  predicate: string;
+  target_node_id: string;
+  direction: "directed" | "bidirectional";
+  scope: MemoryScope;
+  owner_id: string;
+  valid_from: Timestamp;
+  valid_to: Timestamp | null;
+  dedupe_key: string;
+  source_memory_ids: JsonStringList;
   confidence: number;
   conflict_status: "none" | "conflict" | "superseded";
   created_at: Generated<Timestamp>;
@@ -449,6 +469,7 @@ export interface MemoryDeletionReceiptTable {
   reason: string;
   removed_chunk_count: number;
   invalidated_event_count: number;
+  invalidated_edge_count: number;
   completed_at: Timestamp;
   propagation_status: "pending" | "completed" | "failed";
   propagation_completed_at: Timestamp | null;
@@ -554,6 +575,7 @@ export interface QuestLabDatabase {
   "questlab.memory_record": MemoryRecordTable;
   "questlab.memory_acl": MemoryAclTable;
   "questlab.structured_event": StructuredEventTable;
+  "questlab.structured_edge": StructuredEdgeTable;
   "questlab.memory_chunk": MemoryChunkTable;
   "questlab.memory_deletion_receipt": MemoryDeletionReceiptTable;
   "questlab.memory_deletion_target": MemoryDeletionTargetTable;

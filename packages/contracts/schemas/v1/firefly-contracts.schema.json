@@ -640,6 +640,34 @@
         }
       }
     },
+    "StructuredEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "edge_id", "tenant_id", "source_node_id", "predicate", "target_node_id", "direction", "scope", "owner_id", "valid_from", "valid_to", "dedupe_key", "source_memory_ids", "confidence", "conflict_status"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "edge_id": { "$ref": "#/$defs/Identifier" },
+        "tenant_id": { "$ref": "#/$defs/Identifier" },
+        "source_node_id": { "$ref": "#/$defs/Identifier" },
+        "predicate": { "$ref": "#/$defs/Identifier" },
+        "target_node_id": { "$ref": "#/$defs/Identifier" },
+        "direction": { "enum": ["directed", "bidirectional"] },
+        "scope": { "enum": ["public", "tenant", "agent_private", "user_private", "session"] },
+        "owner_id": { "$ref": "#/$defs/Identifier" },
+        "valid_from": { "type": "string", "format": "date-time" },
+        "valid_to": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+        "dedupe_key": { "$ref": "#/$defs/Identifier" },
+        "source_memory_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "conflict_status": { "enum": ["none", "conflict", "superseded"] }
+      }
+    },
     "StructuredResult": {
       "type": "object",
       "additionalProperties": false,
@@ -701,6 +729,35 @@
                   "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
                 }
               }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "start_node_id", "target_node_id", "direction", "found", "hop_count", "node_ids", "path_hops"],
+              "properties": {
+                "kind": { "const": "relation_path" },
+                "start_node_id": { "$ref": "#/$defs/Identifier" },
+                "target_node_id": { "$ref": "#/$defs/Identifier" },
+                "direction": { "enum": ["outbound", "inbound", "both"] },
+                "found": { "type": "boolean" },
+                "hop_count": { "anyOf": [{ "type": "integer", "minimum": 0, "maximum": 6 }, { "type": "null" }] },
+                "node_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
+                "path_hops": {
+                  "type": "array",
+                  "maxItems": 6,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["edge_id", "from_node_id", "to_node_id", "predicate"],
+                    "properties": {
+                      "edge_id": { "$ref": "#/$defs/Identifier" },
+                      "from_node_id": { "$ref": "#/$defs/Identifier" },
+                      "to_node_id": { "$ref": "#/$defs/Identifier" },
+                      "predicate": { "$ref": "#/$defs/Identifier" }
+                    }
+                  }
+                }
+              }
             }
           ]
         }
@@ -713,6 +770,52 @@
         {
           "if": { "properties": { "operation": { "const": "temporal" } }, "required": ["operation"] },
           "then": { "required": ["details"], "properties": { "details": { "type": "object", "properties": { "kind": { "const": "temporal_event" } } } } }
+        },
+        {
+          "if": { "properties": { "operation": { "const": "path" } }, "required": ["operation"] },
+          "then": {
+            "required": ["details"],
+            "properties": {
+              "details": {
+                "type": "object",
+                "properties": { "kind": { "const": "relation_path" } }
+              }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "details": { "type": "object", "properties": { "found": { "const": true } } } }, "required": ["details"] },
+                "then": {
+                  "properties": {
+                    "value": { "type": "integer", "minimum": 1, "maximum": 6 },
+                    "details": {
+                      "type": "object",
+                      "properties": {
+                        "hop_count": { "type": "integer", "minimum": 1, "maximum": 6 },
+                        "node_ids": { "type": "array", "minItems": 2 },
+                        "path_hops": { "type": "array", "minItems": 1 }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": { "properties": { "details": { "type": "object", "properties": { "found": { "const": false } } } }, "required": ["details"] },
+                "then": {
+                  "properties": {
+                    "value": { "type": "null" },
+                    "details": {
+                      "type": "object",
+                      "properties": {
+                        "hop_count": { "type": "null" },
+                        "node_ids": { "type": "array", "maxItems": 0 },
+                        "path_hops": { "type": "array", "maxItems": 0 }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
         }
       ]
     },

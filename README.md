@@ -135,6 +135,8 @@ M5.24 completes production Index Ready Gate composition. `memory:index-build` no
 
 M5.25 completes deterministic comparison and temporal aggregation over the PostgreSQL `StructuredEvent` fact layer. Typed `structured_query` variants are validated at HTTP and adapter boundaries; visible events are ordered, deduplicated and conflict-aware before calculating left-minus-right counts or selecting first/last event time. `multi_hop` remains fail closed until a versioned graph-edge contract exists; see [ADR 0039](./docs/adr/0039-structured-comparison-temporal-aggregation.md) and diagram page 38.
 
+M5.26 completes governed multi-hop retrieval. Migration 013 and the v1 `StructuredEdge` contract define directional, time-valid, provenance-bound and ACL-scoped graph facts; `find_relation_path` runs a deterministic, cycle-safe breadth-first search with a maximum of six hops and a bounded readable graph. Memory deletion removes dependent edges transactionally. Missing paths and conflicts remain explicit and fail closed; see [ADR 0040](./docs/adr/0040-versioned-structured-edge-multi-hop.md) and diagram page 39.
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell
