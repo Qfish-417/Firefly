@@ -129,6 +129,8 @@ M5.21 adds a text-first production index-build boundary. `PostgresMemoryIndexSou
 
 M5.22 adds an explicit text Embedding boundary. `HttpEmbeddingProvider` targets a governed OpenAI-compatible endpoint, validates vector count, ordering, dimensions and budgets, and is optional in both the index Worker and Retrieval API. pi-ai remains the generation/streaming gateway; vector/hybrid retrieval requires `EMBEDDING_ENDPOINT`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` and the retrieval-side `EMBEDDING_MODEL_SNAPSHOT`; see [ADR 0036](./docs/adr/0036-text-embedding-provider-boundary.md).
 
+M5.23 completes the durable deletion runtime boundary. `memory:delete` runs one targeted consumer for object storage or a governed fixed HTTPS endpoint for external lexical/vector, multimodal, cache, summary and evaluation projections. External success requires an immutable, identity-bound deletion receipt; see [ADR 0037](./docs/adr/0037-governed-external-deletion-consumers.md).
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell
@@ -146,6 +148,8 @@ docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 ```
 
 The development Compose stack also builds and starts the database migration job, Retrieval API and non-activating index Worker. The Retrieval health endpoint is published at `http://127.0.0.1:53200/health`. Development defaults are provided for the API token and identity HMAC secret; override them outside local development. Optional vector search uses the M5.22 `EMBEDDING_*` configuration.
+
+The default stack also runs the S3/MinIO object-deletion consumer. To run one external deletion target, set `MEMORY_DELETION_TARGET`, `MEMORY_DELETION_ENDPOINT` and optionally `MEMORY_DELETION_PROVIDER_TOKEN`, then enable the `external-deletion` Compose profile. Deploy a separate process per external target in production so targeted Outbox leases and failure domains remain isolated.
 
 M5.8 结构化 Chunker 已落地：`PdfLayoutChunker` 保留 page/bbox/heading/region，`CodeAstChunker` 保留 language/symbol/AST/line，`TableStructureChunker` 保留 sheet/table/header/row/column；默认在缺失 parser output 时 fail closed，也支持显式 `fallback_mode=degraded` 的纯文本降级并标记 Citation Locator。架构图新增第 24 页，决策记录见 [ADR 0021](./docs/adr/0021-structured-document-chunkers.md)。
 

@@ -16,6 +16,7 @@
     "retrieval:start": "node packages/control-plane/src/retrieval-server.ts",
     "memory:reconcile": "node packages/memory-workers/src/reconciliation-main.ts",
     "memory:index-build": "node packages/memory-workers/src/index-build-main.ts",
+    "memory:delete": "node packages/memory-workers/src/deletion-main.ts",
     "memory:index-gc": "node packages/memory-workers/src/retired-index-gc-main.ts",
     "check": "npm run typecheck && npm test"
   },

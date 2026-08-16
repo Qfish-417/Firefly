@@ -95,3 +95,39 @@ services:
       minio:
         condition: service_healthy
     restart: unless-stopped
+
+  object-deletion-worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/questlab-runtime.Dockerfile
+    command: ["npm", "run", "memory:delete"]
+    environment:
+      DATABASE_URL: postgresql://questlab:questlab@postgres:5432/questlab
+      MEMORY_DELETION_TARGET: object_store
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  external-deletion-worker:
+    profiles: ["external-deletion"]
+    build:
+      context: ../..
+      dockerfile: infra/docker/questlab-runtime.Dockerfile
+    command: ["npm", "run", "memory:delete"]
+    environment:
+      DATABASE_URL: postgresql://questlab:questlab@postgres:5432/questlab
+      MEMORY_DELETION_TARGET: ${MEMORY_DELETION_TARGET:-external_lexical}
+      MEMORY_DELETION_ENDPOINT: ${MEMORY_DELETION_ENDPOINT:-}
+      MEMORY_DELETION_PROVIDER_TOKEN: ${MEMORY_DELETION_PROVIDER_TOKEN:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
