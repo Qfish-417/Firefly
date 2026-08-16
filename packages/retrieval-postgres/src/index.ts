@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { EvidenceCitation, IndexBuildTask, IndexEvaluationCase, StructuredResult } from "@firefly/contracts";
 import type { EmbeddingPort, ModelBudget } from "@firefly/model-gateway";
-import { MemoryRepository, type QuestLabDatabase } from "@firefly/persistence";
+import { MemoryRepository, type QuestLabDatabase, type StructuredEvent } from "@firefly/persistence";
 import type {
   EvidenceExpansionCandidate,
   EvidenceExpansionCandidateSource,
@@ -575,7 +575,7 @@ export class PostgresMemoryAuthorization implements RetrievalAuthorizationPort {
 }
 
 export class PostgresStructuredEventAggregator implements StructuredAggregatorPort {
-  private readonly memories: Pick<MemoryRepository, "aggregateReadableEvents">;
+  private readonly memories: Pick<MemoryRepository, "aggregateReadableEvents" | "listReadableEvents">;
 
   constructor(db: Kysely<QuestLabDatabase>) {
     this.memories = new MemoryRepository(db);
@@ -583,29 +583,132 @@ export class PostgresStructuredEventAggregator implements StructuredAggregatorPo
 
   async aggregate(input: { readonly request: RetrievalRequest; readonly signal?: AbortSignal }): Promise<StructuredResult> {
     input.signal?.throwIfAborted();
-    if (input.request.intent !== "count_events") {
-      throw new PostgresRetrievalPolicyError(`Structured intent ${input.request.intent} is not implemented`);
-    }
+    if (input.request.intent === "count_events") return this.countEvents(input);
+    if (input.request.intent === "comparison") return this.compareEventCounts(input);
+    if (input.request.intent === "temporal") return this.selectEventTime(input);
+    throw new PostgresRetrievalPolicyError(`Structured intent ${input.request.intent} is not implemented`);
+  }
+
+  private async countEvents(input: { readonly request: RetrievalRequest; readonly signal?: AbortSignal }): Promise<StructuredResult> {
     const filters = input.request.structured_filters;
-    if (!filters?.subject_id || !filters.event_type) {
-      throw new PostgresRetrievalPolicyError("count_events requires structured_filters.subject_id and event_type");
-    }
-    const result = await this.memories.aggregateReadableEvents(input.request.principal, {
+    if (!filters?.subject_id || !filters.event_type) throw new PostgresRetrievalPolicyError("count_events requires structured_filters.subject_id and event_type");
+    const includeConflicts = filters.include_conflicts ?? false;
+    const result = await this.memories.aggregateReadableEvents(input.request.principal, eventQuery({
       subject_id: filters.subject_id,
       event_type: filters.event_type,
-      ...(filters.from ? { from: parseInstant(filters.from, "from") } : {}),
-      ...(filters.to ? { to: parseInstant(filters.to, "to") } : {}),
-      include_conflicts: filters.include_conflicts ?? false,
-    });
+      ...(filters.from ? { from: filters.from } : {}),
+      ...(filters.to ? { to: filters.to } : {}),
+      include_conflicts: includeConflicts,
+    }));
     input.signal?.throwIfAborted();
     return {
-      operation: "count_distinct",
-      value: result.value,
-      included_ids: result.included_event_ids,
-      excluded_reasons: result.excluded_conflict_count > 0 ? [`${result.excluded_conflict_count} conflicting events excluded`] : [],
+      operation: "count_distinct", value: result.value, included_ids: result.included_event_ids,
+      excluded_reasons: !includeConflicts && result.excluded_conflict_count > 0 ? [`${result.excluded_conflict_count} conflicting events excluded`] : [],
       conflicts: result.conflict_event_ids,
     };
   }
+
+  private async compareEventCounts(input: { readonly request: RetrievalRequest; readonly signal?: AbortSignal }): Promise<StructuredResult> {
+    const query = input.request.structured_query;
+    if (!query || query.kind !== "compare_event_counts" || query.left_subject_id === query.right_subject_id) {
+      throw new PostgresRetrievalPolicyError("comparison requires two different subjects and compare_event_counts query");
+    }
+    const includeConflicts = query.include_conflicts ?? false;
+    const common = {
+      event_type: query.event_type,
+      ...(query.from ? { from: query.from } : {}),
+      ...(query.to ? { to: query.to } : {}),
+      include_conflicts: includeConflicts,
+    };
+    const leftQuery = eventQuery({ ...common, subject_id: query.left_subject_id });
+    const rightQuery = eventQuery({ ...common, subject_id: query.right_subject_id });
+    const [leftRows, rightRows] = await Promise.all([
+      this.memories.listReadableEvents(input.request.principal, leftQuery),
+      this.memories.listReadableEvents(input.request.principal, rightQuery),
+    ]);
+    input.signal?.throwIfAborted();
+    const left = summarizeEvents(leftRows, includeConflicts);
+    const right = summarizeEvents(rightRows, includeConflicts);
+    const conflicts = uniqueStrings([...left.conflictIds, ...right.conflictIds]);
+    const excluded = left.excludedConflicts + right.excludedConflicts;
+    return {
+      operation: "comparison",
+      value: left.included.length - right.included.length,
+      included_ids: uniqueStrings([...left.included.map((event) => event.event_id), ...right.included.map((event) => event.event_id)]),
+      excluded_reasons: excluded > 0 ? [`${excluded} conflicting events excluded`] : [],
+      conflicts,
+      details: {
+        kind: "comparison_counts",
+        left_subject_id: query.left_subject_id,
+        left_value: left.included.length,
+        right_subject_id: query.right_subject_id,
+        right_value: right.included.length,
+        difference: left.included.length - right.included.length,
+      },
+    };
+  }
+
+  private async selectEventTime(input: { readonly request: RetrievalRequest; readonly signal?: AbortSignal }): Promise<StructuredResult> {
+    const query = input.request.structured_query;
+    if (!query || query.kind !== "select_event_time" || (query.selector !== "first" && query.selector !== "last")) {
+      throw new PostgresRetrievalPolicyError("temporal requires a first/last select_event_time query");
+    }
+    const includeConflicts = query.include_conflicts ?? false;
+    const rows = await this.memories.listReadableEvents(input.request.principal, eventQuery(query));
+    input.signal?.throwIfAborted();
+    const summary = summarizeEvents(rows, includeConflicts);
+    const selected = query.selector === "first" ? summary.included[0] : summary.included.at(-1);
+    return {
+      operation: "temporal",
+      value: selected?.occurred_from.toISOString() ?? null,
+      included_ids: selected ? [selected.event_id] : [],
+      excluded_reasons: summary.excludedConflicts > 0 ? [`${summary.excludedConflicts} conflicting events excluded`] : [],
+      conflicts: summary.conflictIds,
+      details: {
+        kind: "temporal_event", subject_id: query.subject_id, event_type: query.event_type, selector: query.selector,
+        event_id: selected?.event_id ?? null, occurred_from: selected?.occurred_from.toISOString() ?? null,
+        occurred_to: selected?.occurred_to?.toISOString() ?? null,
+      },
+    };
+  }
+}
+
+function eventQuery(input: { readonly subject_id: string; readonly event_type: string; readonly from?: string; readonly to?: string; readonly include_conflicts?: boolean }) {
+  if (!validStructuredIdentifier(input.subject_id) || !validStructuredIdentifier(input.event_type)) {
+    throw new PostgresRetrievalPolicyError("subject_id and event_type must be non-empty identifiers");
+  }
+  const from = input.from ? parseInstant(input.from, "from") : undefined;
+  const to = input.to ? parseInstant(input.to, "to") : undefined;
+  if (from && to && from.getTime() > to.getTime()) {
+    throw new PostgresRetrievalPolicyError("from must not be after to");
+  }
+  return {
+    subject_id: input.subject_id, event_type: input.event_type,
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    include_conflicts: input.include_conflicts ?? false,
+  };
+}
+
+function validStructuredIdentifier(value: string): boolean {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 256;
+}
+
+function summarizeEvents(rows: readonly StructuredEvent[], includeConflicts: boolean): {
+  readonly included: readonly StructuredEvent[]; readonly conflictIds: readonly string[]; readonly excludedConflicts: number;
+} {
+  const conflictIds = rows.filter((event) => event.conflict_status !== "none").map((event) => event.event_id);
+  const unique = new Map<string, StructuredEvent>();
+  for (const event of rows) {
+    if ((includeConflicts || event.conflict_status === "none") && !unique.has(event.dedupe_key)) {
+      unique.set(event.dedupe_key, event);
+    }
+  }
+  return { included: [...unique.values()], conflictIds, excludedConflicts: includeConflicts ? 0 : conflictIds.length };
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)];
 }
 
 function parseInstant(value: string, name: string): Date {

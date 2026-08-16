@@ -678,7 +678,30 @@ export class MemoryRepository {
     principal: MemoryPrincipal,
     query: EventQuery = {},
   ): Promise<EventAggregate> {
-    const rows = await this.db
+    const rows = await this.listReadableEvents(principal, query);
+    const conflicts = rows.filter((event) => event.conflict_status !== "none");
+    const unique = new Map<string, StructuredEvent>();
+    for (const row of rows) {
+      if ((query.include_conflicts || row.conflict_status === "none") && !unique.has(row.dedupe_key)) {
+        unique.set(row.dedupe_key, row);
+      }
+    }
+    const included = [...unique.values()];
+    return {
+      operation: "count_distinct",
+      field: "dedupe_key",
+      value: included.length,
+      included_event_ids: included.map((event) => event.event_id),
+      excluded_conflict_count: conflicts.length,
+      conflict_event_ids: conflicts.map((event) => event.event_id),
+    };
+  }
+
+  async listReadableEvents(
+    principal: MemoryPrincipal,
+    query: EventQuery = {},
+  ): Promise<readonly StructuredEvent[]> {
+    return this.db
       .selectFrom("questlab.structured_event as event")
       .selectAll("event")
       .where((expression) =>
@@ -707,21 +730,8 @@ export class MemoryRepository {
         ]),
       )
       .orderBy("event.occurred_from", "asc")
+      .orderBy("event.event_id", "asc")
       .execute();
-    const conflicts = rows.filter((event) => event.conflict_status !== "none");
-    const unique = new Map<string, StructuredEvent>();
-    for (const row of rows) {
-      if (query.include_conflicts || row.conflict_status === "none") unique.set(row.dedupe_key, row);
-    }
-    const included = [...unique.values()];
-    return {
-      operation: "count_distinct",
-      field: "dedupe_key",
-      value: included.length,
-      included_event_ids: included.map((event) => event.event_id),
-      excluded_conflict_count: conflicts.length,
-      conflict_event_ids: conflicts.map((event) => event.event_id),
-    };
   }
 }
 

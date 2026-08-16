@@ -11,6 +11,7 @@ import {
   PostgresMemoryIndexer,
   PostgresRelationExpansionCandidateSource,
   PostgresRetrievalPolicyError,
+  PostgresStructuredEventAggregator,
   PostgresVectorRetriever,
 } from "../src/index.ts";
 
@@ -134,6 +135,43 @@ test("relation expansion candidate source validates policy before querying", asy
       purpose: "",
       max_candidates_per_anchor: 4,
     }),
+    (error: unknown) => error instanceof PostgresRetrievalPolicyError,
+  );
+});
+
+test("structured aggregation validates direct callers before database access", async () => {
+  const aggregator = new PostgresStructuredEventAggregator(unavailableDb);
+  const base = {
+    query_id: "query.structured.unit",
+    original_query: "first attempt",
+    agent_id: "learning-scientist",
+    principal: { tenant_id: "tenant.unit" },
+    purpose: "test",
+    token_budget: 100,
+    estimated_chunk_tokens: 10,
+    require_citations: false,
+  };
+  await assert.rejects(
+    aggregator.aggregate({ request: {
+      ...base,
+      intent: "temporal",
+      structured_query: { kind: "select_event_time", subject_id: "learner", event_type: "attempt", selector: "middle" },
+    } as never }),
+    (error: unknown) => error instanceof PostgresRetrievalPolicyError,
+  );
+  await assert.rejects(
+    aggregator.aggregate({ request: {
+      ...base,
+      intent: "comparison",
+      structured_query: {
+        kind: "compare_event_counts",
+        left_subject_id: "learner.left",
+        right_subject_id: "learner.right",
+        event_type: "attempt",
+        from: "2026-08-02T00:00:00Z",
+        to: "2026-08-01T00:00:00Z",
+      },
+    } as never }),
     (error: unknown) => error instanceof PostgresRetrievalPolicyError,
   );
 });

@@ -133,6 +133,8 @@ M5.23 completes the durable deletion runtime boundary. `memory:delete` runs one 
 
 M5.24 completes production Index Ready Gate composition. `memory:index-build` now defaults to the full source-watermark/ACL/Recall/Citation gate and loads a digest-verified fixed evaluation set from `MEMORY_INDEX_EVALUATION_SET_FILE`. Explicit `structural` development mode cannot auto-activate and its incomplete report is rejected by the repository activation boundary; see [ADR 0038](./docs/adr/0038-production-advanced-index-ready-gate.md).
 
+M5.25 completes deterministic comparison and temporal aggregation over the PostgreSQL `StructuredEvent` fact layer. Typed `structured_query` variants are validated at HTTP and adapter boundaries; visible events are ordered, deduplicated and conflict-aware before calculating left-minus-right counts or selecting first/last event time. `multi_hop` remains fail closed until a versioned graph-edge contract exists; see [ADR 0039](./docs/adr/0039-structured-comparison-temporal-aggregation.md) and diagram page 38.
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell

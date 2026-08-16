@@ -22,6 +22,7 @@ import {
   PostgresParentChildExpander,
   PostgresRelationExpansionCandidateSource,
   PostgresRetrievalPolicyError,
+  PostgresStructuredEventAggregator,
   PostgresVectorRetriever,
 } from "../src/index.ts";
 
@@ -462,6 +463,160 @@ test(
         .where("event_type", "=", "MemoryDeletionPropagationCompleted")
         .execute();
       assert.equal(completedEvents.length, 1);
+    } finally {
+      await db.destroy();
+    }
+  },
+);
+
+test(
+  "PostgreSQL structured aggregation compares deduplicated counts and selects event time without crossing ACLs",
+  { skip: connectionString ? false : "TEST_DATABASE_URL is not configured" },
+  async () => {
+    assert.ok(connectionString);
+    await migrateToLatest(connectionString);
+    const db = createDatabase(connectionString);
+    try {
+      await sql`
+        TRUNCATE TABLE
+          questlab.outbox_event,
+          questlab.structured_event,
+          questlab.retrieval_index_version,
+          questlab.memory_record
+        RESTART IDENTITY CASCADE
+      `.execute(db);
+      const memories = new MemoryRepository(db);
+      const principal = { tenant_id: "tenant.structured", user_id: "user.structured" };
+      for (const memory of [
+        { memory_id: "memory.structured.owner", tenant_id: principal.tenant_id, owner_id: principal.user_id, marker: "a" },
+        { memory_id: "memory.structured.hidden-user", tenant_id: principal.tenant_id, owner_id: "user.hidden", marker: "b" },
+        { memory_id: "memory.structured.hidden-tenant", tenant_id: "tenant.hidden", owner_id: "user.foreign", marker: "c" },
+      ]) {
+        await memories.capture({
+          memory_id: memory.memory_id,
+          tenant_id: memory.tenant_id,
+          owner_type: "user",
+          owner_id: memory.owner_id,
+          scope: "user_private",
+          stage: "structured",
+          kind: "event",
+          content_digest: digest(memory.marker),
+          confidence: 1,
+          sensitivity: "private",
+          status: "active",
+        });
+      }
+      const record = (input: {
+        readonly event_id: string;
+        readonly tenant_id?: string;
+        readonly subject_id: string;
+        readonly owner_id?: string;
+        readonly occurred_from: string;
+        readonly occurred_to?: string;
+        readonly dedupe_key: string;
+        readonly source_memory_id?: string;
+        readonly conflict?: boolean;
+      }) => memories.recordEvent({
+        event_id: input.event_id,
+        tenant_id: input.tenant_id ?? principal.tenant_id,
+        subject_id: input.subject_id,
+        event_type: "lesson_completed",
+        object: { lesson_id: input.dedupe_key },
+        scope: "user_private",
+        owner_id: input.owner_id ?? principal.user_id,
+        occurred_from: new Date(input.occurred_from),
+        ...(input.occurred_to ? { occurred_to: new Date(input.occurred_to) } : {}),
+        dedupe_key: input.dedupe_key,
+        source_memory_ids: [input.source_memory_id ?? "memory.structured.owner"],
+        confidence: 0.95,
+        ...(input.conflict ? { conflict_status: "conflict" as const } : {}),
+      });
+      await record({ event_id: "event.left.1", subject_id: "learner.left", occurred_from: "2026-08-01T01:00:00Z", occurred_to: "2026-08-01T01:30:00Z", dedupe_key: "lesson:left:1" });
+      await record({ event_id: "event.left.1.duplicate", subject_id: "learner.left", occurred_from: "2026-08-01T01:10:00Z", dedupe_key: "lesson:left:1" });
+      await record({ event_id: "event.left.2", subject_id: "learner.left", occurred_from: "2026-08-02T01:00:00Z", dedupe_key: "lesson:left:2" });
+      await record({ event_id: "event.left.3", subject_id: "learner.left", occurred_from: "2026-08-03T01:00:00Z", dedupe_key: "lesson:left:3" });
+      await record({ event_id: "event.left.conflict", subject_id: "learner.left", occurred_from: "2026-08-04T01:00:00Z", dedupe_key: "lesson:left:conflict", conflict: true });
+      await record({ event_id: "event.right.1", subject_id: "learner.right", occurred_from: "2026-08-01T02:00:00Z", dedupe_key: "lesson:right:1" });
+      await record({ event_id: "event.right.2", subject_id: "learner.right", occurred_from: "2026-08-02T02:00:00Z", dedupe_key: "lesson:right:2" });
+      await record({ event_id: "event.hidden.user", subject_id: "learner.left", owner_id: "user.hidden", occurred_from: "2026-08-05T01:00:00Z", dedupe_key: "lesson:left:hidden-user", source_memory_id: "memory.structured.hidden-user" });
+      await record({ event_id: "event.hidden.tenant", tenant_id: "tenant.hidden", subject_id: "learner.left", owner_id: "user.foreign", occurred_from: "2026-08-06T01:00:00Z", dedupe_key: "lesson:left:hidden-tenant", source_memory_id: "memory.structured.hidden-tenant" });
+
+      const aggregator = new PostgresStructuredEventAggregator(db);
+      const requestBase = {
+        original_query: "structured truth",
+        agent_id: "learning-scientist" as const,
+        principal,
+        purpose: "integration_test",
+        token_budget: 500,
+        estimated_chunk_tokens: 20,
+        require_citations: false,
+      };
+      const comparison = await aggregator.aggregate({ request: {
+        ...requestBase,
+        query_id: "query.structured.comparison",
+        intent: "comparison",
+        structured_query: {
+          kind: "compare_event_counts",
+          left_subject_id: "learner.left",
+          right_subject_id: "learner.right",
+          event_type: "lesson_completed",
+        },
+      } });
+      assert.equal(comparison.value, 1);
+      assert.deepEqual(comparison.details, {
+        kind: "comparison_counts",
+        left_subject_id: "learner.left",
+        left_value: 3,
+        right_subject_id: "learner.right",
+        right_value: 2,
+        difference: 1,
+      });
+      assert.deepEqual(comparison.conflicts, ["event.left.conflict"]);
+      assert.deepEqual(comparison.excluded_reasons, ["1 conflicting events excluded"]);
+      assert.equal(comparison.included_ids.includes("event.left.1.duplicate"), false);
+      assert.equal(comparison.included_ids.some((id) => id.startsWith("event.hidden")), false);
+
+      const temporal = async (selector: "first" | "last", subjectId = "learner.left") => aggregator.aggregate({ request: {
+        ...requestBase,
+        query_id: `query.structured.temporal.${selector}.${subjectId}`,
+        intent: "temporal",
+        structured_query: { kind: "select_event_time", subject_id: subjectId, event_type: "lesson_completed", selector },
+      } });
+      const first = await temporal("first");
+      assert.equal(first.value, "2026-08-01T01:00:00.000Z");
+      assert.deepEqual(first.details, {
+        kind: "temporal_event",
+        subject_id: "learner.left",
+        event_type: "lesson_completed",
+        selector: "first",
+        event_id: "event.left.1",
+        occurred_from: "2026-08-01T01:00:00.000Z",
+        occurred_to: "2026-08-01T01:30:00.000Z",
+      });
+      const last = await temporal("last");
+      assert.equal(last.value, "2026-08-03T01:00:00.000Z");
+      assert.equal(last.details?.kind === "temporal_event" ? last.details.event_id : undefined, "event.left.3");
+      const absent = await temporal("first", "learner.absent");
+      assert.equal(absent.value, null);
+      assert.deepEqual(absent.included_ids, []);
+      assert.equal(absent.details?.kind === "temporal_event" ? absent.details.event_id : undefined, null);
+
+      await assert.rejects(
+        aggregator.aggregate({ request: {
+          ...requestBase,
+          query_id: "query.structured.reversed",
+          intent: "temporal",
+          structured_query: {
+            kind: "select_event_time",
+            subject_id: "learner.left",
+            event_type: "lesson_completed",
+            selector: "first",
+            from: "2026-08-02T00:00:00Z",
+            to: "2026-08-01T00:00:00Z",
+          },
+        } }),
+        (error: unknown) => error instanceof PostgresRetrievalPolicyError,
+      );
     } finally {
       await db.destroy();
     }

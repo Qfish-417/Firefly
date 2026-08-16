@@ -52,6 +52,25 @@ export interface RetrievalRequest {
     readonly to?: string;
     readonly include_conflicts?: boolean;
   };
+  readonly structured_query?:
+    | {
+        readonly kind: "compare_event_counts";
+        readonly left_subject_id: string;
+        readonly right_subject_id: string;
+        readonly event_type: string;
+        readonly from?: string;
+        readonly to?: string;
+        readonly include_conflicts?: boolean;
+      }
+    | {
+        readonly kind: "select_event_time";
+        readonly subject_id: string;
+        readonly event_type: string;
+        readonly selector: "first" | "last";
+        readonly from?: string;
+        readonly to?: string;
+        readonly include_conflicts?: boolean;
+      };
 }
 
 export interface RetrievalHit {

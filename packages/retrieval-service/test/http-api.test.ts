@@ -92,6 +92,116 @@ test("retrieval HTTP API rejects malformed structured filters before gateway exe
   }
 });
 
+test("retrieval HTTP API validates comparison and temporal queries before aggregation", async () => {
+  const received: unknown[] = [];
+  const gateway = new RetrievalGateway({
+    retrievers: [],
+    authorization: { canRead: async () => true },
+    aggregator: {
+      aggregate: async ({ request }) => {
+        received.push(request);
+        if (request.intent === "comparison" && request.structured_query?.kind === "compare_event_counts") {
+          return {
+            operation: "comparison",
+            value: 1,
+            included_ids: ["event.left", "event.right"],
+            excluded_reasons: [],
+            conflicts: [],
+            details: {
+              kind: "comparison_counts",
+              left_subject_id: request.structured_query.left_subject_id,
+              left_value: 2,
+              right_subject_id: request.structured_query.right_subject_id,
+              right_value: 1,
+              difference: 1,
+            },
+          };
+        }
+        if (request.intent === "temporal" && request.structured_query?.kind === "select_event_time") {
+          return {
+            operation: "temporal",
+            value: "2026-08-01T00:00:00.000Z",
+            included_ids: ["event.first"],
+            excluded_reasons: [],
+            conflicts: [],
+            details: {
+              kind: "temporal_event",
+              subject_id: request.structured_query.subject_id,
+              event_type: request.structured_query.event_type,
+              selector: request.structured_query.selector,
+              event_id: "event.first",
+              occurred_from: "2026-08-01T00:00:00.000Z",
+              occurred_to: null,
+            },
+          };
+        }
+        throw new Error("unexpected structured request");
+      },
+    },
+  });
+  const server = createRetrievalApiServer(gateway);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const baseRequest = {
+    original_query: "compare",
+    agent_id: "learning-director",
+    principal: { tenant_id: "tenant.structured" },
+    purpose: "test",
+    token_budget: 100,
+    estimated_chunk_tokens: 10,
+    require_citations: false,
+  };
+  try {
+    const invalidRequests = [
+      { ...baseRequest, query_id: "q.comparison.missing", intent: "comparison" },
+      {
+        ...baseRequest,
+        query_id: "q.comparison.same-subject",
+        intent: "comparison",
+        structured_query: { kind: "compare_event_counts", left_subject_id: "same", right_subject_id: "same", event_type: "attempt" },
+      },
+      {
+        ...baseRequest,
+        query_id: "q.temporal.selector",
+        intent: "temporal",
+        structured_query: { kind: "select_event_time", subject_id: "learner", event_type: "attempt", selector: "middle" },
+      },
+      {
+        ...baseRequest,
+        query_id: "q.structured.mismatch",
+        intent: "comparison",
+        structured_query: { kind: "select_event_time", subject_id: "learner", event_type: "attempt", selector: "first" },
+      },
+    ];
+    for (const requestBody of invalidRequests) {
+      const response = await httpJson(baseUrl, "POST", "/retrieval", requestBody);
+      assert.equal(response.status, 400);
+    }
+    assert.equal(received.length, 0);
+
+    const comparison = await httpJson(baseUrl, "POST", "/retrieval", {
+      ...baseRequest,
+      query_id: "q.comparison.valid",
+      intent: "comparison",
+      structured_query: { kind: "compare_event_counts", left_subject_id: "learner.left", right_subject_id: "learner.right", event_type: "attempt" },
+    });
+    assert.equal(comparison.status, 200);
+    const temporal = await httpJson(baseUrl, "POST", "/retrieval", {
+      ...baseRequest,
+      query_id: "q.temporal.valid",
+      intent: "temporal",
+      structured_query: { kind: "select_event_time", subject_id: "learner.left", event_type: "attempt", selector: "first" },
+    });
+    assert.equal(temporal.status, 200);
+    assert.equal(received.length, 2);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("retrieval HTTP API rejects a signed identity whose principal agent contradicts the claim", async () => {
   const gateway = new RetrievalGateway({ retrievers: [], authorization: { canRead: async () => true } });
   const secret = "identity-secret-012345678901234567890123";

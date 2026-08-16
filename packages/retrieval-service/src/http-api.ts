@@ -134,6 +134,7 @@ function parseRetrievalRequest(value: unknown, identityResolverConfigured = fals
   if (!Number.isInteger(item.token_budget) || (item.token_budget as number) <= 0 || !Number.isInteger(item.estimated_chunk_tokens) || (item.estimated_chunk_tokens as number) <= 0) throw new SyntaxError("token budgets must be positive integers");
   if (typeof item.require_citations !== "boolean") throw new SyntaxError("require_citations must be boolean");
   validateStructuredFilters(item.structured_filters, item.intent as RetrievalRequest["intent"]);
+  validateStructuredQuery(item.structured_query, item.intent as RetrievalRequest["intent"]);
   return item as unknown as RetrievalRequest;
 }
 
@@ -192,6 +193,48 @@ function validateStructuredFilters(value: unknown, intent: RetrievalRequest["int
   if (intent === "count_events" && (!validIdentifier(filters.subject_id) || !validIdentifier(filters.event_type))) {
     throw new SyntaxError("count_events requires structured_filters.subject_id and event_type");
   }
+}
+
+function validateStructuredQuery(value: unknown, intent: RetrievalRequest["intent"]): void {
+  if (value === undefined) {
+    if (intent === "comparison" || intent === "temporal") throw new SyntaxError(`${intent} requires structured_query`);
+    return;
+  }
+  if (intent !== "comparison" && intent !== "temporal") throw new SyntaxError("structured_query is not supported for this intent");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SyntaxError("structured_query must be an object");
+  const query = value as Record<string, unknown>;
+  const commonKeys = ["kind", "event_type", "from", "to", "include_conflicts"];
+  const expectedKind = intent === "comparison" ? "compare_event_counts" : "select_event_time";
+  const intentKeys = intent === "comparison"
+    ? ["left_subject_id", "right_subject_id"]
+    : ["subject_id", "selector"];
+  const allowed = new Set([...commonKeys, ...intentKeys]);
+  if (Object.keys(query).some((key) => !allowed.has(key)) || query.kind !== expectedKind) {
+    throw new SyntaxError("structured_query kind or fields do not match intent");
+  }
+  if (!validIdentifier(query.event_type)) throw new SyntaxError("structured_query.event_type must be a non-empty string");
+  for (const key of ["from", "to"] as const) {
+    if (query[key] !== undefined && !validIdentifier(query[key])) throw new SyntaxError(`structured_query.${key} must be a non-empty string`);
+  }
+  if (query.include_conflicts !== undefined && typeof query.include_conflicts !== "boolean") {
+    throw new SyntaxError("structured_query.include_conflicts must be boolean");
+  }
+  validateTimeRange(query.from, query.to, "structured_query");
+  if (intent === "comparison") {
+    if (!validIdentifier(query.left_subject_id) || !validIdentifier(query.right_subject_id) || query.left_subject_id === query.right_subject_id) {
+      throw new SyntaxError("comparison requires two different subject IDs");
+    }
+  } else if (!validIdentifier(query.subject_id) || (query.selector !== "first" && query.selector !== "last")) {
+    throw new SyntaxError("temporal query requires subject_id and first/last selector");
+  }
+}
+
+function validateTimeRange(fromValue: unknown, toValue: unknown, prefix: string): void {
+  const from = fromValue === undefined ? undefined : new Date(fromValue as string);
+  const to = toValue === undefined ? undefined : new Date(toValue as string);
+  if (from && !Number.isFinite(from.getTime())) throw new SyntaxError(`${prefix}.from must be an ISO timestamp`);
+  if (to && !Number.isFinite(to.getTime())) throw new SyntaxError(`${prefix}.to must be an ISO timestamp`);
+  if (from && to && from.getTime() > to.getTime()) throw new SyntaxError(`${prefix}.from must not be after to`);
 }
 
 function singleHeader(value: string | readonly string[] | undefined): string | undefined {

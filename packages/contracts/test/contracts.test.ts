@@ -486,6 +486,42 @@ test("structured aggregation results reject duplicate participating IDs", () => 
   assert.equal(result.valid, false);
 });
 
+test("comparison and temporal structured results require typed details", () => {
+  assert.equal(validateContract("StructuredResult", {
+    ...validStructuredResult,
+    operation: "comparison",
+    value: 1,
+  }).valid, false);
+  assert.equal(validateContract("StructuredResult", {
+    ...validStructuredResult,
+    operation: "comparison",
+    value: 1,
+    details: {
+      kind: "comparison_counts",
+      left_subject_id: "user.left",
+      left_value: 3,
+      right_subject_id: "user.right",
+      right_value: 2,
+      difference: 1,
+    },
+  }).valid, true);
+  assert.equal(validateContract("StructuredResult", {
+    ...validStructuredResult,
+    operation: "temporal",
+    value: "2026-08-16T00:00:00.000Z",
+    included_ids: ["event.first"],
+    details: {
+      kind: "temporal_event",
+      subject_id: "user.left",
+      event_type: "travel",
+      selector: "first",
+      event_id: "event.first",
+      occurred_from: "2026-08-16T00:00:00.000Z",
+      occurred_to: null,
+    },
+  }).valid, true);
+});
+
 test("insufficient evidence can never authorize generation", () => {
   const result = validateContract("EvidencePack", {
     ...validEvidencePack,

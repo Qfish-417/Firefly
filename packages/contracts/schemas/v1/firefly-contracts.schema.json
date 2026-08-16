@@ -668,8 +668,53 @@
           "type": "array",
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        },
+        "details": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "left_subject_id", "left_value", "right_subject_id", "right_value", "difference"],
+              "properties": {
+                "kind": { "const": "comparison_counts" },
+                "left_subject_id": { "$ref": "#/$defs/Identifier" },
+                "left_value": { "type": "integer", "minimum": 0 },
+                "right_subject_id": { "$ref": "#/$defs/Identifier" },
+                "right_value": { "type": "integer", "minimum": 0 },
+                "difference": { "type": "integer" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "subject_id", "event_type", "selector", "event_id", "occurred_from", "occurred_to"],
+              "properties": {
+                "kind": { "const": "temporal_event" },
+                "subject_id": { "$ref": "#/$defs/Identifier" },
+                "event_type": { "$ref": "#/$defs/Identifier" },
+                "selector": { "enum": ["first", "last"] },
+                "event_id": { "anyOf": [{ "$ref": "#/$defs/Identifier" }, { "type": "null" }] },
+                "occurred_from": {
+                  "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
+                },
+                "occurred_to": {
+                  "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
+                }
+              }
+            }
+          ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "operation": { "const": "comparison" } }, "required": ["operation"] },
+          "then": { "required": ["details"], "properties": { "details": { "type": "object", "properties": { "kind": { "const": "comparison_counts" } } } } }
+        },
+        {
+          "if": { "properties": { "operation": { "const": "temporal" } }, "required": ["operation"] },
+          "then": { "required": ["details"], "properties": { "details": { "type": "object", "properties": { "kind": { "const": "temporal_event" } } } } }
+        }
+      ]
     },
     "EvidenceItem": {
       "type": "object",

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="37">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="38">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -1013,6 +1013,30 @@
         <mxCell id="p37-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p37-1" source="p37-source" target="p37-chunker"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p37-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#5E6C84;" edge="1" parent="p37-1" source="p37-provider" target="p37-ops"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p37-boundary" value="Boundary: ASR is derived evidence. Speaker labels never imply user/assistant roles, and media offsets remain relative to the immutable audio Artifact." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p37-1"><mxGeometry x="220" y="925" width="1160" height="35" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-structured-comparison-temporal" name="38-M5.25 Structured Comparison and Temporal Aggregation">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p38-0"/><mxCell id="p38-1" parent="p38-0"/>
+        <mxCell id="p38-title" value="M5.25 Structured truth: deterministic comparison and temporal selection" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p38-1"><mxGeometry x="90" y="20" width="1420" height="50" as="geometry"/></mxCell>
+        <mxCell id="p38-user" value="User question&#xa;compare two subjects | first/last event" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p38-1"><mxGeometry x="55" y="140" width="280" height="120" as="geometry"/></mxCell>
+        <mxCell id="p38-http" value="Retrieval HTTP boundary&#xa;intent + discriminated structured_query&#xa;exact fields | IDs | ISO range&#xa;same-subject and selector checks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p38-1"><mxGeometry x="415" y="115" width="350" height="170" as="geometry"/></mxCell>
+        <mxCell id="p38-gateway" value="Governed Retrieval Gateway&#xa;structured result is required&#xa;RAG evidence supports citations only&#xa;conflict blocks generation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p38-1"><mxGeometry x="855" y="115" width="350" height="170" as="geometry"/></mxCell>
+        <mxCell id="p38-aggregator" value="PostgresStructuredEventAggregator&#xa;adapter-level time validation&#xa;comparison | temporal&#xa;multi-hop: fail closed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p38-1"><mxGeometry x="1245" y="115" width="310" height="170" as="geometry"/></mxCell>
+        <mxCell id="p38-fact" value="StructuredEvent fact layer&#xa;scope + owner + tenant ACL&#xa;subject | event_type | occurred interval&#xa;dedupe_key | conflict | provenance" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p38-1"><mxGeometry x="620" y="390" width="360" height="180" as="geometry"/></mxCell>
+        <mxCell id="p38-policy" value="Deterministic normalization&#xa;ACL before aggregation&#xa;occurred_from ASC, event_id ASC&#xa;first row per dedupe_key&#xa;conflicts always surfaced" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p38-1"><mxGeometry x="1080" y="390" width="360" height="180" as="geometry"/></mxCell>
+        <mxCell id="p38-comparison" value="comparison_counts&#xa;one event type + optional window&#xa;left distinct count - right distinct count&#xa;both operands + included IDs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p38-1"><mxGeometry x="330" y="695" width="380" height="160" as="geometry"/></mxCell>
+        <mxCell id="p38-temporal" value="temporal_event&#xa;first or last distinct event&#xa;event ID + occurred_from/to&#xa;explicit null when absent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p38-1"><mxGeometry x="850" y="695" width="380" height="160" as="geometry"/></mxCell>
+        <mxCell id="p38-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p38-1" source="p38-user" target="p38-http"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p38-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p38-1" source="p38-http" target="p38-gateway"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p38-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p38-1" source="p38-gateway" target="p38-aggregator"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p38-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p38-1" source="p38-aggregator" target="p38-fact"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p38-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p38-1" source="p38-fact" target="p38-policy"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p38-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p38-1" source="p38-policy" target="p38-comparison"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p38-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p38-1" source="p38-policy" target="p38-temporal"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p38-boundary" value="Boundary: TopK RAG cannot prove a complete count or event ordering. Structured truth authorizes the scalar; retrieved chunks can only support explanation and citations." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p38-1"><mxGeometry x="200" y="920" width="1200" height="40" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

@@ -268,6 +268,24 @@ export interface StructuredResult {
   readonly included_ids: readonly string[];
   readonly excluded_reasons: readonly string[];
   readonly conflicts: readonly string[];
+  readonly details?:
+    | {
+        readonly kind: "comparison_counts";
+        readonly left_subject_id: string;
+        readonly left_value: number;
+        readonly right_subject_id: string;
+        readonly right_value: number;
+        readonly difference: number;
+      }
+    | {
+        readonly kind: "temporal_event";
+        readonly subject_id: string;
+        readonly event_type: string;
+        readonly selector: "first" | "last";
+        readonly event_id: string | null;
+        readonly occurred_from: string | null;
+        readonly occurred_to: string | null;
+      };
 }
 
 export interface EvidenceItem {
