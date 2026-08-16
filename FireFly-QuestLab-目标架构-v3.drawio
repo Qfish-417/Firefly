@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="40">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="41">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -1086,6 +1086,29 @@
         <mxCell id="p40-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p40-1" source="p40-validation" target="p40-select"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p40-e8" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p40-1" source="p40-policy" target="p40-select"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p40-boundary" value="Boundary: reranking may reorder only the already-authorized dynamic window. It cannot retrieve new content, establish structured truth, execute tools or bypass final evidence budgets." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p40-1"><mxGeometry x="180" y="935" width="1240" height="40" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-local-lite-profile" name="41-M5.28 Local Lite Degradation Profile">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p41-0"/><mxCell id="p41-1" parent="p41-0"/>
+        <mxCell id="p41-title" value="M5.28 Local-first completion: low resource cost without weakening trust boundaries" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p41-1"><mxGeometry x="80" y="20" width="1440" height="50" as="geometry"/></mxCell>
+        <mxCell id="p41-user" value="Developer laptop&#xa;npm run lite:up&#xa;one explicit local profile" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p41-1"><mxGeometry x="60" y="130" width="280" height="140" as="geometry"/></mxCell>
+        <mxCell id="p41-postgres" value="PostgreSQL fact layer&#xa;384 MB container limit | 1 CPU&#xa;persistent named volume&#xa;Task / Event / Memory / structured truth" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p41-1"><mxGeometry x="440" y="110" width="370" height="180" as="geometry"/></mxCell>
+        <mxCell id="p41-api" value="Retrieval API&#xa;384 MB container limit | 1 CPU&#xa;PostgreSQL FTS + dynamic TopK&#xa;health on :53200" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p41-1"><mxGeometry x="930" y="110" width="360" height="180" as="geometry"/></mxCell>
+        <mxCell id="p41-default" value="Default OFF&#xa;MinIO | index/deletion Workers&#xa;OCR / ASR | Embedding | Reranker&#xa;Docker Sandbox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p41-1"><mxGeometry x="1230" y="400" width="320" height="180" as="geometry"/></mxCell>
+        <mxCell id="p41-degrade" value="Allowed explicit degradation&#xa;BM25 -> PostgreSQL FTS&#xa;ANN -> exact pgvector or disabled&#xa;rerank -> deterministic RRF&#xa;multimodal -> marked text fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p41-1"><mxGeometry x="690" y="395" width="410" height="195" as="geometry"/></mxCell>
+        <mxCell id="p41-strict" value="Never degraded&#xa;ACL before aggregation/provider calls&#xa;structured count/time/path truth&#xa;Loop Sentinel + budgets + approval&#xa;Citation Digest + conflict visibility" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p41-1"><mxGeometry x="120" y="390" width="430" height="205" as="geometry"/></mxCell>
+        <mxCell id="p41-optin" value="Opt-in by complete configuration&#xa;EMBEDDING_* -> exact vector stage&#xa;RERANK_* -> governed HTTP reranker&#xa;full dev stack -> Workers / MinIO / Sandbox&#xa;missing capability stays unavailable" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p41-1"><mxGeometry x="500" y="720" width="600" height="175" as="geometry"/></mxCell>
+        <mxCell id="p41-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p41-1" source="p41-user" target="p41-postgres"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p41-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p41-1" source="p41-postgres" target="p41-api"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p41-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p41-1" source="p41-api" target="p41-degrade"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p41-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p41-1" source="p41-api" target="p41-default"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p41-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p41-1" source="p41-strict" target="p41-optin"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p41-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p41-1" source="p41-degrade" target="p41-optin"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p41-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p41-1" source="p41-default" target="p41-optin"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p41-boundary" value="Boundary: lower quality, throughput and external coverage are acceptable locally; fabricated success, widened access and model-inferred structured truth are not." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p41-1"><mxGeometry x="190" y="935" width="1220" height="40" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

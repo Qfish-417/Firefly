@@ -1,0 +1,84 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=20
+    environment:
+      POSTGRES_DB: questlab
+      POSTGRES_USER: questlab
+      POSTGRES_PASSWORD: questlab
+    ports:
+      - "55432:5432"
+    volumes:
+      - questlab-lite-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U questlab -d questlab"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    mem_limit: 384m
+    cpus: 1.0
+    restart: unless-stopped
+
+  migrate:
+    image: firefly-questlab-lite-runtime:local
+    build:
+      context: ../..
+      dockerfile: infra/docker/questlab-runtime.Dockerfile
+    command: ["npm", "run", "db:migrate"]
+    environment:
+      DATABASE_URL: postgresql://questlab:questlab@postgres:5432/questlab
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 256m
+    cpus: 1.0
+    restart: "no"
+
+  retrieval-api:
+    image: firefly-questlab-lite-runtime:local
+    build:
+      context: ../..
+      dockerfile: infra/docker/questlab-runtime.Dockerfile
+    command: ["npm", "run", "retrieval:start"]
+    environment:
+      DATABASE_URL: postgresql://questlab:questlab@postgres:5432/questlab
+      RETRIEVAL_HOST: 0.0.0.0
+      RETRIEVAL_PORT: 3200
+      RETRIEVAL_API_TOKEN: ${RETRIEVAL_API_TOKEN:-questlab-lite-retrieval-token}
+      RETRIEVAL_IDENTITY_HMAC_SECRET: ${RETRIEVAL_IDENTITY_HMAC_SECRET:-questlab-lite-identity-secret-32-bytes-minimum}
+      RETRIEVAL_LOGICAL_NAME: ${RETRIEVAL_LOGICAL_NAME:-memory.hybrid}
+      EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_MODEL_SNAPSHOT: ${EMBEDDING_MODEL_SNAPSHOT:-}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      RERANK_ENDPOINT: ${RERANK_ENDPOINT:-}
+      RERANK_MODEL: ${RERANK_MODEL:-}
+      RERANK_API_KEY: ${RERANK_API_KEY:-}
+      RERANK_ALLOW_INSECURE_LOCALHOST: ${RERANK_ALLOW_INSECURE_LOCALHOST:-false}
+      RERANK_FAILURE_MODE: ${RERANK_FAILURE_MODE:-fallback}
+    ports:
+      - "53200:3200"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 384m
+    cpus: 1.0
+    restart: unless-stopped
+
+volumes:
+  questlab-lite-postgres:

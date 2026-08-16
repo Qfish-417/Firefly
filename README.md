@@ -19,13 +19,14 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 按以下顺序阅读：
 
 1. [开工架构与实施顺序](./FireFly-QuestLab-开工架构与实施顺序.md)：编码阶段的事实源，包含通信协议、模块边界、仓库结构、里程碑和 GitHub 权限。
-2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：40 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、后台 Worker、Parent/Child 扩展、固定索引质量评测、删除修复调度、retired 索引回收、结构化图事实与受治理重排视图。
+2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：41 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、后台 Worker、Parent/Child 扩展、固定索引质量评测、删除修复调度、retired 索引回收、结构化图事实、受治理重排与本地轻量运行视图。
 3. [产品与三 Agent 详细设计](./FireFly-QuestLab产品与三Agent详细设计.md)：产品、领域对象、状态机和太阳能纵向切片。
 4. [RAG 与记忆系统设计](./FireFly-RAG与记忆系统设计.md)：聚合检索、记忆分层、压缩、多模态与安全。
 5. [工具系统设计](./FireFly-工具系统设计.md)：五类工具、发现、异步、动态加载和 KV Cache。
 6. [开放式架构分析](./FireFly-开放式架构分析.md)：早期问题分析与决策背景。
 7. [目标架构构建文档](./FireFly-目标架构构建文档.md)：更详细的阶段性建设要求。
 8. [Model Gateway 构建设计](./FireFly-Model-Gateway构建设计.md)：M4 代码边界、配置、失败语义和真实 Engineer 工程生命周期。
+9. [本地轻量运行说明](./docs/local-lite-profile.md)：低资源 Compose、可接受降级矩阵与不可降级的安全边界。
 
 `FireFly-开放式目标架构.drawio` 是旧的 11 页分析图，内容较密且存在重复；保留作历史参考，不再作为主图。`FireFly-Agent设计.drawio` 和 `FireFly-Agent设计说明.md` 均属于 Legacy Prototype v0。
 
@@ -139,6 +140,8 @@ M5.26 completes governed multi-hop retrieval. Migration 013 and the v1 `Structur
 
 M5.27 completes the optional governed reranking boundary. `HttpRerankerProvider` sends only the ACL-authorized dynamic `rerank_k` window to a fixed HTTPS endpoint, enforces request, response, index, normalized-score and budget limits, and never routes reranking through pi-ai. Retryable provider outages may fall back to deterministic RRF order; malformed identities, duplicate indexes, invalid scores and budget violations fail closed. Configure it with `RERANK_ENDPOINT` and `RERANK_MODEL`; see [ADR 0041](./docs/adr/0041-governed-http-reranker.md) and diagram page 40.
 
+M5.28 defines the local completion target. `npm run lite:up` starts only a resource-bounded PostgreSQL fact layer, one-shot migration and lexical Retrieval API; persistent local data survives ordinary shutdown. Embedding, exact pgvector and reranking remain opt-in, while MinIO, background Workers, OCR/ASR and Sandbox stay off by default. Quality and infrastructure may degrade explicitly, but ACL, structured truth, Loop Sentinel, citations, budgets and approvals remain strict; see [ADR 0042](./docs/adr/0042-local-lite-degradation-profile.md), the [local guide](./docs/local-lite-profile.md) and diagram page 41.
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell
@@ -154,6 +157,16 @@ npm run test:integration
 npm run admin:start
 docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 ```
+
+低资源电脑优先使用：
+
+```powershell
+npm run lite:up
+Invoke-RestMethod http://127.0.0.1:53200/health
+npm run lite:down
+```
+
+`lite:down` 保留 PostgreSQL 命名卷；完整开发栈只在需要验证 MinIO、索引/删除 Worker 或 Sandbox 时启动。
 
 The development Compose stack also builds and starts the database migration job, Retrieval API and non-activating index Worker. The Retrieval health endpoint is published at `http://127.0.0.1:53200/health`. Development defaults are provided for the API token and identity HMAC secret; override them outside local development. Optional vector search uses the M5.22 `EMBEDDING_*` configuration; optional reranking uses the M5.27 `RERANK_*` configuration.
 

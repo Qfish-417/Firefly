@@ -18,6 +18,9 @@
     "memory:index-build": "node packages/memory-workers/src/index-build-main.ts",
     "memory:delete": "node packages/memory-workers/src/deletion-main.ts",
     "memory:index-gc": "node packages/memory-workers/src/retired-index-gc-main.ts",
+    "lite:config": "docker compose -p firefly-questlab-lite -f infra/compose/questlab-lite.yml config",
+    "lite:up": "docker compose -p firefly-questlab-lite -f infra/compose/questlab-lite.yml up -d --build",
+    "lite:down": "docker compose -p firefly-questlab-lite -f infra/compose/questlab-lite.yml down",
     "check": "npm run typecheck && npm test"
   },
   "engines": {
