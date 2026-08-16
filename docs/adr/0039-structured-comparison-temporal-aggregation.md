@@ -14,7 +14,7 @@ A comparison counts the distinct non-conflicting events for two subjects under o
 
 Conflict IDs are always returned. By default conflicting rows are excluded and the exclusion count is explained. `include_conflicts=true` permits them to participate in the deterministic calculation but does not hide their conflict identity, so the Gateway's existing contract still prevents conflicted structure from authorizing generation.
 
-`multi_hop` remains fail closed. It will not be implemented until `StructuredEvent.object` is replaced or supplemented by a versioned graph-edge contract with explicit source, predicate, target, direction, validity interval, provenance and ACL semantics.
+At the M5.25 decision point, `multi_hop` remained fail closed until `StructuredEvent.object` was supplemented by a versioned graph-edge contract with explicit source, predicate, target, direction, validity interval, provenance and ACL semantics. [ADR 0040](./0040-versioned-structured-edge-multi-hop.md) subsequently completed that boundary.
 
 ## Consequences
 

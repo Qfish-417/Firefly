@@ -1,5 +1,5 @@
 import { createDatabase } from "@firefly/persistence";
-import { HttpEmbeddingProvider } from "@firefly/model-gateway";
+import { HttpEmbeddingProvider, HttpRerankerProvider } from "@firefly/model-gateway";
 import { PostgresLexicalRetriever, PostgresMemoryAuthorization, PostgresStructuredEventAggregator, PostgresVectorRetriever } from "@firefly/retrieval-postgres";
 import { RetrievalGateway, createHmacRetrievalIdentityResolver, createRetrievalApiServer } from "@firefly/retrieval-service";
 
@@ -10,6 +10,7 @@ const port = integerEnvironment("RETRIEVAL_PORT", 3200, 1, 65_535);
 const host = process.env.RETRIEVAL_HOST?.trim() || "127.0.0.1";
 const logicalName = process.env.RETRIEVAL_LOGICAL_NAME?.trim() || "memory.hybrid";
 const embedding = embeddingConfiguration();
+const reranker = rerankerConfiguration();
 const db = createDatabase(databaseUrl);
 const gateway = new RetrievalGateway({
   retrievers: [
@@ -21,6 +22,11 @@ const gateway = new RetrievalGateway({
   ],
   authorization: new PostgresMemoryAuthorization(db, logicalName),
   aggregator: new PostgresStructuredEventAggregator(db),
+  ...(reranker ? {
+    reranker: new HttpRerankerProvider(reranker.provider),
+    reranker_budget: reranker.budget,
+    reranker_failure_mode: reranker.failure_mode,
+  } : {}),
 });
 const server = createRetrievalApiServer(gateway, {
   max_body_bytes: integerEnvironment("RETRIEVAL_MAX_BODY_BYTES", 256_000, 1_024, 10_000_000),
@@ -68,4 +74,43 @@ function embeddingConfiguration(): {
     model_snapshot: snapshot,
     budget: { max_tokens: maxTokens, max_cost_usd: 0, max_duration_ms: maxDuration },
   };
+}
+
+function rerankerConfiguration(): {
+  readonly provider: ConstructorParameters<typeof HttpRerankerProvider>[0];
+  readonly budget: { readonly max_tokens: number; readonly max_cost_usd: number; readonly max_duration_ms: number };
+  readonly failure_mode: "fallback" | "strict";
+} | undefined {
+  const endpoint = process.env.RERANK_ENDPOINT?.trim();
+  const model = process.env.RERANK_MODEL?.trim();
+  if (!endpoint && !model) return undefined;
+  if (!endpoint || !model) throw new TypeError("RERANK_ENDPOINT and RERANK_MODEL must be configured together");
+  const maxDuration = integerEnvironment("RERANK_MAX_DURATION_MS", 10_000, 100, 300_000);
+  const failureMode = process.env.RERANK_FAILURE_MODE?.trim() || "fallback";
+  if (failureMode !== "fallback" && failureMode !== "strict") throw new TypeError("RERANK_FAILURE_MODE must be fallback or strict");
+  return {
+    provider: {
+      endpoint,
+      model,
+      timeout_ms: maxDuration,
+      max_response_bytes: integerEnvironment("RERANK_MAX_RESPONSE_BYTES", 1_000_000, 1_024, 10_000_000),
+      max_documents: integerEnvironment("RERANK_MAX_DOCUMENTS", 64, 50, 1_000),
+      allow_insecure_localhost: process.env.RERANK_ALLOW_INSECURE_LOCALHOST === "true",
+      ...(process.env.RERANK_API_KEY?.trim() ? { api_key: process.env.RERANK_API_KEY.trim() } : {}),
+    },
+    budget: {
+      max_tokens: integerEnvironment("RERANK_MAX_TOKENS", 32_000, 1, 100_000_000),
+      max_cost_usd: numberEnvironment("RERANK_MAX_COST_USD", 0.05, 0, 1_000),
+      max_duration_ms: maxDuration,
+    },
+    failure_mode: failureMode,
+  };
+}
+
+function numberEnvironment(name: string, fallback: number, minimum: number, maximum: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) throw new TypeError(`${name} must be between ${minimum} and ${maximum}`);
+  return value;
 }

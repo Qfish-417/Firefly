@@ -48,6 +48,65 @@ test("gateway fuses independent ranks, deduplicates hits and rechecks ACL", asyn
   assert.ok(pack.evidence.every((item) => item.untrusted_content.length > 0));
 });
 
+test("gateway reranks only ACL-authorized candidates and uses normalized reranker scores", async () => {
+  let documents: readonly string[] = [];
+  let topK = 0;
+  const gateway = new RetrievalGateway({
+    retrievers: [fakeRetriever("lexical", [hit("first", 1, "concept:first"), hit("second", 0.9, "concept:second"), hit("secret", 0.8, "concept:secret")])],
+    authorization: { canRead: ({ hit: candidate }) => candidate.id !== "secret" },
+    reranker: {
+      rerank: async (request) => {
+        documents = request.documents;
+        topK = request.top_k;
+        return {
+          rankings: [{ index: 1, score: 0.95 }, { index: 0, score: 0.7 }],
+          usage: { input_tokens: 8, output_tokens: 0, cached_input_tokens: 0, total_tokens: 8, cost_usd: 0 },
+        };
+      },
+    },
+  });
+
+  const pack = await gateway.retrieve(baseRequest);
+
+  assert.equal(topK, 2);
+  assert.equal(documents.some((document) => document.includes("secret")), false);
+  assert.deepEqual(pack.evidence.map((item) => item.evidence_id), ["second", "first"]);
+  assert.deepEqual(pack.evidence.map((item) => item.score), [0.95, 0.7]);
+});
+
+test("gateway falls back to fused order only for retryable reranker failures", async () => {
+  const gateway = new RetrievalGateway({
+    retrievers: [fakeRetriever("lexical", [hit("first", 1, "concept:first"), hit("second", 0.9, "concept:second")])],
+    authorization: { canRead: () => true },
+    reranker: { rerank: async () => { throw Object.assign(new Error("temporary outage"), { retryable: true }); } },
+  });
+
+  const pack = await gateway.retrieve(baseRequest);
+  assert.deepEqual(pack.evidence.map((item) => item.evidence_id), ["first", "second"]);
+});
+
+test("gateway fails closed on invalid reranker identities and strict provider outages", async () => {
+  const invalid = new RetrievalGateway({
+    retrievers: [fakeRetriever("lexical", [hit("first", 1, "concept:first"), hit("second", 0.9, "concept:second")])],
+    authorization: { canRead: () => true },
+    reranker: {
+      rerank: async () => ({
+        rankings: [{ index: 0, score: 0.9 }, { index: 0, score: 0.8 }],
+        usage: { input_tokens: 1, output_tokens: 0, cached_input_tokens: 0, total_tokens: 1, cost_usd: 0 },
+      }),
+    },
+  });
+  await assert.rejects(invalid.retrieve(baseRequest), (error: unknown) => error instanceof RetrievalPolicyError && error.message.includes("failed closed"));
+
+  const strict = new RetrievalGateway({
+    retrievers: [fakeRetriever("lexical", [hit("first", 1, "concept:first"), hit("second", 0.9, "concept:second")])],
+    authorization: { canRead: () => true },
+    reranker: { rerank: async () => { throw Object.assign(new Error("temporary outage"), { retryable: true }); } },
+    reranker_failure_mode: "strict",
+  });
+  await assert.rejects(strict.retrieve(baseRequest), (error: unknown) => error instanceof RetrievalPolicyError && error.message.includes("temporary outage"));
+});
+
 test("aggregation intent uses structured truth and keeps RAG as citation evidence", async () => {
   const gateway = new RetrievalGateway({
     retrievers: [

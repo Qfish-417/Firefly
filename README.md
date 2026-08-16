@@ -19,7 +19,7 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 按以下顺序阅读：
 
 1. [开工架构与实施顺序](./FireFly-QuestLab-开工架构与实施顺序.md)：编码阶段的事实源，包含通信协议、模块边界、仓库结构、里程碑和 GitHub 权限。
-2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：23 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、后台 Worker、Parent/Child 扩展、固定索引质量评测、删除修复调度、retired 索引回收与 vector/hybrid 评测视图。
+2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：40 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、后台 Worker、Parent/Child 扩展、固定索引质量评测、删除修复调度、retired 索引回收、结构化图事实与受治理重排视图。
 3. [产品与三 Agent 详细设计](./FireFly-QuestLab产品与三Agent详细设计.md)：产品、领域对象、状态机和太阳能纵向切片。
 4. [RAG 与记忆系统设计](./FireFly-RAG与记忆系统设计.md)：聚合检索、记忆分层、压缩、多模态与安全。
 5. [工具系统设计](./FireFly-工具系统设计.md)：五类工具、发现、异步、动态加载和 KV Cache。
@@ -133,9 +133,11 @@ M5.23 completes the durable deletion runtime boundary. `memory:delete` runs one 
 
 M5.24 completes production Index Ready Gate composition. `memory:index-build` now defaults to the full source-watermark/ACL/Recall/Citation gate and loads a digest-verified fixed evaluation set from `MEMORY_INDEX_EVALUATION_SET_FILE`. Explicit `structural` development mode cannot auto-activate and its incomplete report is rejected by the repository activation boundary; see [ADR 0038](./docs/adr/0038-production-advanced-index-ready-gate.md).
 
-M5.25 completes deterministic comparison and temporal aggregation over the PostgreSQL `StructuredEvent` fact layer. Typed `structured_query` variants are validated at HTTP and adapter boundaries; visible events are ordered, deduplicated and conflict-aware before calculating left-minus-right counts or selecting first/last event time. `multi_hop` remains fail closed until a versioned graph-edge contract exists; see [ADR 0039](./docs/adr/0039-structured-comparison-temporal-aggregation.md) and diagram page 38.
+M5.25 completes deterministic comparison and temporal aggregation over the PostgreSQL `StructuredEvent` fact layer. Typed `structured_query` variants are validated at HTTP and adapter boundaries; visible events are ordered, deduplicated and conflict-aware before calculating left-minus-right counts or selecting first/last event time. At that milestone `multi_hop` remained fail closed pending the graph-edge contract completed by M5.26; see [ADR 0039](./docs/adr/0039-structured-comparison-temporal-aggregation.md) and diagram page 38.
 
 M5.26 completes governed multi-hop retrieval. Migration 013 and the v1 `StructuredEdge` contract define directional, time-valid, provenance-bound and ACL-scoped graph facts; `find_relation_path` runs a deterministic, cycle-safe breadth-first search with a maximum of six hops and a bounded readable graph. Memory deletion removes dependent edges transactionally. Missing paths and conflicts remain explicit and fail closed; see [ADR 0040](./docs/adr/0040-versioned-structured-edge-multi-hop.md) and diagram page 39.
+
+M5.27 completes the optional governed reranking boundary. `HttpRerankerProvider` sends only the ACL-authorized dynamic `rerank_k` window to a fixed HTTPS endpoint, enforces request, response, index, normalized-score and budget limits, and never routes reranking through pi-ai. Retryable provider outages may fall back to deterministic RRF order; malformed identities, duplicate indexes, invalid scores and budget violations fail closed. Configure it with `RERANK_ENDPOINT` and `RERANK_MODEL`; see [ADR 0041](./docs/adr/0041-governed-http-reranker.md) and diagram page 40.
 
 PostgreSQL 集成检查（PowerShell）：
 
@@ -153,7 +155,7 @@ npm run admin:start
 docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 ```
 
-The development Compose stack also builds and starts the database migration job, Retrieval API and non-activating index Worker. The Retrieval health endpoint is published at `http://127.0.0.1:53200/health`. Development defaults are provided for the API token and identity HMAC secret; override them outside local development. Optional vector search uses the M5.22 `EMBEDDING_*` configuration.
+The development Compose stack also builds and starts the database migration job, Retrieval API and non-activating index Worker. The Retrieval health endpoint is published at `http://127.0.0.1:53200/health`. Development defaults are provided for the API token and identity HMAC secret; override them outside local development. Optional vector search uses the M5.22 `EMBEDDING_*` configuration; optional reranking uses the M5.27 `RERANK_*` configuration.
 
 The default stack also runs the S3/MinIO object-deletion consumer. To run one external deletion target, set `MEMORY_DELETION_TARGET`, `MEMORY_DELETION_ENDPOINT` and optionally `MEMORY_DELETION_PROVIDER_TOKEN`, then enable the `external-deletion` Compose profile. Deploy a separate process per external target in production so targeted Outbox leases and failure domains remain isolated.
 

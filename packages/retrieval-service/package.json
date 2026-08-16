@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@firefly/contracts": "0.1.0",
+    "@firefly/model-gateway": "0.1.0",
     "@firefly/retrieval-planner": "0.1.0"
   }
 }

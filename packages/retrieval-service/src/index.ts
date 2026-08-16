@@ -12,6 +12,7 @@ import {
   type QueryIntent,
   type RetrievalStage,
 } from "@firefly/retrieval-planner";
+import type { ModelBudget, RerankPort, RerankResult } from "@firefly/model-gateway";
 
 export type {
   EvidenceCitation,
@@ -295,6 +296,9 @@ export interface RetrievalGatewayOptions {
   readonly authorization: RetrievalAuthorizationPort;
   readonly aggregator?: StructuredAggregatorPort;
   readonly expander?: EvidenceExpansionPort;
+  readonly reranker?: RerankPort;
+  readonly reranker_budget?: ModelBudget;
+  readonly reranker_failure_mode?: "fallback" | "strict";
   readonly rrf_constant?: number;
 }
 
@@ -310,6 +314,9 @@ export class RetrievalGateway {
   private readonly authorization: RetrievalAuthorizationPort;
   private readonly aggregator: StructuredAggregatorPort | undefined;
   private readonly expander: EvidenceExpansionPort | undefined;
+  private readonly reranker: RerankPort | undefined;
+  private readonly rerankerBudget: ModelBudget;
+  private readonly rerankerFailureMode: "fallback" | "strict";
   private readonly rrfConstant: number;
 
   constructor(options: RetrievalGatewayOptions) {
@@ -320,8 +327,14 @@ export class RetrievalGateway {
     this.authorization = options.authorization;
     this.aggregator = options.aggregator;
     this.expander = options.expander;
+    this.reranker = options.reranker;
+    this.rerankerBudget = options.reranker_budget ?? { max_tokens: 32_000, max_cost_usd: 0, max_duration_ms: 10_000 };
+    this.rerankerFailureMode = options.reranker_failure_mode ?? "fallback";
     this.rrfConstant = options.rrf_constant ?? 60;
     if (this.rrfConstant <= 0) throw new RetrievalPolicyError("rrf_constant must be positive");
+    if (!Number.isSafeInteger(this.rerankerBudget.max_tokens) || this.rerankerBudget.max_tokens < 1 || !Number.isFinite(this.rerankerBudget.max_cost_usd) || this.rerankerBudget.max_cost_usd < 0 || !Number.isSafeInteger(this.rerankerBudget.max_duration_ms) || this.rerankerBudget.max_duration_ms < 1) {
+      throw new RetrievalPolicyError("reranker_budget is invalid");
+    }
   }
 
   async retrieve(request: RetrievalRequest, signal?: AbortSignal): Promise<EvidencePack> {
@@ -408,7 +421,28 @@ export class RetrievalGateway {
       else denied += 1;
     }
 
-    const rerankWindow = authorized.slice(0, plan.rerank_k);
+    const fusedWindow = authorized.slice(0, plan.rerank_k);
+    let rerankWindow = fusedWindow;
+    if (this.reranker && fusedWindow.length > 0) {
+      try {
+        const result = await this.reranker.rerank({
+          request_id: `${request.query_id}.rerank`,
+          workload: "retrieval.query.rerank",
+          query: request.original_query,
+          documents: fusedWindow.map((hit) => hit.content),
+          top_k: fusedWindow.length,
+          budget: this.rerankerBudget,
+          ...(signal ? { signal } : {}),
+        });
+        rerankWindow = applyRerankResult(fusedWindow, result, this.rerankerBudget);
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (this.rerankerFailureMode === "strict" || !isRetryableProviderFailure(error)) {
+          throw new RetrievalPolicyError(`Reranking failed closed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        rerankWindow = fusedWindow;
+      }
+    }
     const selected = selectEvidence(
       rerankWindow.map((hit) => ({
         id: hit.id,
@@ -497,6 +531,25 @@ export class RetrievalGateway {
 
 interface FusedHit extends RetrievalHit {
   readonly score: number;
+}
+
+function applyRerankResult(hits: readonly FusedHit[], result: RerankResult, budget: ModelBudget): FusedHit[] {
+  if (!result || !Array.isArray(result.rankings) || result.rankings.length !== hits.length) throw new RetrievalPolicyError("Reranker must return exactly one ranking for each governed candidate");
+  const seen = new Set<number>();
+  const ordered = result.rankings.map((ranking) => {
+    if (!Number.isSafeInteger(ranking.index) || ranking.index < 0 || ranking.index >= hits.length || seen.has(ranking.index)) throw new RetrievalPolicyError("Reranker returned an unknown or duplicate candidate index");
+    if (!Number.isFinite(ranking.score) || ranking.score < 0 || ranking.score > 1) throw new RetrievalPolicyError("Reranker scores must be normalized between 0 and 1");
+    seen.add(ranking.index);
+    return { ...hits[ranking.index]!, score: ranking.score };
+  });
+  const usage = result.usage;
+  if (!usage || ![usage.input_tokens, usage.output_tokens, usage.cached_input_tokens, usage.total_tokens, usage.cost_usd].every((value) => Number.isFinite(value) && value >= 0)) throw new RetrievalPolicyError("Reranker returned invalid usage accounting");
+  if (usage.total_tokens > budget.max_tokens || usage.cost_usd > budget.max_cost_usd) throw new RetrievalPolicyError("Reranker exceeded its governed budget");
+  return ordered;
+}
+
+function isRetryableProviderFailure(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "retryable" in error && (error as { readonly retryable?: unknown }).retryable === true);
 }
 
 function reciprocalRankFusion(
