@@ -3,16 +3,20 @@ import {
   RetrievalIndexRepository,
   createDatabase,
 } from "@firefly/persistence";
-import { PostgresMemoryIndexer } from "@firefly/retrieval-postgres";
+import { PostgresBuildingIndexQualityEvaluator, PostgresMemoryIndexer } from "@firefly/retrieval-postgres";
 import { HttpEmbeddingProvider } from "@firefly/model-gateway";
 
 import {
   AwsS3ObjectReadPort,
+  AdvancedIndexReadyGate,
   BinaryTextArtifactReadPort,
+  createFixedIndexQualityProbes,
   DefaultIndexReadyGate,
+  loadIndexEvaluationSetFile,
   MarkdownParentChildChunker,
   PostgresMemoryIndexSourcePort,
   RetrievalIndexBuildWorker,
+  SourceWatermarkQualityProbe,
 } from "./index.ts";
 
 const databaseUrl = requiredEnvironment("DATABASE_URL");
@@ -28,6 +32,13 @@ const objects = new AwsS3ObjectReadPort({
   ...(process.env.S3_ENDPOINT?.trim() ? { endpoint: process.env.S3_ENDPOINT.trim() } : {}),
   forcePathStyle: process.env.S3_FORCE_PATH_STYLE !== "false",
 });
+const source = new PostgresMemoryIndexSourcePort(db, {
+  read_artifact: new BinaryTextArtifactReadPort(objects),
+  max_artifact_bytes: maxArtifactBytes,
+});
+const readyGateMode = process.env.MEMORY_INDEX_READY_GATE_MODE?.trim() || "advanced";
+const autoActivate = process.env.MEMORY_INDEX_AUTO_ACTIVATE === "true";
+const readyGate = await createReadyGate();
 const controller = new AbortController();
 process.once("SIGINT", () => controller.abort());
 process.once("SIGTERM", () => controller.abort());
@@ -37,20 +48,33 @@ const worker = new RetrievalIndexBuildWorker({
   outbox: new OutboxRepository(db),
   indexes: new RetrievalIndexRepository(db),
   indexer: new PostgresMemoryIndexer(db),
-  source: new PostgresMemoryIndexSourcePort(db, {
-    read_artifact: new BinaryTextArtifactReadPort(objects),
-    max_artifact_bytes: maxArtifactBytes,
-  }),
+  source,
   chunker: new MarkdownParentChildChunker(),
   ...(embedding ? {
     embeddings: new HttpEmbeddingProvider(embedding.provider),
     embedding_budget: embedding.budget,
   } : {}),
-  ready_gate: new DefaultIndexReadyGate(),
-  auto_activate: false,
+  ready_gate: readyGate,
+  auto_activate: autoActivate,
   batch_size: batchSize,
   lease_duration_ms: leaseMs,
 });
+
+async function createReadyGate() {
+  if (readyGateMode === "structural") {
+    if (autoActivate) throw new TypeError("Structural-only Ready Gate cannot auto-activate indexes");
+    return new DefaultIndexReadyGate();
+  }
+  if (readyGateMode !== "advanced") throw new TypeError("MEMORY_INDEX_READY_GATE_MODE must be advanced or structural");
+  const evaluationSet = await loadIndexEvaluationSetFile(
+    requiredEnvironment("MEMORY_INDEX_EVALUATION_SET_FILE"),
+    integerEnvironment("MEMORY_INDEX_EVALUATION_SET_MAX_BYTES", 5_000_000, 1_024, 50_000_000),
+  );
+  return new AdvancedIndexReadyGate([
+    new SourceWatermarkQualityProbe((task) => source.currentWatermark(task)),
+    ...createFixedIndexQualityProbes(evaluationSet, new PostgresBuildingIndexQualityEvaluator(db)),
+  ]);
+}
 
 try {
   while (!controller.signal.aborted) {

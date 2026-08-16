@@ -9,6 +9,7 @@ export * from "./http-ocr-layout-parser.ts";
 export * from "./http-asr-diarization-parser.ts";
 export * from "./xlsx-table-parser.ts";
 export * from "./index-quality-probes.ts";
+export * from "./index-evaluation-set-file.ts";
 export * from "./deletion-worker.ts";
 export * from "./http-deletion-consumer.ts";
 export * from "./reconciliation-scheduler.ts";

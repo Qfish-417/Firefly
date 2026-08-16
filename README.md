@@ -131,6 +131,8 @@ M5.22 adds an explicit text Embedding boundary. `HttpEmbeddingProvider` targets 
 
 M5.23 completes the durable deletion runtime boundary. `memory:delete` runs one targeted consumer for object storage or a governed fixed HTTPS endpoint for external lexical/vector, multimodal, cache, summary and evaluation projections. External success requires an immutable, identity-bound deletion receipt; see [ADR 0037](./docs/adr/0037-governed-external-deletion-consumers.md).
 
+M5.24 completes production Index Ready Gate composition. `memory:index-build` now defaults to the full source-watermark/ACL/Recall/Citation gate and loads a digest-verified fixed evaluation set from `MEMORY_INDEX_EVALUATION_SET_FILE`. Explicit `structural` development mode cannot auto-activate and its incomplete report is rejected by the repository activation boundary; see [ADR 0038](./docs/adr/0038-production-advanced-index-ready-gate.md).
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell
@@ -150,6 +152,8 @@ docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 The development Compose stack also builds and starts the database migration job, Retrieval API and non-activating index Worker. The Retrieval health endpoint is published at `http://127.0.0.1:53200/health`. Development defaults are provided for the API token and identity HMAC secret; override them outside local development. Optional vector search uses the M5.22 `EMBEDDING_*` configuration.
 
 The default stack also runs the S3/MinIO object-deletion consumer. To run one external deletion target, set `MEMORY_DELETION_TARGET`, `MEMORY_DELETION_ENDPOINT` and optionally `MEMORY_DELETION_PROVIDER_TOKEN`, then enable the `external-deletion` Compose profile. Deploy a separate process per external target in production so targeted Outbox leases and failure domains remain isolated.
+
+The development Compose index Worker explicitly uses `MEMORY_INDEX_READY_GATE_MODE=structural` and never auto-activates. Production should omit that override, mount one immutable evaluation-set JSON file, set its absolute container path in `MEMORY_INDEX_EVALUATION_SET_FILE`, and run a separate Worker for each tenant/logical-index evaluation corpus.
 
 M5.8 结构化 Chunker 已落地：`PdfLayoutChunker` 保留 page/bbox/heading/region，`CodeAstChunker` 保留 language/symbol/AST/line，`TableStructureChunker` 保留 sheet/table/header/row/column；默认在缺失 parser output 时 fail closed，也支持显式 `fallback_mode=degraded` 的纯文本降级并标记 Citation Locator。架构图新增第 24 页，决策记录见 [ADR 0021](./docs/adr/0021-structured-document-chunkers.md)。
 
