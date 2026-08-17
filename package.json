@@ -13,6 +13,8 @@
     "test:integration": "node --test --test-concurrency=1 \"packages/**/*.integration.test.ts\" \"agents/**/*.integration.test.ts\"",
     "db:migrate": "node packages/persistence/src/migrate.ts",
     "admin:start": "node packages/control-plane/src/admin-server.ts",
+    "model:catalog": "node packages/model-gateway/src/model-cli.ts catalog",
+    "model:doctor": "node packages/model-gateway/src/model-cli.ts doctor",
     "demo:start": "node packages/control-plane/src/local-demo.ts start",
     "demo:approve": "node packages/control-plane/src/local-demo.ts approve",
     "retrieval:start": "node packages/control-plane/src/retrieval-server.ts",
