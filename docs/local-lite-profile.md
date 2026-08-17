@@ -18,6 +18,30 @@ docker compose -p firefly-questlab-lite -f infra/compose/questlab-lite.yml down 
 
 默认端口为 PostgreSQL `55432`、Retrieval API `53200`。轻量栈与完整开发栈使用相同端口，不能同时启动。
 
+## 运行三 Agent 闭环
+
+轻量栈健康后，可以用确定性 Stub 完成一次真实持久化的三 Agent 协作。启动命令创建任务、Learning Scientist 发现和改进计划，然后必须停在人工审批边界：
+
+```powershell
+npm run demo:start -- --run-id run.local.001
+```
+
+检查输出中的 `approval_id` 和 `plan_id` 后，再用明确的身份与理由恢复运行：
+
+```powershell
+npm run demo:approve -- --run-id run.local.001 --approver local.user --reason "reviewed locally"
+```
+
+成功结果应为 `state: learned`、五个 Agent Task 和九次状态迁移。两个命令默认连接 `127.0.0.1:55432`，也支持通过 `DATABASE_URL` 指向其他 PostgreSQL。它们不会调用真实模型、自动批准计划或伪造 Sandbox 证据。
+
+如需查看完整因果轨迹，可在另一个终端启动只读 Admin API：
+
+```powershell
+$env:DATABASE_URL = "postgresql://questlab:questlab@127.0.0.1:55432/questlab"
+npm run admin:start
+Invoke-RestMethod http://127.0.0.1:3100/admin/evolution-runs/run.local.001
+```
+
 ## 可接受的显式降级
 
 | 能力 | 本地默认 | 可选增强 | 影响 |

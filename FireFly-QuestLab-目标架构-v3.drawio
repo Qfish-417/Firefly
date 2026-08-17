@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="41">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="42">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -1109,6 +1109,32 @@
         <mxCell id="p41-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p41-1" source="p41-degrade" target="p41-optin"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p41-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p41-1" source="p41-default" target="p41-optin"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p41-boundary" value="Boundary: lower quality, throughput and external coverage are acceptable locally; fabricated success, widened access and model-inferred structured truth are not." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p41-1"><mxGeometry x="190" y="935" width="1220" height="40" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-local-manual-evolution-cli" name="42-M5.29 Local Manual Three-Agent CLI">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p42-0"/><mxCell id="p42-1" parent="p42-0"/>
+        <mxCell id="p42-title" value="M5.29 Local three-Agent operation: durable start, explicit approval, queryable outcome" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p42-1"><mxGeometry x="80" y="20" width="1440" height="50" as="geometry"/></mxCell>
+        <mxCell id="p42-start" value="demo:start&#xa;bounded run ID&#xa;deterministic synthetic learning evidence&#xa;zero model budget" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p42-1"><mxGeometry x="55" y="120" width="310" height="170" as="geometry"/></mxCell>
+        <mxCell id="p42-director1" value="Learning Director&#xa;GenerateMissionPlanTask&#xa;trusted mission and plugin exposure" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p42-1"><mxGeometry x="430" y="120" width="320" height="170" as="geometry"/></mxCell>
+        <mxCell id="p42-scientist1" value="Learning Scientist&#xa;AnalyzeLearningOutcomeTask&#xa;finding + evidence-bound plan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p42-1"><mxGeometry x="820" y="120" width="320" height="170" as="geometry"/></mxCell>
+        <mxCell id="p42-approval" value="Durable approval boundary&#xa;state = awaiting_approval&#xa;approval_id + plan_id&#xa;no automatic continuation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p42-1"><mxGeometry x="1210" y="115" width="330" height="180" as="geometry"/></mxCell>
+        <mxCell id="p42-approve" value="demo:approve&#xa;existing run ID required&#xa;approver identity + reason required" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="p42-1"><mxGeometry x="1170" y="440" width="360" height="160" as="geometry"/></mxCell>
+        <mxCell id="p42-engineer" value="Experience Engineer&#xa;BuildPluginChangeTask&#xa;deterministic ChangeSet + verification" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p42-1"><mxGeometry x="735" y="430" width="350" height="180" as="geometry"/></mxCell>
+        <mxCell id="p42-canary" value="Director + Scientist&#xa;ActivateCanaryMissionTask&#xa;EvaluateCanaryTask&#xa;outcome decision" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=14;fontStyle=1;" vertex="1" parent="p42-1"><mxGeometry x="300" y="430" width="350" height="180" as="geometry"/></mxCell>
+        <mxCell id="p42-fact" value="PostgreSQL truth&#xa;5 tasks | 9 transitions | artifacts&#xa;approval + causal edges + sentinel incidents&#xa;terminal state = learned" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p42-1"><mxGeometry x="310" y="735" width="430" height="170" as="geometry"/></mxCell>
+        <mxCell id="p42-admin" value="Read-only Admin API&#xa;GET /admin/evolution-runs/{run_id}&#xa;full causal trace and budget usage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=14;fontStyle=1;" vertex="1" parent="p42-1"><mxGeometry x="880" y="750" width="420" height="150" as="geometry"/></mxCell>
+        <mxCell id="p42-e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p42-1" source="p42-start" target="p42-director1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p42-e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p42-1" source="p42-director1" target="p42-scientist1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p42-e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p42-1" source="p42-scientist1" target="p42-approval"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p42-e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p42-1" source="p42-approval" target="p42-approve"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p42-e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#D97706;" edge="1" parent="p42-1" source="p42-approve" target="p42-engineer"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p42-e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p42-1" source="p42-engineer" target="p42-canary"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p42-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p42-1" source="p42-canary" target="p42-fact"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p42-e8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#5E6C84;" edge="1" parent="p42-1" source="p42-fact" target="p42-admin"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p42-boundary" value="Boundary: the CLI makes the tested workflow operable; it does not bypass approval, expose a mutation HTTP API, call paid models or claim Sandbox evidence." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p42-1"><mxGeometry x="190" y="935" width="1220" height="40" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

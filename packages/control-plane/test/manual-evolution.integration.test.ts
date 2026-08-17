@@ -3,7 +3,6 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 
-import type { ArtifactRef, LearningEvent } from "@firefly/contracts";
 import {
   WorkflowTaskRepository,
   createDatabase,
@@ -14,8 +13,10 @@ import { sql } from "kysely";
 import {
   AdminQueryService,
   ManualEvolutionWorkflow,
+  approveLocalDemo,
+  createLocalDemoInput,
   createAdminApiServer,
-  type ManualEvolutionInput,
+  startLocalDemo,
 } from "../src/index.ts";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -43,7 +44,7 @@ test(
         clockValue += 1000;
         return new Date(clockValue);
       };
-      const input = createInput("run.manual.integration");
+      const input = createLocalDemoInput("run.manual.integration");
       const workflow = new ManualEvolutionWorkflow(db, clock);
 
       await context.test("the workflow stops at the human approval boundary", async () => {
@@ -145,72 +146,26 @@ test(
           undefined,
         );
       });
+
+      await context.test("local CLI operations preserve the manual approval boundary", async () => {
+        const runId = "run.local.cli.integration";
+        const awaiting = await startLocalDemo(db, runId);
+        assert.equal(awaiting.state, "awaiting_approval");
+        assert.equal(awaiting.approval_id, `approval.${runId}`);
+
+        const completed = await approveLocalDemo(
+          db,
+          runId,
+          "teacher.local.integration",
+          "Reviewed the persisted local plan.",
+        );
+        assert.equal(completed.state, "learned");
+        assert.equal(completed.verification_status, "passed");
+        assert.equal(completed.task_count, 5);
+        assert.equal(completed.transition_count, 9);
+      });
     } finally {
       await db.destroy();
     }
   },
 );
-
-function createInput(runId: string): ManualEvolutionInput {
-  const sourcePlugin: ArtifactRef = {
-    artifact_id: `artifact.plugin-source.${runId}`,
-    uri: `https://artifacts.firefly.local/plugins/solar-energy/${runId}/1.2.0.json`,
-    digest: `sha256:${"a".repeat(64)}`,
-    media_type: "application/vnd.firefly.plugin+json",
-    scope: "tenant",
-    owner_id: "tenant.questlab",
-    lineage_ids: [],
-  };
-  const evidenceArtifact: ArtifactRef = {
-    artifact_id: `artifact.evidence.${runId}`,
-    uri: `https://artifacts.firefly.local/evidence/${runId}/attempts.json`,
-    digest: `sha256:${"b".repeat(64)}`,
-    media_type: "application/json",
-    scope: "tenant",
-    owner_id: "tenant.questlab",
-    lineage_ids: [],
-  };
-  const baseEvent = {
-    learner_id: "learner.synthetic.01",
-    world_id: "world.mars.01",
-    mission_id: "mission.solar-energy.01",
-    plugin_exposure: {
-      plugin_id: "solar-energy",
-      version: "1.2.0",
-      digest: sourcePlugin.digest,
-    },
-    artifact_refs: [evidenceArtifact],
-  } as const;
-  const learningEvents: readonly LearningEvent[] = [
-    {
-      ...baseEvent,
-      event_id: `learning-event.challenge.${runId}`,
-      event_type: "challenge_attempted",
-      occurred_at: new Date().toISOString(),
-      attributes: {
-        misconception: "constant_solar_output",
-        predicted_night_output_ratio: 1,
-      },
-    },
-    {
-      ...baseEvent,
-      event_id: `learning-event.review.${runId}`,
-      event_type: "delayed_review_completed",
-      occurred_at: new Date(Date.now() + 1000).toISOString(),
-      attributes: {
-        misconception: "constant_solar_output",
-        retained_incorrect_model: true,
-      },
-    },
-  ];
-  return {
-    run_id: runId,
-    correlation_id: `correlation.${runId}`,
-    trace_id: `trace.${runId}`,
-    goal: "Explain how the Martian day-night cycle changes solar energy production.",
-    cohort: "cohort.synthetic.beginner",
-    learning_events: learningEvents,
-    evidence_artifact: evidenceArtifact,
-    source_plugin: sourcePlugin,
-  };
-}

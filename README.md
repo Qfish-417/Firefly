@@ -19,7 +19,7 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 按以下顺序阅读：
 
 1. [开工架构与实施顺序](./FireFly-QuestLab-开工架构与实施顺序.md)：编码阶段的事实源，包含通信协议、模块边界、仓库结构、里程碑和 GitHub 权限。
-2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：41 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、后台 Worker、Parent/Child 扩展、固定索引质量评测、删除修复调度、retired 索引回收、结构化图事实、受治理重排与本地轻量运行视图。
+2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：42 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、后台 Worker、Parent/Child 扩展、固定索引质量评测、删除修复调度、retired 索引回收、结构化图事实、受治理重排、本地轻量运行与三 Agent CLI 视图。
 3. [产品与三 Agent 详细设计](./FireFly-QuestLab产品与三Agent详细设计.md)：产品、领域对象、状态机和太阳能纵向切片。
 4. [RAG 与记忆系统设计](./FireFly-RAG与记忆系统设计.md)：聚合检索、记忆分层、压缩、多模态与安全。
 5. [工具系统设计](./FireFly-工具系统设计.md)：五类工具、发现、异步、动态加载和 KV Cache。
@@ -142,6 +142,8 @@ M5.27 completes the optional governed reranking boundary. `HttpRerankerProvider`
 
 M5.28 defines the local completion target. `npm run lite:up` starts only a resource-bounded PostgreSQL fact layer, one-shot migration and lexical Retrieval API; persistent local data survives ordinary shutdown. Embedding, exact pgvector and reranking remain opt-in, while MinIO, background Workers, OCR/ASR and Sandbox stay off by default. Quality and infrastructure may degrade explicitly, but ACL, structured truth, Loop Sentinel, citations, budgets and approvals remain strict; see [ADR 0042](./docs/adr/0042-local-lite-degradation-profile.md), the [local guide](./docs/local-lite-profile.md) and diagram page 41.
 
+M5.29 makes the local three-Agent loop directly operable. `npm run demo:start` persists a deterministic learning run and stops at `awaiting_approval`; `npm run demo:approve` requires an explicit run ID, approver and reason before resuming Engineer build, Director canary and Scientist outcome stages. The commands reuse the integration-tested workflow and zero-cost Stub Agents, while the read-only Admin API exposes the resulting causal trace; see [ADR 0043](./docs/adr/0043-local-manual-evolution-cli.md) and diagram page 42.
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell
@@ -163,6 +165,8 @@ docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 ```powershell
 npm run lite:up
 Invoke-RestMethod http://127.0.0.1:53200/health
+npm run demo:start -- --run-id run.local.001
+npm run demo:approve -- --run-id run.local.001 --approver local.user --reason "reviewed locally"
 npm run lite:down
 ```
 
