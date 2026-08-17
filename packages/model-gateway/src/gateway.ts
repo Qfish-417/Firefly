@@ -65,6 +65,7 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
           await this.recordInvocation({
             request,
             route,
+            capability: "generate",
             attempt: attemptNumber,
             startedAt: attemptStartedAt,
             completedAt: this.now(),
@@ -77,6 +78,7 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
           await this.recordInvocation({
             request,
             route,
+            capability: "generate",
             attempt: attemptNumber,
             startedAt: attemptStartedAt,
             completedAt: this.now(),
@@ -118,6 +120,7 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
               await this.recordInvocation({
                 request,
                 route,
+                capability: "stream",
                 attempt: attemptNumber,
                 startedAt: attemptStartedAt,
                 completedAt: this.now(),
@@ -137,6 +140,7 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
           await this.recordInvocation({
             request,
             route,
+            capability: "stream",
             attempt: attemptNumber,
             startedAt: attemptStartedAt,
             completedAt: this.now(),
@@ -303,6 +307,7 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
   private async recordInvocation(input: {
     readonly request: GenerationRequest;
     readonly route: PreparedRoute;
+    readonly capability: "generate" | "stream";
     readonly attempt: number;
     readonly startedAt: number;
     readonly completedAt: number;
@@ -316,6 +321,7 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
       invocation_id: `${input.request.request_id}:${input.attempt}`,
       request_id: input.request.request_id,
       workload: input.request.workload,
+      capability: input.capability,
       route_id: input.route.route.route_id,
       transport_id: input.route.route.transport_id,
       provider: input.route.route.provider,
@@ -329,6 +335,7 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
       ...(input.error
         ? { error: { code: input.error.code, message: input.error.message, retryable: input.error.retryable } }
         : {}),
+      ...(input.request.attribution ? { attribution: input.request.attribution } : {}),
       snapshots: {
         ...input.request.snapshots,
         ...(input.result?.snapshots.model ? { model: input.result.snapshots.model } : {}),

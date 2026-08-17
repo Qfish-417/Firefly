@@ -75,6 +75,12 @@ export class LearningDirectorAgent implements AgentWorker {
         max_duration_ms: task.budget.max_duration_sec * 1_000,
       },
       snapshots: { prompt, tools: "tools:none:model-gateway.v1", knowledge },
+      attribution: {
+        ...(task.governance ? { run_id: task.governance.root_run_id } : {}),
+        task_id: task.message_id,
+        agent_id: this.id,
+        origin: "business_agent",
+      },
       temperature: 0.2,
       ...(context.signal ? { signal: context.signal } : {}),
     });

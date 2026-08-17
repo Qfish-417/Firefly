@@ -36,6 +36,14 @@ const baseRequest: GenerationRequest = {
     tools: "tools:none:v1",
     knowledge: "knowledge:test:v1",
   },
+  attribution: {
+    run_id: "run.gateway-unit",
+    task_id: "task.gateway-unit",
+    agent_id: "learning-scientist",
+    tenant_id: "tenant.gateway-unit",
+    user_id: "user.gateway-unit",
+    origin: "business_agent",
+  },
 };
 
 test("gateway falls back to the next route after a retryable provider error", async () => {
@@ -95,6 +103,8 @@ test("gateway reports one privacy-preserving invocation record per provider atte
   ]);
   assert.equal(records[0]?.error?.code, "PROVIDER_ERROR");
   assert.equal(records[1]?.usage?.total_tokens, usage.total_tokens);
+  assert.equal(records[1]?.capability, "generate");
+  assert.deepEqual(records[1]?.attribution, baseRequest.attribution);
   assert.equal("system_prompt" in records[0]!, false);
   assert.equal(records[1]?.snapshots.prompt, baseRequest.snapshots.prompt);
 });

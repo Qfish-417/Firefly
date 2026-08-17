@@ -118,6 +118,36 @@ test(
           };
           assert.equal(body.run.state, "learned");
           assert.equal(body.tasks.length, 5);
+
+          const usageResponse = await fetch(
+            `http://127.0.0.1:${address.port}/admin/audit/agents`,
+          );
+          assert.equal(usageResponse.status, 200);
+          const usageBody = (await usageResponse.json()) as {
+            readonly agents: readonly { readonly agent_id: string; readonly task_count: number }[];
+          };
+          assert.deepEqual(
+            usageBody.agents.map((agent) => [agent.agent_id, agent.task_count]),
+            [
+              ["learning-director", 2],
+              ["learning-scientist", 2],
+              ["experience-engineer", 1],
+            ],
+          );
+
+          const auditResponse = await fetch(
+            `http://127.0.0.1:${address.port}/admin/audit/runs/${input.run_id}`,
+          );
+          assert.equal(auditResponse.status, 200);
+          const auditBody = (await auditResponse.json()) as {
+            readonly run_id: string;
+            readonly totals: { readonly task_count: number; readonly model_calls: number };
+            readonly privacy: string;
+          };
+          assert.equal(auditBody.run_id, input.run_id);
+          assert.equal(auditBody.totals.task_count, 5);
+          assert.equal(auditBody.totals.model_calls, 0);
+          assert.equal(auditBody.privacy, "metadata_and_digests_only");
         } finally {
           server.close();
           await once(server, "close");

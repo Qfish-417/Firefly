@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="42">
+<mxfile host="app.diagrams.net" agent="Codex" version="24.7.17" pages="43">
   <diagram id="v3-context" name="01-产品与系统上下文">
     <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
@@ -1135,6 +1135,32 @@
         <mxCell id="p42-e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p42-1" source="p42-canary" target="p42-fact"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p42-e8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#5E6C84;" edge="1" parent="p42-1" source="p42-fact" target="p42-admin"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="p42-boundary" value="Boundary: the CLI makes the tested workflow operable; it does not bypass approval, expose a mutation HTTP API, call paid models or claim Sandbox evidence." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=12;" vertex="1" parent="p42-1"><mxGeometry x="190" y="935" width="1220" height="40" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="v3-agent-audit" name="43-Agent API Token Audit">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="p43-0"/><mxCell id="p43-1" parent="p43-0"/>
+        <mxCell id="p43-title" value="M5.30 - Three-Agent API, Token, Cost and Activity Audit" style="text;html=1;align=center;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#172B4D;" vertex="1" parent="p43-1"><mxGeometry x="180" y="25" width="1240" height="50" as="geometry"/></mxCell>
+        <mxCell id="p43-agents" value="Business Agent boundary" style="swimlane;html=1;horizontal=1;startSize=34;fillColor=#F7F8FA;strokeColor=#5E6C84;fontSize=15;fontStyle=1;" vertex="1" parent="p43-1"><mxGeometry x="70" y="115" width="380" height="330" as="geometry"/></mxCell>
+        <mxCell id="p43-director" value="Learning Director&#xa;mission planning" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F5EC;strokeColor=#2E8B57;fontSize=13;fontStyle=1;" vertex="1" parent="p43-agents"><mxGeometry x="45" y="65" width="290" height="65" as="geometry"/></mxCell>
+        <mxCell id="p43-scientist" value="Learning Scientist&#xa;evidence analysis" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=13;fontStyle=1;" vertex="1" parent="p43-agents"><mxGeometry x="45" y="150" width="290" height="65" as="geometry"/></mxCell>
+        <mxCell id="p43-engineer" value="Experience Engineer&#xa;patch proposal" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E5;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="p43-agents"><mxGeometry x="45" y="235" width="290" height="65" as="geometry"/></mxCell>
+        <mxCell id="p43-gateway" value="Model Gateway + pi-ai&#xa;route / retry / budget&#xa;run + task + Agent attribution" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F2EAFE;strokeColor=#7A5AF8;fontSize=14;fontStyle=1;" vertex="1" parent="p43-1"><mxGeometry x="535" y="175" width="330" height="185" as="geometry"/></mxCell>
+        <mxCell id="p43-provider" value="Text model providers&#xa;one record per attempt&#xa;provider-reported usage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5E6C84;fontSize=14;" vertex="1" parent="p43-1"><mxGeometry x="950" y="185" width="300" height="165" as="geometry"/></mxCell>
+        <mxCell id="p43-ledger" value="PostgreSQL fact ledger&#xa;model_invocation&#xa;run_budget_usage&#xa;atomic + idempotent settlement" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p43-1"><mxGeometry x="535" y="555" width="360" height="190" as="geometry"/></mxCell>
+        <mxCell id="p43-trace" value="Workflow facts&#xa;tasks / transitions&#xa;Agent results / Sandbox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E8B57;fontSize=14;" vertex="1" parent="p43-1"><mxGeometry x="80" y="570" width="300" height="160" as="geometry"/></mxCell>
+        <mxCell id="p43-audit" value="Audit Agent (read-only)&#xa;deterministic joins + totals&#xa;failure / retry / telemetry gap&#xa;70% and 90% budget alerts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDECEC;strokeColor=#C9372C;fontSize=14;fontStyle=1;" vertex="1" parent="p43-1"><mxGeometry x="1000" y="535" width="390" height="230" as="geometry"/></mxCell>
+        <mxCell id="p43-api" value="Local Admin API&#xa;GET /admin/audit/agents&#xa;GET /admin/audit/runs/{run_id}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#4C78A8;fontSize=14;fontStyle=1;" vertex="1" parent="p43-1"><mxGeometry x="1000" y="835" width="390" height="115" as="geometry"/></mxCell>
+        <mxCell id="p43-e1" value="generate" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#7A5AF8;" edge="1" parent="p43-1" source="p43-agents" target="p43-gateway"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p43-e2" value="provider attempt" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#5E6C84;" edge="1" parent="p43-1" source="p43-gateway" target="p43-provider"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p43-e3" value="usage result" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#5E6C84;" edge="1" parent="p43-1" source="p43-provider" target="p43-gateway"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p43-e4" value="metadata + snapshots only" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p43-1" source="p43-gateway" target="p43-ledger"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p43-e5" value="read" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#2E8B57;" edge="1" parent="p43-1" source="p43-trace" target="p43-audit"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p43-e6" value="read" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#4C78A8;" edge="1" parent="p43-1" source="p43-ledger" target="p43-audit"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p43-e7" value="redacted report" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;strokeColor=#C9372C;" edge="1" parent="p43-1" source="p43-audit" target="p43-api"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="p43-boundary" value="Hard boundary: no raw prompts, responses, hidden reasoning or credentials. Audit Agent is not an AgentWorker, cannot call models, execute tools, delegate tasks or mutate workflow state." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C9372C;fontSize=12;fontStyle=1;" vertex="1" parent="p43-1"><mxGeometry x="80" y="835" width="815" height="115" as="geometry"/></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

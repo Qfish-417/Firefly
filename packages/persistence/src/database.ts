@@ -341,6 +341,14 @@ export interface ModelInvocationTable {
   invocation_id: string;
   request_id: string;
   workload: string;
+  capability: "generate" | "stream" | "embed" | "rerank";
+  run_id: string | null;
+  task_id: string | null;
+  agent_id: "learning-director" | "learning-scientist" | "experience-engineer" | "audit-agent" | null;
+  tenant_id: string | null;
+  user_id: string | null;
+  origin: "business_agent" | "audit_agent" | "system";
+  billing_source: "provider_reported" | "estimated" | "none";
   route_id: string;
   transport_id: string;
   provider: string;

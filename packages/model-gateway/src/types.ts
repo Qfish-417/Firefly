@@ -36,6 +36,15 @@ export interface InputSnapshots {
   readonly knowledge: string;
 }
 
+export interface InvocationAttribution {
+  readonly run_id?: string;
+  readonly task_id?: string;
+  readonly agent_id?: "learning-director" | "learning-scientist" | "experience-engineer" | "audit-agent";
+  readonly tenant_id?: string;
+  readonly user_id?: string;
+  readonly origin: "business_agent" | "audit_agent" | "system";
+}
+
 export interface GenerationRequest {
   readonly request_id: string;
   readonly workload: string;
@@ -44,6 +53,7 @@ export interface GenerationRequest {
   readonly max_output_tokens: number;
   readonly budget: ModelBudget;
   readonly snapshots: InputSnapshots;
+  readonly attribution?: InvocationAttribution;
   readonly temperature?: number;
   readonly signal?: AbortSignal;
 }
@@ -78,6 +88,7 @@ export interface ModelInvocationRecord {
   readonly invocation_id: string;
   readonly request_id: string;
   readonly workload: string;
+  readonly capability: "generate" | "stream" | "embed" | "rerank";
   readonly route_id: string;
   readonly transport_id: string;
   readonly provider: string;
@@ -93,6 +104,7 @@ export interface ModelInvocationRecord {
     readonly message: string;
     readonly retryable: boolean;
   };
+  readonly attribution?: InvocationAttribution;
   readonly snapshots: {
     readonly prompt: string;
     readonly tools: string;

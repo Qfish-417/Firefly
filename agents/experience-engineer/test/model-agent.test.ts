@@ -66,6 +66,12 @@ test("model Engineer turns an approved patch proposal into real tool evidence", 
   });
 
   assert.equal(engineering.buildCalls.length, 1);
+  assert.deepEqual(gateway.requests[0]?.attribution, {
+    run_id: "run.engineer-model-unit",
+    task_id: "task.engineer-model-unit",
+    agent_id: "experience-engineer",
+    origin: "business_agent",
+  });
   assert.equal(engineering.buildCalls[0]?.[0]?.path, "plugins/solar-energy/src/daylight.mjs");
   assert.equal((result.output.change_set as unknown as ChangeSet).patch_commit, "a".repeat(40));
   assert.equal((result.output.verification_report as unknown as VerificationReport).status, "passed");
@@ -88,6 +94,7 @@ test("model Engineer rejects an unapproved path before invoking the engineering 
 });
 
 class FakeGateway implements TextGenerationPort {
+  readonly requests: GenerationRequest[] = [];
   private readonly response: unknown;
 
   constructor(response: unknown) {
@@ -95,6 +102,7 @@ class FakeGateway implements TextGenerationPort {
   }
 
   async generate(request: GenerationRequest): Promise<GenerationResult> {
+    this.requests.push(request);
     return {
       request_id: request.request_id,
       text: JSON.stringify(this.response),
@@ -220,6 +228,14 @@ function task(): TaskEnvelope {
     lease: { duration_sec: 300, heartbeat_sec: 30 },
     retry_policy: { max_attempts: 1, initial_backoff_ms: 100, max_backoff_ms: 1_000 },
     budget: { max_tokens: 20_000, max_cost_usd: 1, max_duration_sec: 120 },
+    governance: {
+      root_run_id: "run.engineer-model-unit",
+      hop_count: 2,
+      max_hops: 8,
+      task_fingerprint: `sha256:${"3".repeat(64)}`,
+      policy_snapshot: "governance:test:v1",
+      epoch: 0,
+    },
     artifact_refs: [sourceArtifact],
     payload: { plan: plan as unknown as never },
   };

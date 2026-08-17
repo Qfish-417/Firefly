@@ -26,6 +26,12 @@ test("model Director adds guidance but cannot alter trusted mission stages or pl
   assert.equal(plan.plugin_exposure.version, "1.2.0");
   assert.equal(plan.stage_guidance.predict, "Ask for a prediction.");
   assert.equal(gateway.requests.length, 1);
+  assert.deepEqual(gateway.requests[0]?.attribution, {
+    run_id: "run.director-unit",
+    task_id: "task.mission.director-unit",
+    agent_id: "learning-director",
+    origin: "business_agent",
+  });
   assert.match(result.snapshots.prompt ?? "", /^prompt:learning-director\.mission-plan\.v1:sha256:/);
 });
 
@@ -86,6 +92,14 @@ function task(): TaskEnvelope {
     lease: { duration_sec: 300, heartbeat_sec: 30 },
     retry_policy: { max_attempts: 3, initial_backoff_ms: 100, max_backoff_ms: 1_000 },
     budget: { max_tokens: 2_000, max_cost_usd: 0.1, max_duration_sec: 30 },
+    governance: {
+      root_run_id: "run.director-unit",
+      hop_count: 1,
+      max_hops: 8,
+      task_fingerprint: `sha256:${"1".repeat(64)}`,
+      policy_snapshot: "governance:test:v1",
+      epoch: 0,
+    },
     artifact_refs: [],
     payload: {
       world_id: "world.mars-base",

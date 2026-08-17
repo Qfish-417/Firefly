@@ -2,7 +2,7 @@ import { ModelGatewayError } from "./errors.ts";
 import { RoutedModelGateway } from "./gateway.ts";
 import { createBuiltinPiAiTransport } from "./pi-ai-adapter.ts";
 import { snapshotId } from "./snapshots.ts";
-import type { ModelRoute, ModelRoutingPolicy, RouteRetryPolicy } from "./types.ts";
+import type { ModelInvocationObserver, ModelRoute, ModelRoutingPolicy, RouteRetryPolicy } from "./types.ts";
 
 export interface ModelRouteConfiguration {
   readonly provider: string;
@@ -57,10 +57,12 @@ export function createModelRoutingPolicy(
 
 export function createPiAiModelGateway(
   configuration: ModelGatewayConfiguration,
+  options: { readonly observer?: ModelInvocationObserver } = {},
 ): RoutedModelGateway {
   return new RoutedModelGateway({
     policy: createModelRoutingPolicy(configuration),
     transports: [createBuiltinPiAiTransport()],
+    ...(options.observer ? { observer: options.observer } : {}),
   });
 }
 

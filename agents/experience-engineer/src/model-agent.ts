@@ -100,6 +100,12 @@ export class ExperienceEngineerAgent implements AgentWorker {
         tools: "tools:none:model-gateway.v1",
         knowledge: knowledgeSnapshot,
       },
+      attribution: {
+        ...(task.governance ? { run_id: task.governance.root_run_id } : {}),
+        task_id: task.message_id,
+        agent_id: this.id,
+        origin: "business_agent",
+      },
       temperature: 0,
       ...(context.signal ? { signal: context.signal } : {}),
     });

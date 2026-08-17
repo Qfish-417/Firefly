@@ -4,8 +4,24 @@ import { assertContract } from "@firefly/contracts";
 import { ExperienceEngineerAgent, ExperienceEngineerStub } from "@firefly/experience-engineer";
 import { LearningDirectorAgent } from "@firefly/learning-director";
 import { LearningScientistAgent } from "@firefly/learning-scientist";
-import type { TextGenerationPort } from "@firefly/model-gateway";
+import { createPiAiModelGateway, type ModelGatewayConfiguration, type TextGenerationPort } from "@firefly/model-gateway";
+import { ModelInvocationRepository, type QuestLabDatabase } from "@firefly/persistence";
 import type { PluginEngineeringTool, SandboxReleaseEvidence } from "@firefly/plugin-platform";
+import type { Kysely } from "kysely";
+
+export function createAuditedPiAiModelGateway(
+  configuration: ModelGatewayConfiguration,
+  db: Kysely<QuestLabDatabase>,
+) {
+  const repository = new ModelInvocationRepository(db);
+  return createPiAiModelGateway(configuration, {
+    observer: {
+      async record(invocation) {
+        await repository.record(invocation);
+      },
+    },
+  });
+}
 
 export function createModelAssistedWorkers(gateway: TextGenerationPort): readonly AgentWorker[] {
   return [

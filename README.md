@@ -144,6 +144,8 @@ M5.28 defines the local completion target. `npm run lite:up` starts only a resou
 
 M5.29 makes the local three-Agent loop directly operable. `npm run demo:start` persists a deterministic learning run and stops at `awaiting_approval`; `npm run demo:approve` requires an explicit run ID, approver and reason before resuming Engineer build, Director canary and Scientist outcome stages. The commands reuse the integration-tested workflow and zero-cost Stub Agents, while the read-only Admin API exposes the resulting causal trace; see [ADR 0043](./docs/adr/0043-local-manual-evolution-cli.md) and diagram page 42.
 
+M5.30 adds attributed model accounting and a deterministic, read-only Audit Agent. Every pi-ai generation attempt can be bound to its run, task and business Agent; replay-safe PostgreSQL settlement updates the run token/cost budget atomically. `GET /admin/audit/agents` exposes three-Agent totals and `GET /admin/audit/runs/{run_id}` exposes a redacted causal activity report with failure, retry, telemetry-gap and budget-threshold alerts. See [ADR 0044](./docs/adr/0044-attributed-model-usage-audit-agent.md), the [monitoring guide](./docs/audit-monitoring.md) and diagram page 43.
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell

@@ -69,6 +69,12 @@ test("model Scientist binds trusted identity and evidence while persisting execu
   assert.match(result.snapshots.model ?? "", /model:test.*routing:test/);
   assert.match(result.snapshots.prompt ?? "", /^prompt:learning-scientist\.analysis\.v1:sha256:/);
   assert.equal(gateway.requests[0]?.temperature, 0);
+  assert.deepEqual(gateway.requests[0]?.attribution, {
+    run_id: "run.scientist-unit",
+    task_id: "task.analyze.scientist-unit",
+    agent_id: "learning-scientist",
+    origin: "business_agent",
+  });
 });
 
 test("model Scientist rejects non-JSON output before it reaches the workflow state machine", async () => {
@@ -132,6 +138,14 @@ function task(): TaskEnvelope {
     lease: { duration_sec: 300, heartbeat_sec: 30 },
     retry_policy: { max_attempts: 3, initial_backoff_ms: 100, max_backoff_ms: 1_000 },
     budget: { max_tokens: 2_000, max_cost_usd: 0.1, max_duration_sec: 30 },
+    governance: {
+      root_run_id: "run.scientist-unit",
+      hop_count: 0,
+      max_hops: 8,
+      task_fingerprint: `sha256:${"2".repeat(64)}`,
+      policy_snapshot: "governance:test:v1",
+      epoch: 0,
+    },
     artifact_refs: [evidence],
     payload: { learning_events: [learningEvent] as unknown as never, cohort: "synthetic-a" },
   };

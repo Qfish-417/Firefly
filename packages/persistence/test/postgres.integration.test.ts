@@ -10,6 +10,7 @@ import {
   InboxRepository,
   MemoryRepository,
   MemoryPolicyError,
+  ModelInvocationIdentityConflictError,
   ModelInvocationRepository,
   OutboxRepository,
   WorkflowTaskRepository,
@@ -54,6 +55,7 @@ test(
           invocation_id: "model-invocation.integration.01",
           request_id: "model-request.integration.01",
           workload: "learning-scientist.analyze",
+          capability: "generate" as const,
           route_id: "route.01",
           transport_id: "pi-ai",
           provider: "test-provider",
@@ -329,6 +331,75 @@ test(
         );
         assert.equal(completed.status, "completed");
         assert.equal(completed.lease_owner, null);
+
+        const attributedRecord = {
+          invocation_id: "model-invocation.integration.attributed.01",
+          request_id: "model-request.integration.attributed.01",
+          workload: "learning-scientist.analyze",
+          capability: "generate" as const,
+          route_id: "route.attributed.01",
+          transport_id: "pi-ai",
+          provider: "test-provider",
+          model: "test-model",
+          attempt: 1,
+          status: "succeeded" as const,
+          started_at_ms: now.getTime(),
+          completed_at_ms: now.getTime() + 50,
+          latency_ms: 50,
+          usage: {
+            input_tokens: 20,
+            output_tokens: 10,
+            cached_input_tokens: 0,
+            total_tokens: 30,
+            cost_usd: 0.001,
+          },
+          attribution: {
+            run_id: "run.integration.01",
+            task_id: task.id,
+            agent_id: "learning-scientist" as const,
+            tenant_id: "tenant.integration",
+            user_id: "user.integration.01",
+            origin: "business_agent" as const,
+          },
+          snapshots: {
+            prompt: "prompt:attributed:v1",
+            tools: "tools:none:v1",
+            knowledge: "knowledge:attributed:v1",
+            model: "model:test-provider/test-model:v1",
+            routing: "routing:attributed:v1",
+          },
+        };
+        await modelInvocationRepository.record(attributedRecord);
+        await modelInvocationRepository.record(attributedRecord);
+        await assert.rejects(
+          modelInvocationRepository.record({
+            ...attributedRecord,
+            usage: { ...attributedRecord.usage, total_tokens: 31 },
+          }),
+          ModelInvocationIdentityConflictError,
+        );
+
+        const budget = await db
+          .selectFrom("questlab.run_budget_usage")
+          .select(["tokens_used", "cost_microusd"])
+          .where("run_id", "=", "run.integration.01")
+          .executeTakeFirstOrThrow();
+        assert.equal(Number(budget.tokens_used), 30);
+        assert.equal(Number(budget.cost_microusd), 1_000);
+        assert.deepEqual(await modelInvocationRepository.aggregateByAgent("run.integration.01"), [
+          {
+            agent_id: "learning-scientist",
+            calls: 1,
+            failed_calls: 0,
+            retry_calls: 0,
+            input_tokens: 20,
+            output_tokens: 10,
+            cached_input_tokens: 0,
+            total_tokens: 30,
+            total_cost_microusd: 1_000,
+            average_latency_ms: 50,
+          },
+        ]);
       });
 
       await context.test("Inbox records each consumer event once", async () => {
