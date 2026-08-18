@@ -30,6 +30,26 @@ export interface ModelBudget {
   readonly max_duration_ms: number;
 }
 
+export interface CustomModelDefinition {
+  readonly id: string;
+  readonly name?: string;
+  readonly context_window: number;
+  readonly max_output_tokens: number;
+  readonly input_cost_per_million: number;
+  readonly output_cost_per_million: number;
+  readonly reasoning?: boolean;
+}
+
+export interface CustomModelProviderConfiguration {
+  readonly id: string;
+  readonly name?: string;
+  readonly base_url: string;
+  readonly api: "openai-completions" | "openai-responses";
+  readonly api_key_env?: string;
+  readonly allow_insecure_localhost?: boolean;
+  readonly models: readonly CustomModelDefinition[];
+}
+
 export interface InputSnapshots {
   readonly prompt: string;
   readonly tools: string;

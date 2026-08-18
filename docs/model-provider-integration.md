@@ -9,7 +9,7 @@
 | 类型 | 当前接入方式 |
 |---|---|
 | pi-ai 内置文本模型 | 直接配置 `FIREFLY_MODEL_ROUTES` 和对应 Provider 凭据 |
-| OpenAI 兼容的 Ollama、vLLM、SGLang、企业代理 | pi-ai 支持自定义 Provider，但 FireFly 尚需增加受治理的自定义 Provider 配置层 |
+| OpenAI 兼容的 Ollama、vLLM、SGLang、企业代理 | 通过 `FIREFLY_MODEL_PROVIDERS` 接入受治理的自定义 Provider |
 | 非 OpenAI/Anthropic 兼容私有协议 | 实现新的 `GenerationTransport` |
 | Embedding | 使用独立 `HttpEmbeddingProvider`，不经过 pi-ai 生成接口 |
 | Rerank | 使用独立 `HttpRerankerProvider` |
@@ -78,7 +78,18 @@ npm run model:doctor
 | xAI | `XAI_API_KEY` |
 | Amazon Bedrock | 标准 AWS Profile、IAM 环境变量、任务角色或 Bedrock Bearer Token |
 
-密钥只能进入本机环境变量、部署 Secret 或专用凭据存储，不能写入 `FIREFLY_MODEL_ROUTES`、`.env` 提交文件、Task、Prompt、日志或 Git。
+密钥只能进入本机环境变量、部署 Secret 或专用凭据存储，不能写入 `FIREFLY_MODEL_ROUTES`、`FIREFLY_MODEL_PROVIDERS`、`.env` 提交文件、Task、Prompt、日志或 Git。
+
+普通 OpenAI 兼容中转的配置示例：
+
+```powershell
+$env:FIREFLY_MODEL_PROVIDERS = '[{"id":"my-relay","base_url":"https://relay.example.com/v1","api":"openai-completions","api_key_env":"MY_RELAY_API_KEY","models":[{"id":"deepseek-chat","context_window":64000,"max_output_tokens":8192,"input_cost_per_million":1,"output_cost_per_million":2}]}]'
+$env:FIREFLY_MODEL_ROUTES = '{"learning-scientist.analyze":[{"provider":"my-relay","model":"deepseek-chat"}]}'
+$env:MY_RELAY_API_KEY = "仅在本机设置"
+npm run model:doctor
+```
+
+远程中转必须使用 HTTPS。Ollama、vLLM 等本机服务只有在 `allow_insecure_localhost=true` 且地址为 localhost、127.0.0.1 或 ::1 时允许 HTTP。
 
 ## 尚未执行的真实调用
 

@@ -149,6 +149,8 @@ M5.30 adds attributed model accounting and a deterministic, read-only Audit Agen
 
 M5.31 adds a no-cost model onboarding diagnostic. `npm run model:catalog` lists the pinned pi-ai Provider/model catalog and `npm run model:doctor` validates configured fallback routes, text-input support and credential availability without exposing keys or sending a paid model request. See the [model integration guide](./docs/model-provider-integration.md).
 
+M5.32 adds governed custom OpenAI-compatible relays through `FIREFLY_MODEL_PROVIDERS`. Relay models join the same pi-ai catalog and reuse FireFly routing, budgets, snapshots and audit records; remote endpoints require HTTPS, while localhost HTTP requires explicit opt-in. See [ADR 0045](./docs/adr/0045-governed-custom-model-relays.md) and the [model integration guide](./docs/model-provider-integration.md).
+
 PostgreSQL 集成检查（PowerShell）：
 
 ```powershell

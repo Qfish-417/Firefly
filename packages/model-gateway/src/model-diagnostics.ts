@@ -2,6 +2,7 @@ import type { Api, AuthCheck, Model, Models, Provider } from "@earendil-works/pi
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
 import type { ModelGatewayConfiguration } from "./configuration.ts";
+import { createConfiguredPiAiModels } from "./pi-ai-adapter.ts";
 
 export type ModelRouteDiagnosticIssue =
   | "provider_not_found"
@@ -60,6 +61,12 @@ export type ModelCatalogPort = Pick<
 
 export function createBuiltinModelCatalog(): ModelCatalogPort {
   return builtinModels();
+}
+
+export function createConfiguredModelCatalog(
+  configuration: ModelGatewayConfiguration,
+): ModelCatalogPort {
+  return createConfiguredPiAiModels(configuration.providers);
 }
 
 export function listModelProviders(

@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { loadModelGatewayConfiguration } from "./configuration.ts";
 import {
   createBuiltinModelCatalog,
+  createConfiguredModelCatalog,
   diagnoseModelGatewayConfiguration,
   listGenerationModels,
   listModelProviders,
@@ -26,7 +27,10 @@ export async function runModelCli(
   }
   if (command === "doctor") {
     const configuration = loadModelGatewayConfiguration(environment);
-    const report = await diagnoseModelGatewayConfiguration(configuration, catalog);
+    const report = await diagnoseModelGatewayConfiguration(
+      configuration,
+      createConfiguredModelCatalog(configuration),
+    );
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return report.ready ? 0 : 2;
   }

@@ -5,11 +5,15 @@ import type {
   Model,
   Models,
 } from "@earendil-works/pi-ai";
+import { createProvider, envApiKeyAuth } from "@earendil-works/pi-ai";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
 import { ModelGatewayError, normalizeModelError } from "./errors.ts";
 import { snapshotId } from "./snapshots.ts";
 import type {
+  CustomModelProviderConfiguration,
   GenerationTransport,
   ModelDescriptor,
   ModelTarget,
@@ -114,6 +118,89 @@ export class PiAiGenerationTransport implements GenerationTransport {
 
 export function createBuiltinPiAiTransport(): PiAiGenerationTransport {
   return new PiAiGenerationTransport(builtinModels());
+}
+
+export function createConfiguredPiAiModels(
+  providers: readonly CustomModelProviderConfiguration[] = [],
+): Models {
+  const models = builtinModels();
+  const registeredProviderIds = new Set(models.getProviders().map((provider) => provider.id));
+  for (const provider of providers) {
+    validateCustomProvider(provider, registeredProviderIds);
+    const modelEntries = provider.models.map((definition) => ({
+      id: definition.id,
+      name: definition.name ?? definition.id,
+      api: provider.api,
+      provider: provider.id,
+      baseUrl: provider.base_url,
+      reasoning: definition.reasoning ?? false,
+      input: ["text"] as ("text")[],
+      cost: {
+        input: definition.input_cost_per_million,
+        output: definition.output_cost_per_million,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+      contextWindow: definition.context_window,
+      maxTokens: definition.max_output_tokens,
+    }));
+    const auth = provider.api_key_env
+      ? { apiKey: envApiKeyAuth(`${provider.name ?? provider.id} API key`, [provider.api_key_env]) }
+      : { apiKey: { name: provider.name ?? provider.id, resolve: async () => ({ auth: {} }) } };
+    models.setProvider(createProvider({
+      id: provider.id,
+      name: provider.name ?? provider.id,
+      baseUrl: provider.base_url,
+      auth,
+      models: modelEntries,
+      api: provider.api === "openai-completions" ? openAICompletionsApi() : openAIResponsesApi(),
+    }));
+    registeredProviderIds.add(provider.id);
+  }
+  return models;
+}
+
+export function createConfiguredPiAiTransport(
+  providers: readonly CustomModelProviderConfiguration[] = [],
+): PiAiGenerationTransport {
+  return new PiAiGenerationTransport(createConfiguredPiAiModels(providers));
+}
+
+function validateCustomProvider(
+  provider: CustomModelProviderConfiguration,
+  registeredProviderIds: ReadonlySet<string>,
+): void {
+  if (registeredProviderIds.has(provider.id)) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom provider id is already registered: ${provider.id}`, false);
+  }
+  const url = parseProviderUrl(provider);
+  if (url.username || url.password || url.search || url.hash) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom provider URL must not contain credentials or query data: ${provider.id}`, false);
+  }
+  const localhost = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(localhost && provider.allow_insecure_localhost === true)) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom provider requires HTTPS: ${provider.id}`, false);
+  }
+  if (provider.api_key_env && !/^[A-Z][A-Z0-9_]{1,127}$/.test(provider.api_key_env)) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom provider api_key_env is invalid: ${provider.id}`, false);
+  }
+  const modelIds = new Set<string>();
+  for (const model of provider.models) {
+    if (modelIds.has(model.id)) {
+      throw new ModelGatewayError("INVALID_REQUEST", `Custom provider has duplicate model: ${provider.id}/${model.id}`, false);
+    }
+    modelIds.add(model.id);
+  }
+}
+
+function parseProviderUrl(provider: CustomModelProviderConfiguration): URL {
+  try {
+    return new URL(provider.base_url);
+  } catch (error) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom provider URL is invalid: ${provider.id}`, false, {
+      cause: error instanceof Error ? error : undefined,
+    });
+  }
 }
 
 function convertStreamEvent(event: AssistantMessageEvent): TransportStreamEvent | undefined {

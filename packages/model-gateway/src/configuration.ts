@@ -1,8 +1,14 @@
 import { ModelGatewayError } from "./errors.ts";
 import { RoutedModelGateway } from "./gateway.ts";
-import { createBuiltinPiAiTransport } from "./pi-ai-adapter.ts";
+import { createConfiguredPiAiTransport } from "./pi-ai-adapter.ts";
 import { snapshotId } from "./snapshots.ts";
-import type { ModelInvocationObserver, ModelRoute, ModelRoutingPolicy, RouteRetryPolicy } from "./types.ts";
+import type {
+  CustomModelProviderConfiguration,
+  ModelInvocationObserver,
+  ModelRoute,
+  ModelRoutingPolicy,
+  RouteRetryPolicy,
+} from "./types.ts";
 
 export interface ModelRouteConfiguration {
   readonly provider: string;
@@ -12,6 +18,7 @@ export interface ModelRouteConfiguration {
 
 export interface ModelGatewayConfiguration {
   readonly workloads: Readonly<Record<string, readonly ModelRouteConfiguration[]>>;
+  readonly providers?: readonly CustomModelProviderConfiguration[];
   readonly retry?: RouteRetryPolicy;
   readonly attempt_timeout_ms?: number;
 }
@@ -61,7 +68,7 @@ export function createPiAiModelGateway(
 ): RoutedModelGateway {
   return new RoutedModelGateway({
     policy: createModelRoutingPolicy(configuration),
-    transports: [createBuiltinPiAiTransport()],
+    transports: [createConfiguredPiAiTransport(configuration.providers)],
     ...(options.observer ? { observer: options.observer } : {}),
   });
 }
@@ -88,7 +95,89 @@ export function loadModelGatewayConfiguration(
   if (!isRouteMap(workloads)) {
     throw new ModelGatewayError("INVALID_REQUEST", "FIREFLY_MODEL_ROUTES has an invalid shape", false);
   }
-  return { workloads };
+  const providers = parseCustomProviders(environment.FIREFLY_MODEL_PROVIDERS);
+  return providers.length > 0 ? { workloads, providers } : { workloads };
+}
+
+function parseCustomProviders(encoded: string | undefined): readonly CustomModelProviderConfiguration[] {
+  if (!encoded?.trim()) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(encoded);
+  } catch (error) {
+    throw new ModelGatewayError("INVALID_REQUEST", "FIREFLY_MODEL_PROVIDERS is not valid JSON", false, {
+      cause: error instanceof Error ? error : undefined,
+    });
+  }
+  if (!Array.isArray(value)) {
+    throw new ModelGatewayError("INVALID_REQUEST", "FIREFLY_MODEL_PROVIDERS must be an array", false);
+  }
+  return value.map((provider, index) => parseCustomProvider(provider, index));
+}
+
+function parseCustomProvider(value: unknown, index: number): CustomModelProviderConfiguration {
+  if (!isRecord(value)) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom model provider ${index} is invalid`, false);
+  }
+  const id = stringField(value.id, `providers[${index}].id`);
+  const baseUrl = stringField(value.base_url, `providers[${index}].base_url`);
+  const api = value.api;
+  if (api !== "openai-completions" && api !== "openai-responses") {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom provider ${id} has an unsupported api`, false);
+  }
+  const models = value.models;
+  if (!Array.isArray(models) || models.length === 0) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom provider ${id} requires models`, false);
+  }
+  return {
+    id,
+    ...(typeof value.name === "string" ? { name: value.name } : {}),
+    base_url: baseUrl,
+    api,
+    ...(typeof value.api_key_env === "string" ? { api_key_env: value.api_key_env } : {}),
+    ...(value.allow_insecure_localhost === true ? { allow_insecure_localhost: true } : {}),
+    models: models.map((model, modelIndex) => parseCustomModel(model, id, modelIndex)),
+  };
+}
+
+function parseCustomModel(value: unknown, provider: string, index: number) {
+  if (!isRecord(value)) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom model ${provider}[${index}] is invalid`, false);
+  }
+  const id = stringField(value.id, `providers.${provider}.models[${index}].id`);
+  const numbers = ["context_window", "max_output_tokens", "input_cost_per_million", "output_cost_per_million"] as const;
+  for (const field of numbers) {
+    if (typeof value[field] !== "number" || !Number.isFinite(value[field]) || value[field] < 0) {
+      throw new ModelGatewayError("INVALID_REQUEST", `Custom model ${provider}/${id} has invalid ${field}`, false);
+    }
+  }
+  const contextWindow = value.context_window as number;
+  const maxOutputTokens = value.max_output_tokens as number;
+  const inputCost = value.input_cost_per_million as number;
+  const outputCost = value.output_cost_per_million as number;
+  if (contextWindow <= 0 || maxOutputTokens <= 0) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom model ${provider}/${id} limits must be positive`, false);
+  }
+  return {
+    id,
+    ...(typeof value.name === "string" ? { name: value.name } : {}),
+    context_window: contextWindow,
+    max_output_tokens: maxOutputTokens,
+    input_cost_per_million: inputCost,
+    output_cost_per_million: outputCost,
+    ...(typeof value.reasoning === "boolean" ? { reasoning: value.reasoning } : {}),
+  };
+}
+
+function stringField(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new ModelGatewayError("INVALID_REQUEST", `${field} must be a non-empty string`, false);
+  }
+  return value.trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isRouteMap(value: unknown): value is Record<string, readonly ModelRouteConfiguration[]> {
