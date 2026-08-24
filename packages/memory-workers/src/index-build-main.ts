@@ -18,6 +18,7 @@ import {
   RetrievalIndexBuildWorker,
   SourceWatermarkQualityProbe,
 } from "./index.ts";
+import { runSupervisedLoop } from "./supervised-loop.ts";
 
 const databaseUrl = requiredEnvironment("DATABASE_URL");
 const workerId = process.env.MEMORY_INDEX_BUILD_WORKER_ID ?? `memory-index-builder.pid-${process.pid}`;
@@ -77,11 +78,26 @@ async function createReadyGate() {
 }
 
 try {
-  while (!controller.signal.aborted) {
-    const result = await worker.runBatch();
-    process.stdout.write(`${JSON.stringify({ type: "memory_index_build", worker_id: workerId, ...result })}\n`);
-    if (!controller.signal.aborted) await wait(intervalMs, controller.signal);
-  }
+  await runSupervisedLoop(
+    async () => {
+      const result = await worker.runBatch();
+      process.stdout.write(`${JSON.stringify({ type: "memory_index_build", worker_id: workerId, ...result })}\n`);
+    },
+    {
+      signal: controller.signal,
+      interval_ms: intervalMs,
+      max_backoff_ms: integerEnvironment("MEMORY_INDEX_BUILD_MAX_BACKOFF_MS", 60_000, 1_000, 3_600_000),
+      observe_error: (error, failures, backoffMs) => {
+        process.stderr.write(`${JSON.stringify({
+          type: "memory_index_build_error",
+          worker_id: workerId,
+          consecutive_failures: failures,
+          backoff_ms: backoffMs,
+          message: error instanceof Error ? error.message : String(error),
+        })}\n`);
+      },
+    },
+  );
 } finally {
   objects.destroy();
   await db.destroy();
@@ -125,17 +141,3 @@ function embeddingConfiguration(): {
   };
 }
 
-async function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, milliseconds);
-    const abort = () => {
-      clearTimeout(timer);
-      reject(signal.reason ?? new Error("aborted"));
-    };
-    if (signal.aborted) abort();
-    else signal.addEventListener("abort", abort, { once: true });
-  }).catch((error: unknown) => {
-    if (signal.aborted) return;
-    throw error;
-  });
-}

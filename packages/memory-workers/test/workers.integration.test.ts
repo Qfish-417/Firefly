@@ -293,6 +293,7 @@ test(
         outbox,
         memories,
         consumer: new ObjectStoreDeletionConsumer({
+          objectAbsent: async () => true,
           deleteObject: async ({ bucket, key }) => {
             providerCalls += 1;
             if (providerCalls === 1) throw new Error("temporary object-store outage");
@@ -337,7 +338,7 @@ test(
         worker_id: "worker.deletion.fail",
         outbox,
         memories,
-        consumer: new ObjectStoreDeletionConsumer({ deleteObject: async () => { throw new Error("persistent outage"); } }),
+        consumer: new ObjectStoreDeletionConsumer({ objectAbsent: async () => true, deleteObject: async () => { throw new Error("persistent outage"); } }),
         max_attempts: 1,
         now: () => clock,
       });
@@ -357,7 +358,7 @@ test(
         worker_id: "worker.deletion.recovery",
         outbox,
         memories,
-        consumer: new ObjectStoreDeletionConsumer({ deleteObject: async () => undefined }),
+        consumer: new ObjectStoreDeletionConsumer({ objectAbsent: async () => true, deleteObject: async () => undefined }),
         now: () => clock,
       });
       assert.deepEqual(await recoveryWorker.runBatch(), { claimed: 1, completed: 1, failed: 0, released: 0 });

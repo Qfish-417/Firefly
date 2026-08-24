@@ -1,3 +1,4 @@
+import { mapWithConcurrency } from "./bounded-concurrency.ts";
 import { createHash } from "node:crypto";
 
 import {
@@ -155,6 +156,8 @@ export interface IndexSourceParserPort {
 export interface ParsedIndexSourcePortOptions {
   readonly parsers: readonly IndexSourceParserPort[];
   readonly parser_failure_mode?: IndexParserFailureMode;
+  /** Documents parsed at once. Defaults to 4. */
+  readonly max_concurrency?: number;
 }
 
 export interface IndexChunkDraft {
@@ -428,6 +431,7 @@ export class ParserBackedIndexSourcePort implements IndexSourcePort {
   private readonly source: IndexSourcePort;
   private readonly parsers: readonly IndexSourceParserPort[];
   private readonly failureMode: IndexParserFailureMode;
+  private readonly maxConcurrency: number;
 
   constructor(source: IndexSourcePort, options: ParsedIndexSourcePortOptions) {
     if (options.parsers.length === 0) throw new TypeError("At least one source parser is required");
@@ -438,11 +442,17 @@ export class ParserBackedIndexSourcePort implements IndexSourcePort {
     this.source = source;
     this.parsers = options.parsers;
     this.failureMode = options.parser_failure_mode ?? "strict";
+    this.maxConcurrency = options.max_concurrency ?? 4;
+    if (!Number.isInteger(this.maxConcurrency) || this.maxConcurrency < 1 || this.maxConcurrency > 64) {
+      throw new TypeError("Parser concurrency must be between 1 and 64");
+    }
   }
 
   async load(task: IndexBuildTask): Promise<readonly IndexSourceDocument[]> {
     const documents = await this.source.load(task);
-    return Promise.all(documents.map((document) => this.parseDocument(document)));
+    // Parsers may call out to OCR/ASR services and hold whole documents in memory, so the fan-out
+    // is capped rather than starting one task per document.
+    return mapWithConcurrency(documents, this.maxConcurrency, (document) => this.parseDocument(document));
   }
 
   private async parseDocument(document: IndexSourceDocument): Promise<IndexSourceDocument> {

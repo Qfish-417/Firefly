@@ -1,3 +1,4 @@
+import { mapWithConcurrency } from "./bounded-concurrency.ts";
 import { createHash } from "node:crypto";
 
 import {
@@ -49,12 +50,21 @@ export class FixedIndexEvaluationRunner {
   readonly evaluationSet: IndexEvaluationSet;
   private readonly search: IndexQualitySearchPort;
   private readonly runs = new Map<string, Promise<readonly IndexQualityCaseResult[]>>();
+  private readonly maxConcurrency: number;
 
-  constructor(evaluationSet: IndexEvaluationSet, search: IndexQualitySearchPort) {
+  constructor(
+    evaluationSet: IndexEvaluationSet,
+    search: IndexQualitySearchPort,
+    options: { readonly max_concurrency?: number } = {},
+  ) {
     assertContract("IndexEvaluationSet", evaluationSet);
     validateEvaluationSet(evaluationSet);
     this.evaluationSet = evaluationSet;
     this.search = search;
+    this.maxConcurrency = options.max_concurrency ?? 8;
+    if (!Number.isInteger(this.maxConcurrency) || this.maxConcurrency < 1 || this.maxConcurrency > 64) {
+      throw new TypeError("Evaluation concurrency must be between 1 and 64");
+    }
   }
 
   evaluate(input: IndexReadyGateInput): Promise<readonly IndexQualityCaseResult[]> {
@@ -83,11 +93,13 @@ export class FixedIndexEvaluationRunner {
       throw new TypeError("Index evaluation principals must belong to the build tenant");
     }
 
-    return Promise.all(this.evaluationSet.cases.map(async (evaluationCase) => {
+    // Each case is a retrieval query; an evaluation set of thousands would otherwise issue every
+    // query at once and exhaust the connection pool.
+    return mapWithConcurrency(this.evaluationSet.cases, this.maxConcurrency, async (evaluationCase) => {
       const hits = await this.search.search({ task: input.task, evaluation_case: evaluationCase });
       validateEvaluationHits(hits);
       return { evaluation_case: evaluationCase, hits };
-    }));
+    });
   }
 }
 

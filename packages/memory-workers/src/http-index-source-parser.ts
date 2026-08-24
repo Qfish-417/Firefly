@@ -120,10 +120,9 @@ export class HttpIndexSourceParser implements IndexSourceParserPort {
     if (Number.isFinite(declaredLength) && declaredLength > this.maxResponseBytes) {
       throw new HttpIndexSourceParserError("RESPONSE_TOO_LARGE", "Parser response exceeded the byte limit", false);
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > this.maxResponseBytes) {
-      throw new HttpIndexSourceParserError("RESPONSE_TOO_LARGE", "Parser response exceeded the byte limit", false);
-    }
+    // The declared length is advisory: a chunked response can stream unlimited bytes, so the cap is
+    // enforced while reading rather than after the whole body is already in memory.
+    const bytes = await readBoundedBody(response, this.maxResponseBytes);
     let envelope: unknown;
     try {
       envelope = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
@@ -185,4 +184,32 @@ function configurationError(message: string): HttpIndexSourceParserError {
 
 function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 2_048) : "Parser request failed";
+}
+
+async function readBoundedBody(response: Response, maximum: number): Promise<Uint8Array> {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const item = await reader.read();
+      if (item.done) break;
+      total += item.value.byteLength;
+      if (total > maximum) {
+        await reader.cancel();
+        throw new HttpIndexSourceParserError("RESPONSE_TOO_LARGE", "Parser response exceeded the byte limit", false);
+      }
+      chunks.push(item.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
 }

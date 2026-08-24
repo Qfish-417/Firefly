@@ -1,3 +1,4 @@
+import { mapWithConcurrency } from "./bounded-concurrency.ts";
 import { createHash } from "node:crypto";
 
 import { GetObjectCommand, S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
@@ -59,6 +60,8 @@ export class AwsS3ObjectReadPort implements BinaryObjectReadPort {
 export interface BinaryContentHydratingIndexSourceOptions {
   readonly source_types: readonly string[];
   readonly max_object_bytes?: number;
+  /** Concurrent object downloads during hydration. Defaults to 8. */
+  readonly max_concurrency?: number;
 }
 
 /** Loads immutable s3:// artifacts into bounded bytes and verifies their Citation digest. */
@@ -67,6 +70,7 @@ export class BinaryContentHydratingIndexSourcePort implements IndexSourcePort {
   private readonly objects: BinaryObjectReadPort;
   private readonly sourceTypes: ReadonlySet<string>;
   private readonly maxObjectBytes: number;
+  private readonly maxConcurrency: number;
 
   constructor(source: IndexSourcePort, objects: BinaryObjectReadPort, options: BinaryContentHydratingIndexSourceOptions) {
     const sourceTypes = options.source_types.map(normalizeSourceType);
@@ -74,17 +78,23 @@ export class BinaryContentHydratingIndexSourcePort implements IndexSourcePort {
     this.objects = objects;
     this.sourceTypes = new Set(sourceTypes);
     this.maxObjectBytes = options.max_object_bytes ?? 50_000_000;
+    this.maxConcurrency = options.max_concurrency ?? 8;
     if (this.sourceTypes.size === 0 || this.sourceTypes.size !== sourceTypes.length || sourceTypes.some((type) => !type)) {
       throw new TypeError("Binary source types must be non-empty and unique");
     }
     if (!Number.isInteger(this.maxObjectBytes) || this.maxObjectBytes < 1_024 || this.maxObjectBytes > 500_000_000) {
       throw new TypeError("Binary object limit must be between 1024 and 500000000 bytes");
     }
+    if (!Number.isInteger(this.maxConcurrency) || this.maxConcurrency < 1 || this.maxConcurrency > 64) {
+      throw new TypeError("Binary hydration concurrency must be between 1 and 64");
+    }
   }
 
   async load(task: IndexBuildTask): Promise<readonly IndexSourceDocument[]> {
     const documents = await this.source.load(task);
-    return Promise.all(documents.map((document) => this.hydrate(document)));
+    // Bounded: each hydration is an object download, so an unbounded fan-out would open one
+    // connection per document and buffer every body at once.
+    return mapWithConcurrency(documents, this.maxConcurrency, (document) => this.hydrate(document));
   }
 
   private async hydrate(document: IndexSourceDocument): Promise<IndexSourceDocument> {

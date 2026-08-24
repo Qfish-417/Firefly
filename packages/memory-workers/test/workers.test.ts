@@ -418,6 +418,7 @@ test("fixed evaluation probes reject a dataset whose Artifact Digest does not ma
 test("object deletion deduplicates S3 locations and rejects missing resources", async () => {
   const deleted: string[] = [];
   const consumer = new ObjectStoreDeletionConsumer({
+    objectAbsent: async () => true,
     deleteObject: async ({ bucket, key }) => {
       deleted.push(`${bucket}/${key}`);
     },

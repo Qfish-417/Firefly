@@ -133,14 +133,18 @@ interface PositionedText {
   readonly y2: number;
 }
 
-interface PdfTextItem {
+export interface PdfTextItem {
   readonly str: string;
   readonly transform: readonly number[];
   readonly width: number;
   readonly height: number;
 }
 
-function lineBlocks(items: readonly PdfTextItem[], page: number): readonly IndexPdfLayoutBlock[] {
+/**
+ * Groups page text items into layout lines. Exported so the grouping and its bounds can be tested
+ * directly without constructing a PDF.
+ */
+export function lineBlocks(items: readonly PdfTextItem[], page: number): readonly IndexPdfLayoutBlock[] {
   const positioned = items
     .filter((item) => item.str.trim())
     .map((item): PositionedText => {
@@ -150,23 +154,45 @@ function lineBlocks(items: readonly PdfTextItem[], page: number): readonly Index
       return { text: item.str.trim(), x1: x, y1: y, x2: x + Math.max(item.width, 1), y2: y + height };
     })
     .sort((left, right) => right.y1 - left.y1 || left.x1 - right.x1);
+  // Line heads are appended in descending y order and `positioned` is sorted the same way, so the
+  // gap to each head grows as we scan backwards: the loop can stop at the first head outside the
+  // tolerance. That keeps it linear instead of the previous `lines.find` over every line for every
+  // item (O(n^2): a 20k-item page cost ~200M comparisons), and it attaches each item to the
+  // *nearest* line rather than the first one that happened to match.
   const lines: PositionedText[][] = [];
   for (const item of positioned) {
-    const line = lines.find((candidate) => Math.abs(candidate[0]!.y1 - item.y1) <= Math.max(2, (item.y2 - item.y1) * 0.35));
-    if (line) line.push(item);
+    const tolerance = Math.max(2, (item.y2 - item.y1) * 0.35);
+    let best = -1;
+    let bestGap = Number.POSITIVE_INFINITY;
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const gap = Math.abs(lines[index]![0]!.y1 - item.y1);
+      if (gap > tolerance) break;
+      if (gap < bestGap) {
+        bestGap = gap;
+        best = index;
+      }
+    }
+    if (best >= 0) lines[best]!.push(item);
     else lines.push([item]);
   }
   return lines.map((line, index) => {
     line.sort((left, right) => left.x1 - right.x1);
+    // Folded rather than spread: `Math.min(...array)` passes each element as an argument and
+    // overflows the stack once a line holds enough items.
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const item of line) {
+      if (item.x1 < minX) minX = item.x1;
+      if (item.y1 < minY) minY = item.y1;
+      if (item.x2 > maxX) maxX = item.x2;
+      if (item.y2 > maxY) maxY = item.y2;
+    }
     return {
       kind: "paragraph",
       text: line.map((item) => item.text).join(" "),
-      bbox: [
-        Math.min(...line.map((item) => item.x1)),
-        Math.min(...line.map((item) => item.y1)),
-        Math.max(...line.map((item) => item.x2)) - Math.min(...line.map((item) => item.x1)),
-        Math.max(...line.map((item) => item.y2)) - Math.min(...line.map((item) => item.y1)),
-      ],
+      bbox: [minX, minY, maxX - minX, maxY - minY],
       region_id: `page-${page}-line-${index + 1}`,
     };
   });

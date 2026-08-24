@@ -87,9 +87,31 @@ async function boundedResponseBytes(response: Response, maximum: number): Promis
   if (Number.isFinite(declared) && declared > maximum) {
     throw new DeletionWorkerError("DELETION_PROVIDER_RESPONSE_TOO_LARGE", "Deletion provider response exceeded the byte limit", false);
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > maximum) {
-    throw new DeletionWorkerError("DELETION_PROVIDER_RESPONSE_TOO_LARGE", "Deletion provider response exceeded the byte limit", false);
+  // `content-length` is advisory: a chunked response bypasses the check above entirely, so the cap
+  // is enforced while streaming instead of after the body is already buffered.
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const item = await reader.read();
+      if (item.done) break;
+      total += item.value.byteLength;
+      if (total > maximum) {
+        await reader.cancel();
+        throw new DeletionWorkerError("DELETION_PROVIDER_RESPONSE_TOO_LARGE", "Deletion provider response exceeded the byte limit", false);
+      }
+      chunks.push(item.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
   }
   return bytes;
 }

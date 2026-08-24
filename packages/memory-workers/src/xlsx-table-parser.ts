@@ -22,6 +22,15 @@ export interface XlsxTableParserOptions {
   readonly max_columns?: number;
   readonly max_cell_characters?: number;
   readonly max_tables?: number;
+  /**
+   * Cap on the total *decompressed* size of the workbook's ZIP entries.
+   *
+   * `max_source_bytes` only bounds the compressed input, and XML of repeated whitespace compresses
+   * at roughly 1000:1, so a file that passes that check can still expand into tens of gigabytes.
+   */
+  readonly max_decompressed_bytes?: number;
+  /** Cap on the compression ratio of any single entry. */
+  readonly max_compression_ratio?: number;
 }
 
 export class XlsxTableParserError extends Error {
@@ -29,6 +38,7 @@ export class XlsxTableParserError extends Error {
     | "INVALID_CONFIGURATION"
     | "BINARY_SOURCE_MISSING"
     | "SOURCE_TOO_LARGE"
+    | "DECOMPRESSION_LIMIT_EXCEEDED"
     | "XLSX_PARSE_FAILED"
     | "SHEET_LIMIT_EXCEEDED"
     | "TABLE_LIMIT_EXCEEDED"
@@ -60,6 +70,8 @@ export class XlsxTableParser implements IndexSourceParserPort {
   private readonly maxColumns: number;
   private readonly maxCellCharacters: number;
   private readonly maxTables: number;
+  private readonly maxDecompressedBytes: number;
+  private readonly maxCompressionRatio: number;
 
   constructor(options: XlsxTableParserOptions = {}) {
     this.parser_id = options.parser_id?.trim() || "exceljs-xlsx";
@@ -71,6 +83,8 @@ export class XlsxTableParser implements IndexSourceParserPort {
     this.maxColumns = options.max_columns ?? 512;
     this.maxCellCharacters = options.max_cell_characters ?? 100_000;
     this.maxTables = options.max_tables ?? 512;
+    this.maxDecompressedBytes = options.max_decompressed_bytes ?? 400_000_000;
+    this.maxCompressionRatio = options.max_compression_ratio ?? 200;
     if (!this.parser_id || this.sourceTypes.size === 0 || this.sourceTypes.size !== sourceTypes.length || sourceTypes.some((type) => !type)) {
       throw configurationError("XLSX parser ID and source types must be non-empty and unique");
     }
@@ -80,6 +94,8 @@ export class XlsxTableParser implements IndexSourceParserPort {
     validateInteger(this.maxColumns, 1, 10_000, "column limit");
     validateInteger(this.maxCellCharacters, 1, 5_000_000, "cell character limit");
     validateInteger(this.maxTables, 1, 100_000, "table limit");
+    validateInteger(this.maxDecompressedBytes, 1_024, 4_000_000_000, "decompressed byte limit");
+    validateInteger(this.maxCompressionRatio, 2, 100_000, "compression ratio limit");
   }
 
   supports(sourceType: string): boolean {
@@ -91,6 +107,8 @@ export class XlsxTableParser implements IndexSourceParserPort {
     const bytes = document.content_bytes;
     if (!bytes?.byteLength) throw new XlsxTableParserError("BINARY_SOURCE_MISSING", "XLSX parser requires hydrated binary source bytes");
     if (bytes.byteLength > this.maxSourceBytes) throw new XlsxTableParserError("SOURCE_TOO_LARGE", "XLSX source exceeds the configured byte limit");
+    // Checked before handing the bytes to ExcelJS, which decompresses everything eagerly.
+    assertSafeArchive(bytes, this.maxDecompressedBytes, this.maxCompressionRatio);
 
     const workbook = new ExcelJS.Workbook();
     try {
@@ -169,4 +187,52 @@ function configurationError(message: string): XlsxTableParserError {
 
 function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 2_048) : "XLSX parsing failed";
+}
+
+/**
+ * Reads declared entry sizes from the ZIP central directory and rejects implausible expansion.
+ *
+ * The central directory is authoritative for an intact archive and is read without decompressing
+ * anything, so a bomb is refused before any memory is committed. A mismatch between the declared
+ * and actual size would surface as an ExcelJS parse failure, which is already handled.
+ */
+function assertSafeArchive(bytes: Uint8Array, maxDecompressedBytes: number, maxRatio: number): void {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const endSignature = 0x0605_4b50;
+  const centralSignature = 0x0201_4b50;
+  let end = -1;
+  // The end-of-central-directory record sits in the last 64KiB (22 bytes + comment).
+  for (let offset = bytes.byteLength - 22; offset >= Math.max(0, bytes.byteLength - 65_557); offset -= 1) {
+    if (view.getUint32(offset, true) === endSignature) {
+      end = offset;
+      break;
+    }
+  }
+  if (end < 0) throw new XlsxTableParserError("XLSX_PARSE_FAILED", "XLSX source is not a readable ZIP archive");
+
+  const entryCount = view.getUint16(end + 10, true);
+  let cursor = view.getUint32(end + 16, true);
+  let totalUncompressed = 0;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (cursor + 46 > bytes.byteLength || view.getUint32(cursor, true) !== centralSignature) break;
+    const compressed = view.getUint32(cursor + 20, true);
+    const uncompressed = view.getUint32(cursor + 24, true);
+    const nameLength = view.getUint16(cursor + 28, true);
+    const extraLength = view.getUint16(cursor + 30, true);
+    const commentLength = view.getUint16(cursor + 32, true);
+    totalUncompressed += uncompressed;
+    if (totalUncompressed > maxDecompressedBytes) {
+      throw new XlsxTableParserError(
+        "DECOMPRESSION_LIMIT_EXCEEDED",
+        "XLSX archive declares more decompressed bytes than the configured limit",
+      );
+    }
+    if (compressed > 0 && uncompressed / compressed > maxRatio) {
+      throw new XlsxTableParserError(
+        "DECOMPRESSION_LIMIT_EXCEEDED",
+        "XLSX archive contains an entry whose compression ratio exceeds the configured limit",
+      );
+    }
+    cursor += 46 + nameLength + extraLength + commentLength;
+  }
 }

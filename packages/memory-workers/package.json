@@ -12,6 +12,7 @@
     "@firefly/model-gateway": "0.1.0",
     "@firefly/persistence": "0.1.0",
     "@firefly/retrieval-postgres": "0.1.0",
+    "@smithy/node-http-handler": "4.9.13",
     "csv-parse": "^6.2.1",
     "exceljs": "^4.4.0",
     "pdfjs-dist": "^5.7.284",

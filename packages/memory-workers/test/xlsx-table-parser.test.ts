@@ -125,3 +125,56 @@ test("XLSX parser enforces binary, sheet, row, column and cell limits", async ()
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
+
+test("XLSX parser refuses a decompression bomb before ExcelJS expands it", async () => {
+  const workbook = new ExcelJS.Workbook();
+  workbook.addWorksheet("Small").addRow(["a"]);
+  const bytes = new Uint8Array(await workbook.xlsx.writeBuffer());
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  // Overstate the declared uncompressed size in the ZIP central directory, which is what a bomb
+  // does: the compressed bytes stay under max_source_bytes while expansion is enormous.
+  let end = -1;
+  for (let offset = bytes.byteLength - 22; offset >= 0; offset -= 1) {
+    if (view.getUint32(offset, true) === 0x0605_4b50) { end = offset; break; }
+  }
+  assert.ok(end >= 0);
+  const firstEntry = view.getUint32(end + 16, true);
+  view.setUint32(firstEntry + 24, 3_000_000_000, true);
+
+  await assert.rejects(
+    () => new XlsxTableParser().parse(xlsxDocument(bytes)),
+    (error: unknown) => {
+      assert.ok(error instanceof XlsxTableParserError);
+      assert.equal(error.code, "DECOMPRESSION_LIMIT_EXCEEDED");
+      return true;
+    },
+  );
+});
+
+test("XLSX parser rejects an entry with an implausible compression ratio", async () => {
+  const workbook = new ExcelJS.Workbook();
+  workbook.addWorksheet("Small").addRow(["a"]);
+  const bytes = new Uint8Array(await workbook.xlsx.writeBuffer());
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let end = -1;
+  for (let offset = bytes.byteLength - 22; offset >= 0; offset -= 1) {
+    if (view.getUint32(offset, true) === 0x0605_4b50) { end = offset; break; }
+  }
+  const firstEntry = view.getUint32(end + 16, true);
+  const compressed = view.getUint32(firstEntry + 20, true);
+  // Stays under the total byte cap, so only the per-entry ratio check can catch it.
+  view.setUint32(firstEntry + 24, compressed * 5_000, true);
+
+  await assert.rejects(
+    () => new XlsxTableParser({ max_decompressed_bytes: 4_000_000_000 }).parse(xlsxDocument(bytes)),
+    /compression ratio/u,
+  );
+});
+
+test("a non-ZIP payload is reported as an unreadable archive", async () => {
+  await assert.rejects(
+    () => new XlsxTableParser().parse(xlsxDocument(new Uint8Array(Buffer.from("not a zip file at all")))),
+    /readable ZIP archive/u,
+  );
+});

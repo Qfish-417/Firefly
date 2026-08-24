@@ -1,3 +1,4 @@
+export * from "./bounded-concurrency.ts";
 export * from "./index-build-worker.ts";
 export * from "./http-index-source-parser.ts";
 export * from "./typescript-ast-parser.ts";

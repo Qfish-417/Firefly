@@ -9,6 +9,7 @@ import {
   type DeletionTargetConsumer,
   type HttpDeletionTarget,
 } from "./index.ts";
+import { runSupervisedLoop } from "./supervised-loop.ts";
 
 const target = targetEnvironment();
 const databaseUrl = requiredEnvironment("DATABASE_URL");
@@ -33,11 +34,27 @@ const worker = new DeletionPropagationWorker({
 });
 
 try {
-  while (!controller.signal.aborted) {
-    const result = await worker.runBatch();
-    process.stdout.write(`${JSON.stringify({ type: "memory_deletion", target, worker_id: workerId, ...result })}\n`);
-    if (!controller.signal.aborted) await wait(intervalMs, controller.signal);
-  }
+  await runSupervisedLoop(
+    async () => {
+      const result = await worker.runBatch();
+      process.stdout.write(`${JSON.stringify({ type: "memory_deletion", target, worker_id: workerId, ...result })}\n`);
+    },
+    {
+      signal: controller.signal,
+      interval_ms: intervalMs,
+      max_backoff_ms: integerEnvironment("MEMORY_DELETION_MAX_BACKOFF_MS", 60_000, 1_000, 3_600_000),
+      observe_error: (error, failures, backoffMs) => {
+        process.stderr.write(`${JSON.stringify({
+          type: "memory_deletion_error",
+          target,
+          worker_id: workerId,
+          consecutive_failures: failures,
+          backoff_ms: backoffMs,
+          message: error instanceof Error ? error.message : String(error),
+        })}\n`);
+      },
+    },
+  );
 } finally {
   configured.destroy?.();
   await db.destroy();
@@ -89,11 +106,3 @@ function integerEnvironment(name: string, fallback: number, minimum: number, max
   return value;
 }
 
-async function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, milliseconds);
-    const abort = () => { clearTimeout(timer); reject(signal.reason ?? new Error("aborted")); };
-    if (signal.aborted) abort();
-    else signal.addEventListener("abort", abort, { once: true });
-  }).catch((error: unknown) => { if (!signal.aborted) throw error; });
-}
