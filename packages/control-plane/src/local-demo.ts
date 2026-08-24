@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 import { assertContract, type ArtifactRef, type LearningEvent } from "@firefly/contracts";
@@ -70,7 +71,7 @@ export function createLocalDemoInput(runId: string): ManualEvolutionInput {
   const sourcePlugin: ArtifactRef = {
     artifact_id: `artifact.plugin-source.${runId}`,
     uri: `https://artifacts.firefly.local/plugins/solar-energy/${runId}/1.2.0.json`,
-    digest: `sha256:${"a".repeat(64)}`,
+    digest: fixtureDigest(runId, "source-plugin"),
     media_type: "application/vnd.firefly.plugin+json",
     scope: "tenant",
     owner_id: "tenant.questlab",
@@ -79,7 +80,7 @@ export function createLocalDemoInput(runId: string): ManualEvolutionInput {
   const evidenceArtifact: ArtifactRef = {
     artifact_id: `artifact.evidence.${runId}`,
     uri: `https://artifacts.firefly.local/evidence/${runId}/attempts.json`,
-    digest: `sha256:${"b".repeat(64)}`,
+    digest: fixtureDigest(runId, "learning-evidence"),
     media_type: "application/json",
     scope: "tenant",
     owner_id: "tenant.questlab",
@@ -125,6 +126,15 @@ function validateRunId(runId: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,79}$/u.test(runId)) {
     throw new TypeError("run-id must be 3 to 80 characters using letters, numbers, dot, underscore, colon or hyphen");
   }
+}
+
+/**
+ * `questlab.artifact` is unique on `(digest, scope, owner_id)`, so a fixed fixture digest makes the
+ * second demo run fail with a duplicate key. Deriving the digest from the run id keeps each run
+ * replayable without weakening content-addressed artifact identity.
+ */
+function fixtureDigest(runId: string, kind: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(`questlab.local-demo:${kind}:${runId}`).digest("hex")}`;
 }
 
 function option(arguments_: readonly string[], name: string): string | undefined {

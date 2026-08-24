@@ -9,17 +9,56 @@ import { ModelInvocationRepository, type QuestLabDatabase } from "@firefly/persi
 import type { PluginEngineeringTool, SandboxReleaseEvidence } from "@firefly/plugin-platform";
 import type { Kysely } from "kysely";
 
+export interface AuditedModelGatewayOptions {
+  /** Hard per-run model spend cap. Exceeding it stops the run on the next call. */
+  readonly run_cost_limit_usd?: number;
+}
+
+/**
+ * Wraps the pi-ai gateway so every attempt is durably recorded before the caller sees a result.
+ *
+ * Ledger failures are NOT swallowed: this is the billing record, so a failed write fails the call
+ * rather than silently dropping a paid invocation. Once the settled run spend passes the cap, the
+ * next call is refused - the in-flight call is already paid for and stays in the ledger.
+ */
 export function createAuditedPiAiModelGateway(
   configuration: ModelGatewayConfiguration,
   db: Kysely<QuestLabDatabase>,
+  options: AuditedModelGatewayOptions = {},
 ) {
-  const repository = new ModelInvocationRepository(db);
-  return createPiAiModelGateway(configuration, {
+  const limit = options.run_cost_limit_usd;
+  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
+    throw new TypeError("run_cost_limit_usd must be a positive number");
+  }
+  const repository = new ModelInvocationRepository(
+    db,
+    limit === undefined ? {} : { run_cost_limit_microusd: Math.ceil(limit * 1_000_000) },
+  );
+  const gateway = createPiAiModelGateway(configuration, {
     observer: {
       async record(invocation) {
         await repository.record(invocation);
       },
     },
+  });
+  return withRunCostCap(gateway, repository);
+}
+
+function withRunCostCap<TGateway extends TextGenerationPort>(
+  gateway: TGateway,
+  repository: ModelInvocationRepository,
+): TGateway {
+  const generate = gateway.generate.bind(gateway);
+  const guarded: TextGenerationPort["generate"] = async (request) => {
+    const pending = repository.takeBudgetViolation();
+    if (pending) throw pending;
+    const result = await generate(request);
+    const violation = repository.takeBudgetViolation();
+    if (violation) throw violation;
+    return result;
+  };
+  return Object.assign(Object.create(Object.getPrototypeOf(gateway) as object) as TGateway, gateway, {
+    generate: guarded,
   });
 }
 

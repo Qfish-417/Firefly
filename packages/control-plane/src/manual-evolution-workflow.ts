@@ -63,12 +63,18 @@ export interface CompletedEvolutionResult {
 
 export interface ManualEvolutionExecutionOptions {
   readonly task_budget: TaskBudget;
+  /** Total model spend allowed for the whole run. Recorded as the run budget, not derived from it. */
+  readonly run_cost_limit_usd: number;
   readonly worker_id_prefix: string;
   readonly mode: "deterministic-stub" | "model-assisted";
 }
 
+/** Model-backed Agent tasks in one pass of this workflow: Director plan, Scientist analyze, Engineer patch. */
+export const modelBackedTasksPerRun = 3;
+
 const deterministicExecution: ManualEvolutionExecutionOptions = {
   task_budget: { max_tokens: 0, max_cost_usd: 0, max_duration_sec: 1800 },
+  run_cost_limit_usd: 0,
   worker_id_prefix: "stub-worker",
   mode: "deterministic-stub",
 };
@@ -430,22 +436,47 @@ export class ManualEvolutionWorkflow {
       deadline: new Date(task.deadline),
       max_attempts: task.retry_policy.max_attempts,
     });
-    const claimed = await this.taskRepository.claimNext(
-      agentId,
+    // Lease this task by identity. `claimNext` would return the next eligible task for the
+    // subject, which under concurrent runs can belong to a sibling run: `subject` is the Agent id
+    // and carries no run dimension, so two runs contend for the same Agent's queue head.
+    const claimed = await this.taskRepository.claimById(
+      taskId,
       `${this.execution.worker_id_prefix}.${agentId}`,
       task.lease.duration_sec * 1000,
       createdAt,
     );
-    if (!claimed || claimed.id !== taskId) {
+    if (!claimed) {
       throw new Error(`Task ${taskId} could not be leased by ${agentId}`);
     }
     const worker = this.agents.get(agentId);
-    const result = await worker.execute(task, { now: this.now });
-    assertContract("AgentResult", result);
+    const workerId = `${this.execution.worker_id_prefix}.${agentId}`;
+    let result: AgentResult;
+    try {
+      result = await worker.execute(task, { now: this.now });
+      assertContract("AgentResult", result);
+    } catch (error) {
+      // Releasing the lease matters: an unreleased lease leaves the task `leased` with its attempts
+      // spent, which `claimNext` skips forever, so the run stalls instead of failing.
+      await this.taskRepository
+        .fail(taskId, workerId, {
+          reason: "agent_execution_failed",
+          agent_id: agentId,
+          detail: error instanceof Error ? error.message : String(error),
+        }, { now: this.now() })
+        .catch((failure: unknown) => {
+          process.stderr.write(`${JSON.stringify({
+            type: "task_fail_release_error",
+            task_id: taskId,
+            message: failure instanceof Error ? failure.message : String(failure),
+          })}
+`);
+        });
+      throw error;
+    }
     await this.taskRepository.completeWithAgentResult(
       input.run_id,
       agentId,
-      `${this.execution.worker_id_prefix}.${agentId}`,
+      workerId,
       result,
       this.now(),
     );
@@ -472,7 +503,7 @@ export class ManualEvolutionWorkflow {
 }
 
 function executionBudgetCost(execution: ManualEvolutionExecutionOptions): number {
-  return execution.task_budget.max_cost_usd * 5;
+  return execution.run_cost_limit_usd;
 }
 
 function taskIdFor(taskType: AgentTaskType, runId: string): string {

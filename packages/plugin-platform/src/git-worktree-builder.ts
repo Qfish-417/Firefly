@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,6 +9,14 @@ import { promisify } from "node:util";
 import type { ArtifactRef, ChangeSet, ImprovementPlan } from "@firefly/contracts";
 
 const executeFile = promisify(execFile);
+
+/**
+ * Truncate-or-create, refusing to traverse a symlink at the final component. `O_NOFOLLOW` is a
+ * POSIX flag; on Windows it is not defined, so the plain flag is used and `assertNoSymlink`
+ * remains the guard.
+ */
+const writeFlags = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC
+  | (constants.O_NOFOLLOW ?? 0);
 
 export interface WorktreePatchFile {
   readonly path: string;
@@ -91,7 +100,8 @@ export class GitWorktreeBuilder {
         const target = resolveInside(worktreePath, file.path);
         await assertNoSymlink(worktreePath, file.path);
         await mkdir(dirname(target), { recursive: true });
-        await writeFile(target, file.content, "utf8");
+        // O_NOFOLLOW closes the TOCTOU window between assertNoSymlink and the write.
+        await writeFile(target, file.content, { encoding: "utf8", flag: writeFlags });
       }
       const changedPaths = await listChangedPaths(worktreePath, input.signal);
       if (changedPaths.length === 0 || changedPaths.some((path) => !allowed.has(path))) {
@@ -213,10 +223,11 @@ async function assertNoSymlink(root: string, repositoryPath: string): Promise<vo
         throw new WorktreePolicyError(`symbolic links are not allowed in plugin paths: ${repositoryPath}`);
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return;
+      // A missing segment is fine, but deeper segments may still exist and be symlinks, so the
+      // walk continues instead of abandoning the check at the first gap.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
       }
-      throw error;
     }
   }
 }
@@ -225,8 +236,12 @@ function isTextArtifact(path: string): boolean {
   return /\.(?:json|mjs|cjs|js|ts|tsx|md|txt|ya?ml)$/i.test(path);
 }
 
+/**
+ * `-uall` is required: without it Git collapses an untracked directory into one entry, which both
+ * fails the allowlist check and makes `git add` stage files the ChangeSet never lists.
+ */
 async function listChangedPaths(worktreePath: string, signal?: AbortSignal): Promise<string[]> {
-  const output = await git(worktreePath, ["status", "--porcelain=v1", "-z"], signal);
+  const output = await git(worktreePath, ["status", "--porcelain=v1", "-z", "-uall"], signal);
   return output
     .split("\0")
     .filter(Boolean)

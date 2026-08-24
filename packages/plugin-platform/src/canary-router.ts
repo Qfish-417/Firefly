@@ -46,6 +46,14 @@ function validatePolicy(policy: CanaryPolicy): void {
   if (policy.authorized_subjects.length === 0 && policy.subject_prefixes.length === 0) {
     throw new InvalidCanaryPolicyError("an explicit subject allowlist or prefix is required");
   }
+  // `startsWith("")` is true for every subject, so a blank prefix turns the allowlist into
+  // allow-everything while still looking like an explicit policy.
+  if (policy.subject_prefixes.some((prefix) => prefix.trim().length < 2)) {
+    throw new InvalidCanaryPolicyError("each subject prefix must contain at least 2 characters");
+  }
+  if (policy.authorized_subjects.some((subject) => !subject.trim())) {
+    throw new InvalidCanaryPolicyError("authorized subjects must be non-empty");
+  }
 }
 
 function hashBucket(value: string): number {

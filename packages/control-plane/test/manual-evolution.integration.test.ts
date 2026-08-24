@@ -157,7 +157,7 @@ test(
       await context.test("pending durable tasks can be canceled before lease", async () => {
         const tasks = new WorkflowTaskRepository(db);
         const now = clock();
-        await tasks.enqueue({
+        await tasks.enqueueUngoverned({
           id: "task.cancel.integration",
           run_id: input.run_id,
           task_type: "AnalyzeLearningOutcomeTask",
@@ -194,6 +194,43 @@ test(
         assert.equal(completed.task_count, 5);
         assert.equal(completed.transition_count, 9);
       });
+
+      await context.test("concurrent runs do not steal each other's Agent tasks", async () => {
+        // `subject` is the Agent id and carries no run dimension, so every concurrent run competes
+        // for the same queue head. Leasing by task identity is what keeps them isolated; leasing by
+        // subject made 75 percent of runs fail at concurrency 4 and all of them at concurrency 8.
+        const taskRepository = new WorkflowTaskRepository(db);
+        const runIds = Array.from({ length: 6 }, (_, index) => `run.concurrent.integration.${index}`);
+        const outcomes = await Promise.allSettled(
+          runIds.map(async (runId) => {
+            await startLocalDemo(db, runId);
+            return approveLocalDemo(db, runId, "teacher.concurrent", "Concurrent isolation check.");
+          }),
+        );
+
+        assert.deepEqual(
+          outcomes
+            .filter((outcome) => outcome.status === "rejected")
+            .map((outcome) => String((outcome as PromiseRejectedResult).reason?.message)),
+          [],
+          "no concurrent run may fail",
+        );
+        for (const outcome of outcomes) {
+          assert.equal((outcome as PromiseFulfilledResult<{ state: string }>).value.state, "learned");
+        }
+
+        // Each run must own exactly its own five tasks. A stolen task surfaces as a run missing a
+        // task rather than as an error, so reaching `learned` is not sufficient evidence on its own.
+        for (const runId of runIds) {
+          const owned = await taskRepository.findByRunId(runId);
+          assert.equal(owned.length, 5, `${runId} must own five tasks`);
+          assert.ok(
+            owned.every((task) => task.status === "completed"),
+            `${runId} tasks must all be completed`,
+          );
+        }
+      });
+
     } finally {
       await db.destroy();
     }
