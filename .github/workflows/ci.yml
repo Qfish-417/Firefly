@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typescript:
+    name: typecheck and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  integration:
+    name: integration tests against PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Digest-free but version-pinned: pgvector is required by migration 007.
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: questlab
+          POSTGRES_USER: questlab
+          POSTGRES_PASSWORD: questlab
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U questlab -d questlab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://questlab:questlab@127.0.0.1:5432/questlab
+      TEST_DATABASE_URL: postgresql://questlab:questlab@127.0.0.1:5432/questlab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: Enable pgvector
+        run: |
+          PGPASSWORD=questlab psql -h 127.0.0.1 -U questlab -d questlab \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;"
+      - run: npm run db:migrate
+      # The integration suite silently skips without TEST_DATABASE_URL, which is how it rotted
+      # unnoticed before. This step fails the job if the suite reports any skipped test.
+      - name: Run integration tests and forbid silent skips
+        run: |
+          set -o pipefail
+          npm run test:integration 2>&1 | tee integration.log
+          if grep -qE "^# skipped [1-9]|^ℹ skipped [1-9]" integration.log; then
+            echo "Integration tests were skipped; TEST_DATABASE_URL wiring is broken." >&2
+            exit 1
+          fi
+
+  compose:
+    name: compose profiles are valid and fail closed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Profiles validate with secrets supplied
+        env:
+          RETRIEVAL_API_TOKEN: ci-retrieval-token
+          RETRIEVAL_IDENTITY_HMAC_SECRET: ci-identity-secret-32-bytes-minimum
+          POSTGRES_PASSWORD: ci-postgres-password
+          FIREFLY_LEGACY_API_TOKEN: ci-legacy-token
+        run: |
+          docker compose -f infra/compose/questlab-min.yml config > /dev/null
+          docker compose -f infra/compose/questlab-lite.yml config > /dev/null
+          docker compose -f infra/compose/questlab-dev.yml config > /dev/null
+          docker compose -f legacy/prototype-v0/docker-compose.yml config > /dev/null
+      - name: Profiles refuse to start without required secrets
+        run: |
+          for file in infra/compose/questlab-lite.yml infra/compose/questlab-dev.yml legacy/prototype-v0/docker-compose.yml; do
+            if docker compose -f "$file" config > /dev/null 2>&1; then
+              echo "$file resolved without required secrets" >&2
+              exit 1
+            fi
+          done
+
+  legacy:
+    name: legacy prototype-v0 compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The legacy prototype has no test suite; a syntax gate is the floor that stops it rotting
+      # further while it stays in the tree for reference.
+      - name: Byte-compile the Python Agents
+        run: python -m compileall -q legacy/prototype-v0/scout-agent/src legacy/prototype-v0/upgrade-agent/src
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Compile the Java Agent
+        working-directory: legacy/prototype-v0/main-agent
+        run: mvn -B -q -DskipTests compile

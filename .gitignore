@@ -58,3 +58,12 @@ Thumbs.db
 .ab-*.json
 .ab-*.err
 .tunnel.out
+.rag-*.err
+.ans-*.err
+.agent-*.err
+.halfvec-*.err
+.sat-*.json
+.baseline-*.json
+.seed-*.log
+.ck.mjs
+.p.mjs
