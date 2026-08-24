@@ -354,6 +354,144 @@ test("invalid structured aggregator output is blocked at the contract boundary",
   );
 });
 
+/**
+ * Reciprocal Rank Fusion gives identical scores to two documents that each rank first in exactly one
+ * list, so the order used to fall to Map insertion order — that is, to whichever retriever happened
+ * to be configured first. Measured on a 30720-chunk corpus, the lexical leg's wrong rank-1 displaced
+ * the vector leg's correct rank-1 on 3 of 32 Chinese queries and cost 0.047 MRR.
+ *
+ * A hit both retrievers found must win: that agreement is the entire premise of hybrid retrieval.
+ */
+test("fusion ties are broken by retriever agreement, not by retriever order", async () => {
+  const lexicalFirst = new RetrievalGateway({
+    retrievers: [
+      fakeRetriever("lexical", [hit("noise", 1, "concept:noise"), hit("agreed", 0.5, "concept:agreed")]),
+      fakeRetriever("vector", [hit("solo", 1, "concept:solo"), hit("agreed", 0.5, "concept:agreed")]),
+    ],
+    authorization: { canRead: () => true },
+  });
+  // Same retrievers, declared the other way round. The outcome must not change.
+  const vectorFirst = new RetrievalGateway({
+    retrievers: [
+      fakeRetriever("vector", [hit("solo", 1, "concept:solo"), hit("agreed", 0.5, "concept:agreed")]),
+      fakeRetriever("lexical", [hit("noise", 1, "concept:noise"), hit("agreed", 0.5, "concept:agreed")]),
+    ],
+    authorization: { canRead: () => true },
+  });
+
+  const [left, right] = await Promise.all([
+    lexicalFirst.retrieve(baseRequest),
+    vectorFirst.retrieve(baseRequest),
+  ]);
+
+  // "agreed" is at rank 2 in both lists, so it accumulates 2/(60+2) and outranks the rank-1 hits that
+  // each appear in only one list at 1/(60+1).
+  assert.equal(left.evidence[0]?.evidence_id, "agreed");
+  assert.deepEqual(
+    left.evidence.map((item) => item.evidence_id),
+    right.evidence.map((item) => item.evidence_id),
+    "fusion order must not depend on the order retrievers are configured in",
+  );
+});
+
+/**
+ * With equal scores *and* equal agreement the order still has to be total, otherwise the same query
+ * can return different evidence between runs and the pack stops being reproducible.
+ */
+test("fusion order is deterministic when scores and agreement are equal", async () => {
+  const build = () =>
+    new RetrievalGateway({
+      retrievers: [
+        fakeRetriever("lexical", [hit("zeta", 1, "concept:zeta")]),
+        fakeRetriever("vector", [hit("alpha", 1, "concept:alpha")]),
+      ],
+      authorization: { canRead: () => true },
+    });
+
+  const packs = await Promise.all([build().retrieve(baseRequest), build().retrieve(baseRequest)]);
+  const orders = packs.map((pack) => pack.evidence.map((item) => item.evidence_id));
+  assert.deepEqual(orders[0], orders[1]);
+  // Both rank first in one list each and appear in one list each, so the id decides.
+  assert.equal(orders[0]?.[0], "alpha");
+});
+
+test("query rewriting is only attempted when retrieval came back empty", async () => {
+  const queriesSeen: string[] = [];
+  let rewrites = 0;
+  const gateway = new RetrievalGateway({
+    retrievers: [{
+      id: "lexical.test",
+      stage: "lexical",
+      retrieve: async (call) => {
+        queriesSeen.push(call.query);
+        return [hit("ev.a", 10, "concept:a")];
+      },
+    }],
+    authorization: { canRead: () => true },
+    query_rewriter: { rewrite: async () => { rewrites += 1; return "hypothetical passage"; } },
+  });
+
+  const pack = await gateway.retrieve(baseRequest);
+
+  // The rewrite costs a model call and measured -14% P@10 when applied unconditionally, so a
+  // successful retrieval must never reach it.
+  assert.equal(rewrites, 0);
+  assert.deepEqual(queriesSeen, [baseRequest.original_query]);
+  assert.equal(pack.trace.rewritten_query, undefined);
+});
+
+test("an empty result is retried with a rewritten query and the rewrite is reported", async () => {
+  const queriesSeen: string[] = [];
+  const gateway = new RetrievalGateway({
+    retrievers: [{
+      id: "lexical.test",
+      stage: "lexical",
+      retrieve: async (call) => {
+        queriesSeen.push(call.query);
+        return call.query === "hypothetical passage" ? [hit("ev.a", 10, "concept:a")] : [];
+      },
+    }],
+    authorization: { canRead: () => true },
+    query_rewriter: { rewrite: async () => "hypothetical passage" },
+  });
+
+  const pack = await gateway.retrieve(baseRequest);
+
+  assert.deepEqual(queriesSeen, [baseRequest.original_query, "hypothetical passage"]);
+  assert.equal(pack.evidence[0]?.evidence_id, "ev.a");
+  // The caller has to be able to tell that the evidence answers a machine-generated paraphrase
+  // rather than the question that was actually asked.
+  assert.equal(pack.trace.rewritten_query, "hypothetical passage");
+});
+
+test("a rewrite that also finds nothing leaves the empty pack untouched", async () => {
+  const gateway = new RetrievalGateway({
+    retrievers: [fakeRetriever("lexical", [])],
+    authorization: { canRead: () => true },
+    query_rewriter: { rewrite: async () => "still nothing" },
+  });
+
+  const pack = await gateway.retrieve(baseRequest);
+
+  assert.equal(pack.evidence.length, 0);
+  // Reporting a rewrite that recovered nothing would imply the answer came from the paraphrase.
+  assert.equal(pack.trace.rewritten_query, undefined);
+});
+
+test("a failing rewriter cannot turn an empty result into an error", async () => {
+  const gateway = new RetrievalGateway({
+    retrievers: [fakeRetriever("lexical", [])],
+    authorization: { canRead: () => true },
+    query_rewriter: { rewrite: async () => { throw new Error("model unavailable"); } },
+  });
+
+  // An empty pack is a truthful answer; a rewrite is an optional recovery attempt, so its failure
+  // must not be escalated into a retrieval failure.
+  const pack = await gateway.retrieve(baseRequest);
+  assert.equal(pack.evidence.length, 0);
+  assert.equal(pack.status, "insufficient");
+});
+
 function fakeRetriever(
   stage: "lexical" | "vector" | "temporal",
   hits: readonly RetrievalHit[],
