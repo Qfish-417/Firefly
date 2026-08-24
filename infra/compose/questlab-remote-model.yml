@@ -1,0 +1,66 @@
+# FireFly QuestLab 远程模型档：PostgreSQL 跑本地 Docker，模型调用走远程 vLLM。
+#
+# 与 questlab-min / lite / dev 三档完全独立：独立 project 名、独立端口、独立命名卷，
+# 因此可以并存，本地数据互不污染。
+#
+# 与 min 档的唯一实质差别是资源配额。min 档的 384MB / shared_buffers=48MB 是为低配机器
+# 设计的，实测在该配额下 100k × 2048 维的 HNSW 索引装不进内存：建索引 3 分 47 秒、
+# 查询 p50 434ms；同数据在 2GB shared_buffers 实例上是 17 秒 / 152ms。
+# 本档面向"要真正使用向量检索"的场景，所以把内存放到能容纳索引的量级。
+#
+# 容器仍然只运行 PostgreSQL 事实层。迁移、三 Agent 闭环、Retrieval API 与只读 Admin API
+# 都是宿主 Node 进程，因此不构建镜像、不拉取额外镜像。
+#
+# 模型在远程 vLLM。Model Gateway 强制 HTTPS，只有主机名字面为 localhost / 127.0.0.1 / ::1
+# 时才允许 HTTP，所以远程 vLLM 必须先通过 SSH 隧道映射到本机回环：
+#   ssh -N -L 11401:127.0.0.1:11401 -L 11400:127.0.0.1:11400 <user>@<host>
+# 详见 infra/compose/questlab-remote-model.env.example。
+#
+# 端口只绑定 127.0.0.1。
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    command:
+      - postgres
+      # shared_buffers 需要能容纳 HNSW 索引，否则每个新查询向量都要冷读磁盘。
+      # 参考量级：100k chunk × 2048 维的 halfvec 索引约 130MB，表约 195MB。
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=4GB
+      - -c
+      - work_mem=64MB
+      # 建 HNSW 索引的主要开销。低了只是慢，高于 shm_size 会直接失败。
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - max_connections=48
+      # 建索引时用得上；宿主 32 核，留出余量给 Node 进程。
+      - -c
+      - max_parallel_maintenance_workers=4
+      - -c
+      - max_parallel_workers_per_gather=4
+    environment:
+      POSTGRES_DB: questlab
+      POSTGRES_USER: questlab
+      POSTGRES_PASSWORD: questlab
+    ports:
+      # 55473 而非 55434：后者落在 Windows 的 TCP 保留区间 55373-55472，Docker 绑不上。
+      - "127.0.0.1:55473:5432"
+    volumes:
+      - questlab-remote-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U questlab -d questlab"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # Docker 的 /dev/shm 默认 64MB，与 mem_limit 无关。并行建索引会用到共享内存段，
+    # 实测 maintenance_work_mem=512MB 时报 "could not resize shared memory segment
+    # ... No space left on device"，因此必须显式放开。
+    shm_size: 2gb
+    mem_limit: 6g
+    cpus: 8.0
+    restart: unless-stopped
+
+volumes:
+  questlab-remote-postgres:

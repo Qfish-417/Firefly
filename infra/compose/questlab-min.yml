@@ -1,0 +1,47 @@
+# FireFly QuestLab 最小降级本地档（questlab-lite.yml 的进一步降级版本，不替代它）
+#
+# 与 questlab-lite.yml / questlab-dev.yml 完全独立：独立 project 名、独立端口、独立命名卷，
+# 因此可以与那两个栈并存，本地数据也不互相污染。
+#
+# 容器只运行唯一不可降级的能力：PostgreSQL 事实层（pgvector 镜像，迁移 007 需要 vector 扩展）。
+# 数据库迁移、三 Agent 人工闭环、Retrieval API 与只读 Admin API 由宿主 Node 进程运行，
+# 因此本档不构建任何镜像、不拉取额外镜像，可离线启动。
+#
+# 显式降级：不启动 MinIO、索引/删除 Worker、Docker Sandbox、OCR/ASR、Embedding、Reranker。
+# 未启动的能力必须报告为 unavailable / skipped / degraded，不得产生成功证据。
+# 不降级的边界仍然生效：PostgreSQL 唯一事实源、Memory ACL、结构化事实、Loop Sentinel、
+# Citation Digest、预算与人工审批。
+#
+# 端口只绑定 127.0.0.1，避免通过局域网暴露开发默认凭据。
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    command:
+      - postgres
+      - -c
+      - shared_buffers=48MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=24MB
+      - -c
+      - max_connections=24
+    environment:
+      POSTGRES_DB: questlab
+      POSTGRES_USER: questlab
+      POSTGRES_PASSWORD: questlab
+    ports:
+      - "127.0.0.1:55433:5432"
+    volumes:
+      - questlab-min-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U questlab -d questlab"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    mem_limit: 384m
+    cpus: 1.0
+    restart: unless-stopped
+
+volumes:
+  questlab-min-postgres:

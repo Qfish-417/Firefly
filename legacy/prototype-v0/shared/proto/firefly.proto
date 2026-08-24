@@ -1,0 +1,128 @@
+syntax = "proto3";
+
+package firefly;
+
+option java_package = "com.firefly.main.grpc";
+option java_multiple_files = true;
+option go_package = "./;fireflypb";
+
+// =========================================================
+// FireFly 三 Agent gRPC 协议定义
+// 主力(Java) ↔ 侦察(Python) ↔ 升级(Python)
+// 同步调用走 gRPC，异步走 RocketMQ，持久通信用收件箱
+// =========================================================
+
+// ---------- 侦察提供：评估服务（主力调用，同步握手）----------
+service EvaluateService {
+  // 主力上线后自评触发 / 定时评估
+  rpc Evaluate(EvaluateRequest) returns (EvaluateResponse);
+  // 侦察主动对主力跑完整评估（也可由升级灰度后调用复评）
+  rpc FullAssess(FullAssessRequest) returns (EvaluateResponse);
+}
+
+message EvaluateRequest {
+  string service = 1;            // 目标服务名
+  string version = 2;            // 当前版本/git_tag
+  int64 metrics_window_sec = 3;  // 指标窗口（秒），默认 300
+}
+
+message FullAssessRequest {
+  string service = 1;
+  string version = 2;
+  bool run_tests = 3;            // 是否跑回归测试
+  bool run_log_analysis = 4;     // 是否拉日志分析
+}
+
+message EvaluateResponse {
+  double score = 1;                          // 综合分 0~1
+  map<string, double> dimension_scores = 2;  // 各维度分
+  string trend = 3;                          // up / down / flat
+  repeated string improvement_ids = 4;       // 触发的改进点 id
+  string report_url = 5;                     // 评估报告地址
+}
+
+// ---------- 升级提供：升级服务（主力/管理员调用）----------
+service UpgradeService {
+  // 管理员手动触发某清单
+  rpc TriggerPlan(TriggerPlanRequest) returns (TriggerPlanResponse);
+  // 主力通知升级：某 release 灰度失败需回滚
+  rpc NotifyRollback(RollbackRequest) returns (RollbackResponse);
+  // 查询某改进点当前状态
+  rpc QueryImprovementStatus(StatusRequest) returns (StatusResponse);
+}
+
+message TriggerPlanRequest {
+  string plan_id = 1;
+  string operator = 2;   // admin 账号
+  string reason = 3;
+}
+
+message TriggerPlanResponse {
+  bool accepted = 1;
+  string batch_id = 2;
+  string message = 3;
+}
+
+message RollbackRequest {
+  string release_id = 1;
+  string reason = 2;
+  string scope = 3;      // partial / overall
+}
+
+message RollbackResponse {
+  bool rolled_back = 1;
+  string previous_tag = 2;
+}
+
+message StatusRequest {
+  string improvement_id = 1;
+}
+
+message StatusResponse {
+  string status = 1;     // pending/running/done/rolled_back/needs_human
+  string plan_id = 2;
+  string detail = 3;
+}
+
+// ---------- 三方共用：经验库读写 ----------
+service ExperienceService {
+  // 写经验（三方都可调）
+  rpc WriteExperience(ExperienceItem) returns (WriteAck);
+  // 向量检索经验（rag_search 底层）
+  rpc SearchExperience(SearchRequest) returns (SearchResponse);
+}
+
+message ExperienceItem {
+  string id = 1;
+  string type = 2;        // implementation/spec/defect_case/fix_case/failure_case/review_rule
+  string content = 3;
+  string domain = 4;      // course/seckill/order/pay/user
+  repeated string tags = 5;
+  string outcome = 6;     // success/failure
+}
+
+message WriteAck {
+  bool ok = 1;
+  string id = 2;
+}
+
+message SearchRequest {
+  string query = 1;
+  string agent_name = 2;          // main/scout/upgrade（决定 filters 权重）
+  repeated string types = 3;      // 类型过滤
+  string domain = 4;
+  int32 top_k = 5;
+  bool use_bm25 = 6;              // 是否启用 BM25 混合检索
+}
+
+message SearchHit {
+  string content = 1;
+  double score = 2;
+  string source = 3;
+  string type = 4;
+}
+
+message SearchResponse {
+  repeated SearchHit hits = 1;
+  bool degraded = 2;   // 是否降级（如向量库超时仅 BM25）
+}
