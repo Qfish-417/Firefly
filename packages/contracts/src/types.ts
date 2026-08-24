@@ -354,7 +354,13 @@ export interface EvidencePack {
     readonly authorized: number;
     readonly denied: number;
     readonly selected: number;
-    readonly stop_reason: "context_k" | "token_budget" | "score_floor" | "exhausted";
+    readonly stop_reason: "context_k" | "token_budget" | "score_floor" | "marginal_gain" | "exhausted";
+    /**
+     * Present only when the original query returned nothing and a rewrite recovered results. Absent
+     * on the normal path, so a caller can always tell whether the evidence answers the question that
+     * was asked or a machine-generated paraphrase of it.
+     */
+    readonly rewritten_query?: string;
   };
 }
 

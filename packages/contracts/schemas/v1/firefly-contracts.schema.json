@@ -867,7 +867,8 @@
         "authorized": { "type": "integer", "minimum": 0 },
         "denied": { "type": "integer", "minimum": 0 },
         "selected": { "type": "integer", "minimum": 0 },
-        "stop_reason": { "enum": ["context_k", "token_budget", "score_floor", "exhausted"] }
+        "stop_reason": { "enum": ["context_k", "token_budget", "score_floor", "marginal_gain", "exhausted"] },
+        "rewritten_query": { "type": "string", "minLength": 1 }
       }
     },
     "EvidencePack": {

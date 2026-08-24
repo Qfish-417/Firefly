@@ -27,9 +27,16 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 7. [目标架构构建文档](./FireFly-目标架构构建文档.md)：更详细的阶段性建设要求。
 8. [Model Gateway 构建设计](./FireFly-Model-Gateway构建设计.md)：M4 代码边界、配置、失败语义和真实 Engineer 工程生命周期。
 9. [本地轻量运行说明](./docs/local-lite-profile.md)：低资源 Compose、可接受降级矩阵与不可降级的安全边界。
-10. [模型 Provider 接入说明](./docs/model-provider-integration.md)：内置模型目录、三 Agent 选型、凭据变量与无付费接入诊断。
+10. [本地最小降级运行说明](./docs/local-min-profile.md)：仅 PostgreSQL 容器，宿主 Node 进程完成迁移、三 Agent 闭环、检索与审计，使用独立端口与数据卷。
+11. [模型 Provider 接入说明](./docs/model-provider-integration.md)：内置模型目录、三 Agent 选型、凭据变量与无付费接入诊断。
+12. [M5.33 加固说明](./docs/hardening-m5.33.md)：本轮安全、健壮性与解耦改动的清单、验证方式与行为变更。
+13. [性能基线](./docs/performance-baseline.md)：RAG 检索与三 Agent 闭环的可复跑量化、瓶颈定位与已知不足。
+14. [量化评测报告](./docs/evaluation-report.md)：30720 chunk 带标注语料、真实远程模型下的全量数据——11 个检索场景 x 5 个 k 值（1/3/5/10/20）的 MRR / MAP / nDCG / Recall / Precision，7 个 intent 的检索计划，4 档语料规模曲线，halfvec 相对 fp32 的精度损失拆分（fp16 舍入 vs HNSW 近似），LLM-as-judge 答案质量与客观引用精确率，以及 Agent 顺序与并发（每档 >=100 次调用，p99 可信）。
+15. [Agent 能力五维评测](./docs/agent-capability-evaluation.md)：任务完成率、步数效率、工具调用正确率、Token 成本与人工评分的端到端 + 单步双轨评测。工具调用正确率过真实 `validateRetrievalRequest` 边界而非比对字符串；步数分母由状态机声明的理论最小值给出而非实测值；含 A/B 验证，以及满分意味着题目太容易的处理。
 
 `FireFly-开放式目标架构.drawio` 是旧的 11 页分析图，内容较密且存在重复；保留作历史参考，不再作为主图。`FireFly-Agent设计.drawio` 和 `FireFly-Agent设计说明.md` 均属于 Legacy Prototype v0。
+
+Legacy Prototype v0 的全部代码已移入 `legacy/prototype-v0/`（Java 主力、两个 Python Agent、gRPC proto、RAG 脚本、11 服务 Compose 与 `init-db.sql`）。它与 v3 主干无任何依赖关系，仓库根目录只保留一个可运行系统，`infra/` 只承载 v3 部署资产。详见 [ADR 0047](./docs/adr/0047-legacy-prototype-isolation.md)。
 
 ## 推荐起步形态
 
@@ -143,13 +150,64 @@ M5.27 completes the optional governed reranking boundary. `HttpRerankerProvider`
 
 M5.28 defines the local completion target. `npm run lite:up` starts only a resource-bounded PostgreSQL fact layer, one-shot migration and lexical Retrieval API; persistent local data survives ordinary shutdown. Embedding, exact pgvector and reranking remain opt-in, while MinIO, background Workers, OCR/ASR and Sandbox stay off by default. Quality and infrastructure may degrade explicitly, but ACL, structured truth, Loop Sentinel, citations, budgets and approvals remain strict; see [ADR 0042](./docs/adr/0042-local-lite-degradation-profile.md), the [local guide](./docs/local-lite-profile.md) and diagram page 41.
 
+M5.32.1 adds the further-degraded `npm run min:up` local profile without changing lite or dev. It runs only the pgvector-backed PostgreSQL fact layer in Docker, while migration, the deterministic three-Agent loop, lexical Retrieval API and read-only Admin API run as host Node processes. Its project, volume and loopback-only ports (`55433 / 53201 / 3101`) are isolated from lite/dev; MinIO, Workers, Sandbox, multimodal, Embedding, reranking and real models remain explicitly unavailable. See [ADR 0046](./docs/adr/0046-minimal-local-degradation-profile.md) and the [minimal local guide](./docs/local-min-profile.md).
+
 M5.29 makes the local three-Agent loop directly operable. `npm run demo:start` persists a deterministic learning run and stops at `awaiting_approval`; `npm run demo:approve` requires an explicit run ID, approver and reason before resuming Engineer build, Director canary and Scientist outcome stages. The commands reuse the integration-tested workflow and zero-cost Stub Agents, while the read-only Admin API exposes the resulting causal trace; see [ADR 0043](./docs/adr/0043-local-manual-evolution-cli.md) and diagram page 42.
 
 M5.30 adds attributed model accounting and a deterministic, read-only Audit Agent. Every pi-ai generation attempt can be bound to its run, task and business Agent; replay-safe PostgreSQL settlement updates the run token/cost budget atomically. `GET /admin/audit/agents` exposes three-Agent totals and `GET /admin/audit/runs/{run_id}` exposes a redacted causal activity report with failure, retry, telemetry-gap and budget-threshold alerts. See [ADR 0044](./docs/adr/0044-attributed-model-usage-audit-agent.md), the [monitoring guide](./docs/audit-monitoring.md) and diagram page 43.
 
 M5.31 adds a no-cost model onboarding diagnostic. `npm run model:catalog` lists the pinned pi-ai Provider/model catalog and `npm run model:doctor` validates configured fallback routes, text-input support and credential availability without exposing keys or sending a paid model request. See the [model integration guide](./docs/model-provider-integration.md).
 
+M5.33 是一次全仓库安全与健壮性加固，并把 Legacy Prototype v0 隔离到 `legacy/prototype-v0/`。Admin API 与 Retrieval API 补上鉴权、常量时间比较、请求超时、错误信息脱敏与有界优雅关闭；Embedding 客户端补齐 SSRF、重定向与响应体上限防护；XLSX 解压炸弹、PDF 行分组的 O(n²) 与栈溢出、无界扇出与无界事件读取全部收口；任务租约新增 `fail()`/`reapExpired()`，迁移引入校验和防漂移。检索在全部 retriever 或授权后端失效时返回 503 而不是空的 200。首次加入 CI，并且集成测试被跳过会判为失败。详见[加固说明](./docs/hardening-m5.33.md)、[ADR 0047](./docs/adr/0047-legacy-prototype-isolation.md)。
+
 M5.32 adds governed custom OpenAI-compatible relays through `FIREFLY_MODEL_PROVIDERS`. Relay models join the same pi-ai catalog and reuse FireFly routing, budgets, snapshots and audit records; remote endpoints require HTTPS, while localhost HTTP requires explicit opt-in. See [ADR 0045](./docs/adr/0045-governed-custom-model-relays.md) and the [model integration guide](./docs/model-provider-integration.md).
+
+性能量化（PowerShell，需专用 `questlab_perf` 库，脚本对非 perf 库 fail closed）：
+
+```powershell
+docker exec firefly-questlab-min-postgres-1 psql -U questlab -d postgres `
+  -c "DROP DATABASE IF EXISTS questlab_perf;" -c "CREATE DATABASE questlab_perf OWNER questlab;"
+docker exec firefly-questlab-min-postgres-1 psql -U questlab -d questlab_perf -c "CREATE EXTENSION IF NOT EXISTS vector;"
+$env:DATABASE_URL = "postgresql://questlab:questlab@127.0.0.1:55433/questlab_perf"
+node packages/persistence/src/migrate.ts
+Get-Content scripts/perf-seed.sql | docker exec -i firefly-questlab-min-postgres-1 `
+  psql -U questlab -d questlab_perf -v docs=2000 -v chunks=5 -v ON_ERROR_STOP=1 -f -
+node scripts/perf-retrieval.mjs --iterations 60 --label 10k
+node scripts/perf-agent-loop.mjs --iterations 16 --concurrency 1,4,8
+```
+
+带标注语料的质量评测（需要真实 Embedding 与生成端点，PowerShell）：
+
+```powershell
+# 建独立评测库，避免污染主库；.eval.env 的 DATABASE_URL 指向 questlab_eval
+docker exec firefly-questlab-remote-postgres-1 psql -U questlab -d postgres -c "CREATE DATABASE questlab_eval OWNER questlab;"
+node --env-file=.eval.env packages/persistence/src/migrate.ts
+node --env-file=.eval.env scripts/eval-seed.mjs --depth 240 --run d240 --batch 32 --embed-concurrency 2
+node --env-file=.eval.env scripts/eval-rag.mjs --repeats 4 --cutoffs 1,3,5,10,20 > eval-rag.json
+node --env-file=.eval.env scripts/eval-halfvec.mjs --queries 32 --k 10 > eval-halfvec.json
+node --env-file=.eval.env scripts/eval-answer.mjs --queries 32 > eval-answer.json
+node --env-file=.eval.env scripts/eval-agent.mjs --rounds 60 --concurrency 1,4,8,12 --min-calls-per-level 100 > eval-agent.json
+```
+
+实测结论见[量化评测报告](./docs/evaluation-report.md)。30720 chunk 语料、真实远程模型下发现并修复了 6 个缺陷，其中 5 个只有在真实规模或真实模型下才会暴露：
+
+1. `selectEvidence` 的收益递减判据**方向写反了**：`(prev - score) / prev < floor` 的含义是「下一条没有明显更差就停止」，而「没有明显更差」恰恰意味着这条候选和上一条一样好、应该继续取。两种分数尺度都会踩中——RRF 在两个检索器一致命中同一文档时分数完全并列（实测输入序列 `1.0000, 1.0000, 0.9839, ...`，差值为 0，低于任何正阈值），reranker 在近重复候选上返回平台期（相邻差值 0.00001~0.0024）。而真正的断崖不会看错：`agreement` 从 2 降到 1 处的差值是 0.3896~0.4639，是平台期噪声的 25 倍。判据改为 `>=` 并把 7 个 intent 的阈值重标定到两个区间之间后，11 个场景全部改善：`exploratory-natural` Recall@10 0.453 → 0.938、证据 5.0 → 12.9，重排链路 nDCG@10 0.237 → 0.502、证据 2.0 → 6.0，`marginal_gain` 从主导停止原因（27/32）降到只在 2~4 条真实断崖上触发。
+2. PostgreSQL `simple` 配置不切分中文，自然整句的词法检索 32/32 查询返回 0 条，混合检索静默退化为纯向量检索。迁移 018 新增字符 bigram 生成列（不依赖 `pg_bigm` / `zhparser` 等外部扩展），`lexical-only-natural` 的 MRR 0.000 → 0.875、nDCG@10 0.000 → 0.610。
+3. RRF 平局时排序落到 `Map` 插入顺序，也就是检索器的声明顺序，词法的错误结果压过向量的正确结果。改为按「检索器一致度 → 最佳名次 → id」打破平局，顺序变为全序且可复现。
+4. 单个跨词边界的 bigram 巧合（`热斑是怎么形成的` 与 `形成性评估` 共享 `形成`）足以让词法返回 10 条全错文档。要求 CJK 侧至少命中 2 个 bigram 后，`hybrid-natural` MRR 恢复到 1.000（该缺陷修复时 `exploratory-natural` nDCG@10 为 0.419 → 0.497；判据方向修复后同一场景已达 0.773）。
+5. `fail()` 要求租约未过期，而慢失败恰恰是租约已耗尽的场景：一次挂了 561 秒的模型调用之后任务停在 `leased` 且 `last_error` 为空，失败原因彻底丢失。改为只校验所有权。
+6. `readBoundedJson` 的 reader 循环只有 `finally` 没有 `catch`，响应体读取阶段的超时以原始 `DOMException` 逃逸出 Model Gateway，调用方拿不到 `TIMEOUT` 码与 `retryable` 标志、账本也记不到。
+
+Agent 侧顺序 60 轮 100% 成功、120 次模型调用 p99 3316ms（n=120，p99 可信）；并发 1→12 每档累计 100~120 次调用（p99 全部可信）、全部 100% 成功，零重试，并发 12 下未出现越权领取。
+
+本轮另做了两项**保持质量不变**的性能优化（11 个场景的证据数/nDCG/Recall/MRR 与优化前逐位相同）：
+
+- **授权复查由逐条往返改为单条批量语句**。原先融合后每个候选一次 ACL 查询，24 个候选实测 54.7ms（单次 1.6ms），约占 `fact_lookup` 端到端 33%；改为 `unnest` 批量语句后 3.5ms，放行结果完全一致。`canReadAll` 是**可选**扩展点，缺失时回落原逻辑；契约是「返回被放行的集合」，所以任何遗漏都表现为拒绝而非放行，批量语句抛错时整批记为授权失败并回落串行。这同时解释了此前报告里"无法解释的延迟随规模增长"：单次往返隔离测量看不出问题，但候选数随语料增长，每个候选一次独立往返把尾延迟逐次放大。30720 chunk 下 `hybrid-natural` p50 1111ms → **401ms**、p99 4829ms → **600ms**。
+- **向量检索新增 `ann_recall_mode` 选项**。ACL 谓词跨表形成 `Join Filter`，使 ANN 索引完全无法生效（实测 30720 行全部物化后排序，4092ms）。把向量搜索移到基表先跑、再用 ACL 过滤其输出可让 HNSW 生效，但 chunk 级召回从 100% 降到 86.7%。因为有损，它是显式选项而**不是**默认值——13% 的召回损失必须由调用方知情决定。默认 `exact` 保持优化前行为。过程中三处推断被数据否证并记录在案：ef_search=512 的"100% 召回"其实是计划器放弃了索引改走顺序扫描；下推对 `exact` 反而更慢（476ms vs 442ms）；`halfvec` 距离在纯排序场景比 `vector` 慢 4.5 倍。
+
+halfvec 相对 fp32 精确解的 chunk 级 recall@10 为 0.69，但拆开后 **HNSW 近似零损失**，差异全部来自 fp16 舍入且发生在距离实质相等的文档之间（实测 rank10/rank11 距离差 2.71e-4 < fp16 精度 4.88e-4），按标注 topic 口径一致率 0.875，而 fp32 精确解要慢 60 倍。另外 `score_floor` 在全部 11 个场景中一次未触发，这条路径仍缺实测覆盖。
+
+实测结论见[性能基线](./docs/performance-baseline.md)。三 Agent 闭环曾因 `executeTask` 用 `claimNext` 按 `subject` 认领、而 `subject` 不含 run 维度，导致并发 run 互相抢任务（新增 `claimById` 后并发 4/8 失败率 75%/100% → 0%，吞吐 4.04 → 20.18 run/s）。另有一条旧结论已更正：向量检索慢 5 倍的原因是**每行 2048 维 fp32→fp16 的 `halfvec` 转换**，不是 `MATERIALIZED` CTE 物化——四组合隔离测量显示 CTE 只值 9ms（109ms vs 100ms），而换成 `halfvec` 距离是 100ms → 453ms。
 
 PostgreSQL 集成检查（PowerShell）：
 
@@ -163,6 +221,7 @@ $env:TEST_S3_ACCESS_KEY = "minioadmin"
 $env:TEST_S3_SECRET_KEY = "minioadmin"
 $env:TEST_SANDBOX_IMAGE = "node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43"
 npm run test:integration
+$env:ADMIN_API_TOKEN = "at-least-16-characters"
 npm run admin:start
 docker compose -p firefly-questlab-dev -f infra/compose/questlab-dev.yml down
 ```
@@ -179,7 +238,22 @@ npm run lite:down
 
 `lite:down` 保留 PostgreSQL 命名卷；完整开发栈只在需要验证 MinIO、索引/删除 Worker 或 Sandbox 时启动。
 
-The development Compose stack also builds and starts the database migration job, Retrieval API and non-activating index Worker. The Retrieval health endpoint is published at `http://127.0.0.1:53200/health`. Development defaults are provided for the API token and identity HMAC secret; override them outside local development. Optional vector search uses the M5.22 `EMBEDDING_*` configuration; optional reranking uses the M5.27 `RERANK_*` configuration.
+资源更紧或需要离线启动时使用最小降级档。它只启动 PostgreSQL 容器，迁移、三 Agent 闭环、Retrieval API 与 Admin API 都是宿主 Node 进程，不构建镜像；端口 `55433 / 53201 / 3101` 只绑定 `127.0.0.1`，Compose project 与数据卷都与 lite / dev 档独立，可以并存：
+
+```powershell
+npm run min:up
+npm run min:ps
+npm run min:migrate
+npm run min:demo:start -- --run-id run.min.001
+npm run min:demo:approve -- --run-id run.min.001 --approver local.user --reason "reviewed locally"
+npm run min:retrieval   # 另一个终端，健康检查 http://127.0.0.1:53201/health
+npm run min:admin       # 另一个终端，轨迹 http://127.0.0.1:3101/admin/evolution-runs/run.min.001
+npm run min:down
+```
+
+最小档默认关闭 MinIO、索引/删除 Worker、Sandbox、OCR/ASR、Embedding、Reranker 和真实模型调用，检索只宣告 PostgreSQL FTS；ACL、结构化事实、Loop Sentinel、Citation、预算和人工审批仍然严格。详见[本地最小降级运行说明](./docs/local-min-profile.md)。
+
+The development Compose stack also builds and starts the database migration job, Retrieval API and non-activating index Worker. The Retrieval health endpoint is published at `http://127.0.0.1:53200/health`. `RETRIEVAL_API_TOKEN` and `RETRIEVAL_IDENTITY_HMAC_SECRET` have no defaults: the lite and development stacks refuse to resolve without them, and `53200` is published on `127.0.0.1` only. The identity HMAC secret is the whole cross-tenant trust anchor, so a committed default would let anyone on the LAN mint a valid identity for any tenant. Optional vector search uses the M5.22 `EMBEDDING_*` configuration; optional reranking uses the M5.27 `RERANK_*` configuration.
 
 The default stack also runs the S3/MinIO object-deletion consumer. To run one external deletion target, set `MEMORY_DELETION_TARGET`, `MEMORY_DELETION_ENDPOINT` and optionally `MEMORY_DELETION_PROVIDER_TOKEN`, then enable the `external-deletion` Compose profile. Deploy a separate process per external target in production so targeted Outbox leases and failure domains remain isolated.
 
@@ -193,7 +267,7 @@ Parser 接入已抽象为 `ParserBackedIndexSourcePort`：可按 `source_type` �
 
 降级索引不会自动进入生产：`allow_degraded_build` 与 `allow_degraded_activation` 必须分别显式开启，默认均关闭。详见 [ADR 0024](./docs/adr/0024-degraded-index-activation-policy.md)。
 
-Admin API 默认只监听 `http://127.0.0.1:3100`，运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`，响应同时包含因果边、预算、哨兵、PluginRelease、Sandbox、Canary 与当前活动 PluginVersion。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
+Admin API 默认只监听 `http://127.0.0.1:3100`，并且必须配置 `ADMIN_API_TOKEN`（≥16 字符）才会启动；除 `GET /health` 外所有路由都要求 `Authorization: Bearer`，比较使用 `crypto.timingSafeEqual`。仅在本机回环场景下可以用 `ADMIN_ALLOW_UNAUTHENTICATED=true` 显式放开。运行轨迹入口为 `GET /admin/evolution-runs/{run_id}`，响应同时包含因果边、预算、哨兵、PluginRelease、Sandbox、Canary 与当前活动 PluginVersion，并在单个 `REPEATABLE READ` 快照内读取，因此 21 条查询不会拼出运行从未处于过的混合状态。该 Compose 环境使用 `tmpfs`，仅用于本地集成测试；执行 `down` 后测试数据不会保留。
 
 删除 reconciliation 独立进程至少需要 `DATABASE_URL`，可选配置为 `MEMORY_RECONCILIATION_SCHEDULER_ID`、`MEMORY_RECONCILIATION_INSTANCE_ID`、`MEMORY_RECONCILIATION_INTERVAL_MS`、`MEMORY_RECONCILIATION_STALE_AFTER_MS` 和 `MEMORY_RECONCILIATION_BATCH_SIZE`。启动命令为 `npm run memory:reconcile`；SIGINT/SIGTERM 会在当前周期结束后停止并关闭数据库连接。
 

@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+# `*.env` also matters: infra/compose/*.env hold local tokens and HMAC secrets.
+*.env
+!*.env.example
 *.pem
 *.key
 
@@ -38,3 +41,20 @@ Thumbs.db
 *.log
 *.pid
 *.tmp
+
+# 评测产物与本地临时转发器。评测原始 JSON 是报告的复现依据，但体积大且随每次运行变化，
+# 结论已固化在 docs/evaluation-report.md 与 docs/agent-capability-evaluation.md 里，不入库。
+.eval.env
+.eval.err
+.tunnel.mjs
+.tunnel.err
+.rag-*.json
+.agent-*.json
+.halfvec*.json
+.ans-*.json
+.scale-*.json
+.cap-*.json
+.cap-*.err
+.ab-*.json
+.ab-*.err
+.tunnel.out

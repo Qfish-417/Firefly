@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { EvidenceCitation, IndexBuildTask, IndexEvaluationCase, StructuredResult } from "@firefly/contracts";
 import type { EmbeddingPort, ModelBudget } from "@firefly/model-gateway";
-import { MemoryRepository, type QuestLabDatabase, type StructuredEdge, type StructuredEvent } from "@firefly/persistence";
+import { defaultEventQueryLimit, MemoryRepository, type QuestLabDatabase, type StructuredEdge, type StructuredEvent } from "@firefly/persistence";
 import type {
   EvidenceExpansionCandidate,
   EvidenceExpansionCandidateSource,
@@ -43,7 +43,44 @@ export interface PostgresVectorRetrieverOptions {
   readonly embedding_budget: ModelBudget;
   readonly logical_name?: string;
   readonly id?: string;
+  /**
+   * Whether vector search may use the ANN index, trading recall for latency.
+   *
+   * These are not two implementations of the same thing; they answer different questions, and the
+   * difference is large enough that it must be the caller's decision rather than a hidden constant.
+   * Measured on 30720 chunks, 8 queries, top-16, against the fp32 exact answer:
+   *
+   *   `exact`        100.0% recall, 270ms p50 — the planner sorts the filtered set, so the answer is
+   *                  the true nearest neighbours.
+   *   `approximate`   86.7% recall,   3ms p50 — HNSW traversal, roughly 90x faster.
+   *
+   * The 13% gap is fp16 rounding plus graph approximation, and it is not uniformly harmful: the same
+   * corpus measures 0.875 agreement at the level of *which topic* a chunk belongs to, because the
+   * substitutions happen between documents at effectively equal distance. For ranked retrieval feeding
+   * a reranker or an LLM that is usually acceptable; for "is this fact present at all" it is not.
+   *
+   * The default is `exact` because that is what this retriever did before the ANN pushdown existed,
+   * and silently trading away recall for latency is not an optimisation a caller can discover.
+   */
+  readonly ann_recall_mode?: "exact" | "approximate";
+  /**
+   * Element type used in the distance expression, which decides whether an ANN index can apply.
+   *
+   * pgvector caps an HNSW or ivfflat index at 2000 dimensions for `vector` but 4000 for `halfvec`,
+   * because one 8KB index page holds 2000 fp32 or 4000 fp16 components. A model emitting more than
+   * 2000 dimensions therefore cannot be ANN-indexed as `vector` at all; measured error is
+   * `column cannot have more than 2000 dimensions for hnsw index`, and no GUC relaxes it.
+   *
+   * `halfvec` keeps the column at full fp32 and only narrows the indexed copy to fp16, so this
+   * trades index precision for indexability. Measured on 3000 structured 2048-dimension vectors:
+   * 24 of 24 top results identical to the exact fp32 scan, 42.2ms to 1.09ms.
+   *
+   * Defaults to `vector`, so existing deployments keep exact fp32 distances unless they opt in.
+   */
+  readonly distance_element_type?: VectorDistanceElementType;
 }
+
+export type VectorDistanceElementType = "vector" | "halfvec";
 
 interface MemorySearchRow {
   readonly chunk_id: string;
@@ -254,8 +291,30 @@ export class PostgresLexicalRetriever implements Retriever {
     call.signal?.throwIfAborted();
     const access = readableMemoryPredicate(call.principal);
     const filters = retrievalFilterPredicate(call.filters);
+    // Two tsqueries, because `simple` does not segment Chinese: a Chinese sentence collapses into a
+    // single lexeme that matches nothing (measured: 0 rows for '固定倾角应该设成多少度', 960 rows for
+    // the space-separated '倾角 纬度'). Migration 018 stores a character-bigram vector alongside the
+    // plain one, so the CJK part of a query is matched as bigrams while Latin text keeps exact-token
+    // AND semantics.
+    //
+    // The CJK side uses OR, not AND: bigrams of a query sentence include boundary pairs that span
+    // words ('角应', '该设') which no document contains, so requiring all of them would match nothing.
+    // OR asks the useful question — does the document share any Chinese bigram with the query — and
+    // ts_rank_cd still ranks by how many matched and how close they are.
+    const cjkTerms = toCjkBigrams(call.query);
+    // A single shared bigram is not evidence of relevance: it is usually a word-boundary artifact.
+    // '热斑是怎么形成的' shares only '形成' with '形成性评估' (formative assessment), an unrelated
+    // topic, and that one accidental bigram was enough to fill the entire lexical result list with
+    // wrong documents. Requiring two matches removes that noise while keeping real matches, which
+    // share three or more. Queries with a single bigram of their own keep a threshold of one,
+    // otherwise they could never match at all.
+    const cjkMinimumMatches = Math.min(2, cjkTerms.length);
     const result = await sql<MemorySearchRow>`
-      WITH query AS (SELECT websearch_to_tsquery('simple', ${call.query}) AS value)
+      WITH query AS (
+        SELECT websearch_to_tsquery('simple', ${call.query}) AS value,
+               ${cjkTerms.length === 0 ? sql`NULL::tsquery` : sql`to_tsquery('simple', ${cjkTerms.join(" | ")})`} AS cjk_value,
+               ${cjkTerms.length === 0 ? sql`NULL::text[]` : sql`${cjkTerms}::text[]`} AS cjk_terms
+      )
       SELECT
         chunk.chunk_id,
         chunk.content,
@@ -266,7 +325,15 @@ export class PostgresLexicalRetriever implements Retriever {
         chunk.citation_uri,
         chunk.citation_digest,
         chunk.citation_locator,
-        ts_rank_cd(chunk.search_vector, query.value)::double precision AS score
+        (
+          COALESCE(ts_rank_cd(chunk.search_vector, query.value), 0)
+          + CASE
+              WHEN query.cjk_value IS NULL THEN 0
+              -- Weighted below the exact-token match: a bigram hit is weaker evidence than a whole
+              -- token, so it must not outrank one. It only has to lift matches above zero.
+              ELSE COALESCE(ts_rank_cd(chunk.cjk_search_vector, query.cjk_value), 0) * 0.5
+            END
+        )::double precision AS score
       FROM questlab.memory_chunk AS chunk
       JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
       JOIN questlab.retrieval_index_version AS index_version
@@ -277,7 +344,18 @@ export class PostgresLexicalRetriever implements Retriever {
         AND (memory.scope = 'public' OR index_version.tenant_id = ${call.principal.tenant_id})
         AND index_version.logical_name = ${this.logicalName}
         AND chunk.chunk_level = 'child'
-        AND chunk.search_vector @@ query.value
+        AND (
+          chunk.search_vector @@ query.value
+          OR (
+            query.cjk_value IS NOT NULL
+            AND chunk.cjk_search_vector @@ query.cjk_value
+            AND cardinality(ARRAY(
+              SELECT unnest(tsvector_to_array(chunk.cjk_search_vector))
+              INTERSECT
+              SELECT unnest(query.cjk_terms)
+            )) >= ${cjkMinimumMatches}
+          )
+        )
         AND ${access}
         AND ${filters}
       ORDER BY score DESC, chunk.chunk_id ASC
@@ -462,6 +540,38 @@ export class PostgresBuildingIndexQualityEvaluator {
   }
 }
 
+/**
+ * How many ANN candidates to fetch per requested row before authorization filtering.
+ *
+ * The inner vector scan cannot see the ACL, so some of its candidates will be dropped. Measured on
+ * this corpus a 1:1 inner limit returned 13 authorized rows for a 16-row request; 4x saturated the
+ * readable set. This is only the starting point — {@link PostgresVectorRetriever.retrieve} escalates
+ * when the result is short, so the factor trades a little wasted work for fewer round trips rather
+ * than deciding correctness.
+ */
+const ANN_OVERFETCH_FACTOR = 4;
+
+/** Floor for the inner limit, so a tiny `max_results` still gives HNSW a usable working set. */
+const ANN_MIN_OVERFETCH = 64;
+
+/**
+ * `hnsw.ef_search` bounds how many candidates HNSW visits, so it is a recall dial, not a performance
+ * knob. The default of 40 is too low for this index: it capped results at 40-48 rows regardless of
+ * LIMIT. 100 is the smallest value measured to lift that cap without pushing the planner away from
+ * the index (see {@link PostgresVectorRetrieverOptions.ann_recall_mode} for the measurements).
+ */
+const HNSW_DEFAULT_EF_SEARCH = 100;
+
+/** pgvector's own ceiling for `hnsw.ef_search`. */
+const HNSW_MAX_EF_SEARCH = 1_000;
+
+/**
+ * Escalation attempts before returning a short result. Each attempt doubles both the inner limit and
+ * `ef_search`, so four attempts span 4x to 32x over-fetch; past that the readable set is genuinely
+ * smaller than the request and more scanning cannot help.
+ */
+const ANN_MAX_ATTEMPTS = 4;
+
 export class PostgresVectorRetriever implements Retriever {
   readonly id: string;
   readonly stage = "vector" as const;
@@ -490,51 +600,197 @@ export class PostgresVectorRetriever implements Retriever {
     const access = readableMemoryPredicate(call.principal);
     const filters = retrievalFilterPredicate(call.filters);
     const literal = vectorLiteral(vector);
-    const rows = await sql<MemorySearchRow>`
-      WITH candidates AS MATERIALIZED (
+    // Two shape requirements make an ANN index usable here; both are planner visibility, not a
+    // relaxation of authorization, and every predicate below is still applied by the database.
+    //
+    // 1. No MATERIALIZED CTE. A CTE forces the filtered set to be built and then sorted, and an ANN
+    //    index can only accelerate `ORDER BY ... <=>` against the base table. Measured on 100k
+    //    chunks with an HNSW index present: 294ms with the CTE, 13ms without.
+    // 2. The distance expression must be dimension-qualified. `memory_chunk.embedding` is a
+    //    dimensionless `VECTOR` so that one table can hold several embedding routes, and pgvector
+    //    refuses to index such a column ("column does not have dimensions"). The only indexable
+    //    form is an expression index on `(embedding::vector(N))`, so the query must emit exactly
+    //    that cast or the planner cannot match it. `embedding_dimensions = N` is already asserted,
+    //    so the cast never widens or truncates a stored vector.
+    const dimensions = vector.length;
+    // The element type must appear identically on both sides of `<=>` and must match the index
+    // expression exactly, otherwise the planner cannot use the ANN index at all.
+    // `literal` is validated numeric-only, but it is still bound as a parameter rather than
+    // interpolated: only the element type and dimension, both derived from a closed set and an
+    // integer, are ever inlined.
+    const elementType: VectorDistanceElementType =
+      this.options.distance_element_type === "halfvec" ? "halfvec" : "vector";
+    const cast = sql.raw(`${elementType}(${dimensions})`);
+    const chunkDistance = sql`chunk.embedding::${cast}`;
+    const queryDistance = sql`${literal}::${cast}`;
+    // The ANN index is partial — `WHERE embedding IS NOT NULL AND chunk_level = 'child'` — and an
+    // index can only accelerate `ORDER BY ... <=>` when the *scan it drives* carries no predicate the
+    // index does not cover. Authorization lives in `memory_record` and `retrieval_index_version`, so
+    // asserting it in the same scan turns the plan into a join whose ORDER BY has to be satisfied by
+    // sorting the joined rows: measured on this 30720-chunk corpus, all 30720 rows were materialised
+    // and top-N sorted in 4092ms, with the HNSW index untouched.
+    //
+    // So the vector search runs first, on the base table, with exactly the index's own predicates,
+    // and authorization filters its output. That is a reordering, not a relaxation: every predicate
+    // from the single-scan form is still applied before a row can be returned, and a row the ACL
+    // rejects is dropped no matter how close its vector is.
+    //
+    // The cost of reordering is that the inner scan does not know how many of its candidates will
+    // survive, so a fixed multiplier would silently under-return — measured here, an inner LIMIT of
+    // 16 yielded 13 authorized rows for a 16-row request. `hnsw.ef_search` caps how many candidates
+    // HNSW will even visit (default 40, which saturated at 48 rows regardless of LIMIT), so widening
+    // the LIMIT alone cannot fix it either. The loop therefore raises both together and stops only
+    // when the result is provably complete: either enough rows came back, or the inner scan returned
+    // fewer candidates than it was allowed, which means the index had nothing further to offer.
+    // `exact` keeps the original single scan. Pushing the vector search into a subquery and then
+    // refusing the index measured 476ms p50 versus 442ms for the plain scan — the sort over this
+    // logical name's chunks is the whole cost either way, so the extra structure buys nothing. The
+    // pushdown only pays when HNSW is allowed to answer, so it is confined to `approximate`.
+    if (this.options.ann_recall_mode !== "approximate") {
+      // Two choices here are both measured, not stylistic. 10 queries, 30720 chunks, alternating in
+      // one process so drift cannot explain the gap:
+      //
+      //   `vector` distance inside a MATERIALIZED CTE    129ms
+      //   `halfvec` distance inside a MATERIALIZED CTE   585ms
+      //   `halfvec` distance, no CTE                    1015ms
+      //
+      // MATERIALIZED forces the ACL filter to finish first, so the sort only ever sees authorized
+      // rows. And the distance stays `vector`: narrowing to `halfvec` would convert 2048 components
+      // per row for nothing, since this mode has already declined the index the cast exists to match.
+      const exactRows = await sql<MemorySearchRow>`
+        WITH candidates AS MATERIALIZED (
+          SELECT
+            chunk.chunk_id,
+            chunk.content,
+            chunk.token_count,
+            chunk.source_type,
+            chunk.entity_keys,
+            chunk.citation_artifact_id,
+            chunk.citation_uri,
+            chunk.citation_digest,
+            chunk.citation_locator,
+            chunk.embedding
+          FROM questlab.memory_chunk AS chunk
+          JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
+          JOIN questlab.retrieval_index_version AS index_version
+            ON index_version.index_version_id = chunk.index_version_id
+          WHERE memory.status = 'active'
+            AND index_version.status = 'active'
+            AND (memory.scope = 'public' OR index_version.tenant_id = ${call.principal.tenant_id})
+            AND index_version.logical_name = ${this.options.logical_name ?? "memory.hybrid"}
+            AND chunk.chunk_level = 'child'
+            AND chunk.embedding IS NOT NULL
+            AND chunk.embedding_model = ${this.options.embedding_model}
+            AND chunk.embedding_dimensions = ${dimensions}
+            AND ${access}
+            AND ${filters}
+        )
         SELECT
-          chunk.chunk_id,
-          chunk.content,
-          chunk.token_count,
-          chunk.source_type,
-          chunk.entity_keys,
-          chunk.citation_artifact_id,
-          chunk.citation_uri,
-          chunk.citation_digest,
-          chunk.citation_locator,
-          chunk.embedding
-        FROM questlab.memory_chunk AS chunk
-        JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
-        JOIN questlab.retrieval_index_version AS index_version
-          ON index_version.index_version_id = chunk.index_version_id
-        WHERE memory.status = 'active'
-          AND index_version.status = 'active'
-          AND (memory.scope = 'public' OR index_version.tenant_id = ${call.principal.tenant_id})
-          AND index_version.logical_name = ${this.options.logical_name ?? "memory.hybrid"}
-          AND chunk.chunk_level = 'child'
-          AND chunk.embedding IS NOT NULL
-          AND chunk.embedding_model = ${this.options.embedding_model}
-          AND chunk.embedding_dimensions = ${vector.length}
-          AND ${access}
-          AND ${filters}
-      )
-      SELECT
-        candidates.chunk_id,
-        candidates.content,
-        candidates.token_count,
-        candidates.source_type,
-        candidates.entity_keys,
-        candidates.citation_artifact_id,
-        candidates.citation_uri,
-        candidates.citation_digest,
-        candidates.citation_locator,
-        greatest(0, least(1, 1 - ((candidates.embedding <=> ${literal}::vector) / 2)))::double precision AS score
-      FROM candidates
-      ORDER BY candidates.embedding <=> ${literal}::vector, candidates.chunk_id ASC
-      LIMIT ${call.max_results}
+          candidates.chunk_id,
+          candidates.content,
+          candidates.token_count,
+          candidates.source_type,
+          candidates.entity_keys,
+          candidates.citation_artifact_id,
+          candidates.citation_uri,
+          candidates.citation_digest,
+          candidates.citation_locator,
+          greatest(0, least(1, 1 - ((candidates.embedding <=> ${literal}::vector) / 2)))::double precision AS score
+        FROM candidates
+        ORDER BY candidates.embedding <=> ${literal}::vector, candidates.chunk_id ASC
+        LIMIT ${call.max_results}
+      `.execute(this.options.db);
+      call.signal?.throwIfAborted();
+      return exactRows.rows.map((row) => toHit(row, Number(row.score)));
+    }
+
+    // The active index versions are resolved first, as constants, because the inner scan has to be
+    // restricted to them and a *subquery* there defeats the whole exercise: measured on this corpus,
+    // `index_version_id IN (SELECT ...)` cost 1268ms while the same filter as `= ANY($1)` cost 5.3ms.
+    // The restriction itself is not optional — one table holds every logical name's chunks, so an
+    // unrestricted inner scan spends its budget on rows another logical name owns. Measured before
+    // this filter existed: 14 of 32 queries returned strictly more distant documents than the exact
+    // form, and labelled hits fell from 256 to 192.
+    const versions = await sql<{ readonly index_version_id: string }>`
+      SELECT index_version_id
+      FROM questlab.retrieval_index_version
+      WHERE status = 'active'
+        AND logical_name = ${this.options.logical_name ?? "memory.hybrid"}
     `.execute(this.options.db);
+    const versionIds = versions.rows.map((row) => row.index_version_id);
+    if (versionIds.length === 0) return [];
+    // The inner scan cannot see the ACL, so some candidates are filtered out afterwards and a 1:1
+    // window silently under-returns — measured, an inner LIMIT of 16 produced 13 authorized rows for
+    // a 16-row request. The loop widens the window and stops only when the result is provably
+    // complete: either enough rows survived, or the scan returned fewer candidates than it was
+    // allowed, which means the index had nothing further to offer.
+    let annLimit = Math.max(call.max_results * ANN_OVERFETCH_FACTOR, ANN_MIN_OVERFETCH);
+    let efSearch = HNSW_DEFAULT_EF_SEARCH;
+    let hits: readonly MemorySearchRow[] = [];
+    for (let attempt = 0; attempt < ANN_MAX_ATTEMPTS; attempt += 1) {
+      const annLimitLiteral = sql.raw(String(annLimit));
+      const attemptResult = await this.options.db.transaction().execute(async (trx) => {
+        // Transaction-local so a widened search never leaks into another query on this pool
+        // connection. `efSearch` is an integer derived from a constant, never caller text.
+        await sql.raw(`SET LOCAL hnsw.ef_search = ${Math.min(efSearch, HNSW_MAX_EF_SEARCH)}`).execute(trx);
+        const found = await sql<MemorySearchRow & { readonly candidates: number }>`
+          WITH ann AS (
+            SELECT
+              chunk.chunk_id,
+              chunk.memory_id,
+              chunk.index_version_id,
+              ${chunkDistance} <=> ${queryDistance} AS distance
+            FROM questlab.memory_chunk AS chunk
+            WHERE chunk.embedding IS NOT NULL
+              AND chunk.chunk_level = 'child'
+              AND chunk.index_version_id = ANY(${versionIds})
+            ORDER BY ${chunkDistance} <=> ${queryDistance}
+            LIMIT ${annLimitLiteral}
+          )
+          SELECT
+            chunk.chunk_id,
+            chunk.content,
+            chunk.token_count,
+            chunk.source_type,
+            chunk.entity_keys,
+            chunk.citation_artifact_id,
+            chunk.citation_uri,
+            chunk.citation_digest,
+            chunk.citation_locator,
+            greatest(0, least(1, 1 - (ann.distance / 2)))::double precision AS score,
+            -- How many candidates the inner scan produced, carried out of the CTE so the escalation
+            -- loop can tell "the index is exhausted" from "the ACL filtered a lot". Counting it in a
+            -- second statement would run the expensive ANN scan twice.
+            (SELECT count(*)::int FROM ann) AS candidates
+          FROM ann
+          JOIN questlab.memory_chunk AS chunk ON chunk.chunk_id = ann.chunk_id
+          JOIN questlab.memory_record AS memory ON memory.memory_id = ann.memory_id
+          JOIN questlab.retrieval_index_version AS index_version
+            ON index_version.index_version_id = ann.index_version_id
+          WHERE memory.status = 'active'
+            AND index_version.status = 'active'
+            AND (memory.scope = 'public' OR index_version.tenant_id = ${call.principal.tenant_id})
+            AND index_version.logical_name = ${this.options.logical_name ?? "memory.hybrid"}
+            AND chunk.embedding_model = ${this.options.embedding_model}
+            AND chunk.embedding_dimensions = ${dimensions}
+            AND ${access}
+            AND ${filters}
+          ORDER BY ann.distance, chunk.chunk_id ASC
+          LIMIT ${call.max_results}
+        `.execute(trx);
+        return { rows: found.rows, candidates: found.rows[0]?.candidates ?? 0 };
+      });
+      hits = attemptResult.rows;
+      // Fewer candidates than allowed means the index had nothing more to give, so a short result
+      // here is the true answer rather than an artefact of the over-fetch window.
+      const exhausted = attemptResult.candidates < annLimit;
+      if (hits.length >= call.max_results || exhausted) break;
+      annLimit *= 2;
+      efSearch *= 2;
+    }
+
     call.signal?.throwIfAborted();
-    return rows.rows.map((row) => toHit(row, Number(row.score)));
+    return hits.map((row) => toHit(row, Number(row.score)));
   }
 }
 
@@ -572,10 +828,51 @@ export class PostgresMemoryAuthorization implements RetrievalAuthorizationPort {
     `.execute(this.db);
     return result.rows.length === 1;
   }
+
+  /**
+   * Batch form of {@link canRead}: one statement for every candidate instead of one per candidate.
+   *
+   * The predicate is character-for-character the same as the single-hit version, including the
+   * citation triple. That binding is what makes the check meaningful — it re-verifies that the hit
+   * the retriever produced still matches the row it claims to come from, so a stale or tampered
+   * citation is rejected rather than trusted. Batching must not weaken it, so the candidate tuples
+   * are unnested into a derived table and joined on all four columns.
+   */
+  async canReadAll(input: {
+    readonly principal: RetrievalPrincipal;
+    readonly purpose: string;
+    readonly hits: readonly RetrievalHit[];
+  }): Promise<ReadonlySet<string>> {
+    if (!input.purpose.trim() || input.hits.length === 0) return new Set();
+    const chunkIds = input.hits.map((hit) => hit.id);
+    const artifactIds = input.hits.map((hit) => hit.citation.artifact_id);
+    const uris = input.hits.map((hit) => hit.citation.uri);
+    const digests = input.hits.map((hit) => hit.citation.digest);
+    const result = await sql<{ readonly chunk_id: string }>`
+      SELECT chunk.chunk_id
+      FROM unnest(
+        ${chunkIds}::text[], ${artifactIds}::text[], ${uris}::text[], ${digests}::text[]
+      ) AS candidate(chunk_id, citation_artifact_id, citation_uri, citation_digest)
+      JOIN questlab.memory_chunk AS chunk
+        ON chunk.chunk_id = candidate.chunk_id
+       AND chunk.citation_artifact_id = candidate.citation_artifact_id
+       AND chunk.citation_uri = candidate.citation_uri
+       AND chunk.citation_digest = candidate.citation_digest
+      JOIN questlab.memory_record AS memory ON memory.memory_id = chunk.memory_id
+      JOIN questlab.retrieval_index_version AS index_version
+        ON index_version.index_version_id = chunk.index_version_id
+      WHERE memory.status = 'active'
+        AND index_version.status = 'active'
+        AND (memory.scope = 'public' OR index_version.tenant_id = ${input.principal.tenant_id})
+        AND index_version.logical_name = ${this.logicalName}
+        AND ${readableMemoryPredicate(input.principal)}
+    `.execute(this.db);
+    return new Set(result.rows.map((row) => row.chunk_id));
+  }
 }
 
 export class PostgresStructuredEventAggregator implements StructuredAggregatorPort {
-  private readonly memories: Pick<MemoryRepository, "aggregateReadableEvents" | "listReadableEvents" | "listReadableEdges">;
+  private readonly memories: Pick<MemoryRepository, "aggregateReadableEvents" | "listReadableEvents" | "listReadableEdges" | "probeEventVocabulary">;
   private readonly maxGraphEdges: number;
 
   constructor(db: Kysely<QuestLabDatabase>, options: { readonly max_graph_edges?: number } = {}) {
@@ -595,6 +892,40 @@ export class PostgresStructuredEventAggregator implements StructuredAggregatorPo
     throw new PostgresRetrievalPolicyError(`Structured intent ${input.request.intent} is not implemented`);
   }
 
+  /**
+   * Explains an empty structured result, so "did not happen" is never reported as "does not exist".
+   *
+   * Only consulted when a query matched nothing. Zero rows has two very different causes and the row
+   * set cannot tell them apart: the subject genuinely has no such events, or the filter named
+   * vocabulary that does not exist. Left unresolved, a fabricated `event_type` produces a confident
+   * `count = 0`, and for `comparison` a `difference = 0` that reads as "the two subjects are equal" —
+   * a wrong answer stated with the same authority as a right one.
+   *
+   * Returns `excluded_reasons` entries rather than throwing. A model that names a non-existent event
+   * type has made a recoverable mistake, and the caller can re-plan; refusing the whole query would
+   * also refuse the legitimate empty answers that share this code path. The reasons are surfaced in
+   * the EvidencePack, so a generation step can see the difference.
+   */
+  private async explainEmptyEventResult(
+    request: RetrievalRequest,
+    filters: { readonly subject_ids: readonly string[]; readonly event_type: string },
+  ): Promise<readonly string[]> {
+    const reasons: string[] = [];
+    const presence = await this.memories.probeEventVocabulary(request.principal, {
+      event_type: filters.event_type,
+    });
+    if (!presence.event_type_known) {
+      reasons.push(`no readable event of type ${filters.event_type} exists; the count is not a fact about the subject`);
+    }
+    // Subjects are probed individually so a comparison naming one real and one unknown subject says
+    // which one is unknown. Reporting "a subject is unknown" would leave the difference unexplained.
+    for (const subjectId of filters.subject_ids) {
+      const subject = await this.memories.probeEventVocabulary(request.principal, { subject_id: subjectId });
+      if (!subject.subject_known) reasons.push(`subject ${subjectId} has no readable events of any type`);
+    }
+    return reasons;
+  }
+
   private async countEvents(input: { readonly request: RetrievalRequest; readonly signal?: AbortSignal }): Promise<StructuredResult> {
     const filters = input.request.structured_filters;
     if (!filters?.subject_id || !filters.event_type) throw new PostgresRetrievalPolicyError("count_events requires structured_filters.subject_id and event_type");
@@ -609,7 +940,18 @@ export class PostgresStructuredEventAggregator implements StructuredAggregatorPo
     input.signal?.throwIfAborted();
     return {
       operation: "count_distinct", value: result.value, included_ids: result.included_event_ids,
-      excluded_reasons: !includeConflicts && result.excluded_conflict_count > 0 ? [`${result.excluded_conflict_count} conflicting events excluded`] : [],
+      excluded_reasons: [
+        ...(!includeConflicts && result.excluded_conflict_count > 0 ? [`${result.excluded_conflict_count} conflicting events excluded`] : []),
+        // A truncated count read as exact would be a wrong answer, not a slow one.
+        ...(result.truncated ? ["event row limit reached; count is a lower bound"] : []),
+        // Zero is where "never happened" and "no such event type" become indistinguishable.
+        ...(result.value === 0
+          ? await this.explainEmptyEventResult(input.request, {
+              subject_ids: [filters.subject_id],
+              event_type: filters.event_type,
+            })
+          : []),
+      ],
       conflicts: result.conflict_event_ids,
     };
   }
@@ -629,19 +971,31 @@ export class PostgresStructuredEventAggregator implements StructuredAggregatorPo
     const leftQuery = eventQuery({ ...common, subject_id: query.left_subject_id });
     const rightQuery = eventQuery({ ...common, subject_id: query.right_subject_id });
     const [leftRows, rightRows] = await Promise.all([
-      this.memories.listReadableEvents(input.request.principal, leftQuery),
-      this.memories.listReadableEvents(input.request.principal, rightQuery),
+      this.memories.listReadableEvents(input.request.principal, { ...leftQuery, limit: defaultEventQueryLimit }),
+      this.memories.listReadableEvents(input.request.principal, { ...rightQuery, limit: defaultEventQueryLimit }),
     ]);
     input.signal?.throwIfAborted();
     const left = summarizeEvents(leftRows, includeConflicts);
     const right = summarizeEvents(rightRows, includeConflicts);
     const conflicts = uniqueStrings([...left.conflictIds, ...right.conflictIds]);
     const excluded = left.excludedConflicts + right.excludedConflicts;
+    const truncated = leftRows.length >= defaultEventQueryLimit || rightRows.length >= defaultEventQueryLimit;
     return {
       operation: "comparison",
       value: left.included.length - right.included.length,
       included_ids: uniqueStrings([...left.included.map((event) => event.event_id), ...right.included.map((event) => event.event_id)]),
-      excluded_reasons: excluded > 0 ? [`${excluded} conflicting events excluded`] : [],
+      excluded_reasons: [
+        ...(excluded > 0 ? [`${excluded} conflicting events excluded`] : []),
+        ...(truncated ? ["event row limit reached; comparison is based on a truncated window"] : []),
+        // `difference: 0` from two empty sides reads as "the subjects are equal", which is the most
+        // damaging form of this bug: an unverifiable claim with no visible sign it came from nothing.
+        ...(left.included.length === 0 && right.included.length === 0
+          ? await this.explainEmptyEventResult(input.request, {
+              subject_ids: [query.left_subject_id, query.right_subject_id],
+              event_type: query.event_type,
+            })
+          : []),
+      ],
       conflicts,
       details: {
         kind: "comparison_counts",
@@ -660,15 +1014,32 @@ export class PostgresStructuredEventAggregator implements StructuredAggregatorPo
       throw new PostgresRetrievalPolicyError("temporal requires a first/last select_event_time query");
     }
     const includeConflicts = query.include_conflicts ?? false;
-    const rows = await this.memories.listReadableEvents(input.request.principal, eventQuery(query));
+    const rows = await this.memories.listReadableEvents(
+      input.request.principal, { ...eventQuery(query), limit: defaultEventQueryLimit });
     input.signal?.throwIfAborted();
     const summary = summarizeEvents(rows, includeConflicts);
     const selected = query.selector === "first" ? summary.included[0] : summary.included.at(-1);
+    // `last` off a truncated window would name the wrong event, so it is refused rather than guessed.
+    if (rows.length >= defaultEventQueryLimit && query.selector === "last") {
+      throw new PostgresRetrievalPolicyError(
+        "select_event_time last exceeded the event row limit; narrow the time range",
+      );
+    }
     return {
       operation: "temporal",
       value: selected?.occurred_from.toISOString() ?? null,
       included_ids: selected ? [selected.event_id] : [],
-      excluded_reasons: summary.excludedConflicts > 0 ? [`${summary.excludedConflicts} conflicting events excluded`] : [],
+      excluded_reasons: [
+        ...(summary.excludedConflicts > 0 ? [`${summary.excludedConflicts} conflicting events excluded`] : []),
+        ...(rows.length >= defaultEventQueryLimit ? ["event row limit reached"] : []),
+        // `value: null` already says "no event", but not whether the event type was real.
+        ...(selected === undefined
+          ? await this.explainEmptyEventResult(input.request, {
+              subject_ids: [query.subject_id],
+              event_type: query.event_type,
+            })
+          : []),
+      ],
       conflicts: summary.conflictIds,
       details: {
         kind: "temporal_event", subject_id: query.subject_id, event_type: query.event_type, selector: query.selector,
@@ -1190,6 +1561,35 @@ function validateVector(vector: readonly number[]): void {
   ) {
     throw new PostgresRetrievalPolicyError("Embedding vectors must contain 1 to 4096 finite, non-zero values");
   }
+}
+
+/**
+ * Splits the CJK runs of a query into character bigrams, or returns an empty list when the query has
+ * no CJK content.
+ *
+ * Mirrors `questlab.cjk_bigrams` from migration 018 — the two must stay in step, otherwise the query
+ * side and the indexed side tokenise differently and matches silently disappear. Kept in TypeScript
+ * rather than calling the SQL function so the query text is still bound as a parameter.
+ *
+ * Only characters from the CJK ranges reach the output, so the result cannot contain tsquery
+ * operators (`&`, `|`, `!`, `:`, parentheses) or quotes regardless of what the caller passed.
+ */
+function toCjkBigrams(query: string): readonly string[] {
+  const runs = query.match(/[一-鿿㐀-䶿豈-﫿]+/g);
+  if (!runs) return [];
+  const terms = new Set<string>();
+  for (const run of runs) {
+    if (run.length === 1) {
+      terms.add(run);
+      continue;
+    }
+    for (let index = 0; index + 1 < run.length; index += 1) {
+      terms.add(run.slice(index, index + 2));
+    }
+  }
+  // A pathological query would otherwise build a tsquery with thousands of terms; the planner cost
+  // grows with it and the extra terms add nothing once enough bigrams already matched.
+  return [...terms].slice(0, 64);
 }
 
 function vectorLiteral(vector: readonly number[]): string {

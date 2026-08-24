@@ -12,7 +12,7 @@ import {
   type QueryIntent,
   type RetrievalStage,
 } from "@firefly/retrieval-planner";
-import type { ModelBudget, RerankPort, RerankResult } from "@firefly/model-gateway";
+import type { GenerationRequest, GenerationResult, ModelBudget, RerankPort, RerankResult } from "@firefly/model-gateway";
 
 export type {
   EvidenceCitation,
@@ -116,6 +116,23 @@ export interface RetrievalAuthorizationPort {
     readonly purpose: string;
     readonly hit: RetrievalHit;
   }): boolean | Promise<boolean>;
+  /**
+   * Optional batch form of {@link canRead}, returning the subset of hit ids the principal may read.
+   *
+   * Re-checking authorization per candidate is one round trip each: measured against PostgreSQL, 24
+   * candidates cost 54.7ms serially versus 3.5ms as a single statement, a third of `fact_lookup`
+   * end-to-end latency spent queueing identical queries. Implementations that can answer in one
+   * statement should provide this; the gateway falls back to `canRead` when it is absent, so an
+   * adapter is never obliged to implement both.
+   *
+   * The contract is deliberately "return what is allowed" rather than "return a verdict per hit": a
+   * backend that cannot decide must omit the id, so a partial answer fails closed by construction.
+   */
+  canReadAll?(input: {
+    readonly principal: RetrievalPrincipal;
+    readonly purpose: string;
+    readonly hits: readonly RetrievalHit[];
+  }): ReadonlySet<string> | Promise<ReadonlySet<string>>;
 }
 
 export interface StructuredAggregatorPort {
@@ -291,6 +308,79 @@ export class CandidateSourceEvidenceExpander implements EvidenceExpansionPort {
   }
 }
 
+/**
+ * Rewrites a query into a hypothetical answer passage (HyDE) so lexical matching has real terms to
+ * work with.
+ *
+ * This exists for one measured failure: PostgreSQL's `simple` configuration does not segment CJK, so
+ * the bigram path requires at least 2 matching bigrams and very short Chinese questions cannot produce
+ * them. 4 of 32 natural-language queries returned zero lexical rows for that reason.
+ *
+ * It is deliberately **not** a global query transform. Measured on all 32 queries, rewriting every
+ * query cost more than it bought:
+ *
+ *   lexical  P@10 0.875 -> 0.750, MRR 0.875 -> 0.750, zero-result 4 -> 0
+ *   vector   P@10 1.000 -> 0.969, facet coverage 0.367 -> 0.414
+ *
+ * plus one extra model call per query (+958ms p50, +104 tokens) against a 401ms end-to-end budget.
+ * Trading a 4/32 recall hole for a 14% precision loss on the other 28 queries is a bad trade, so the
+ * gateway only consults this port when retrieval actually came back empty.
+ */
+export interface QueryRewritePort {
+  rewrite(input: {
+    readonly query_id: string;
+    readonly original_query: string;
+    readonly signal?: AbortSignal;
+  }): Promise<string>;
+}
+
+export interface HypotheticalAnswerRewriterOptions {
+  readonly generate: (request: GenerationRequest) => Promise<GenerationResult>;
+  readonly workload: string;
+  readonly budget: ModelBudget;
+  readonly max_output_tokens?: number;
+  readonly prompt_snapshot?: string;
+}
+
+/**
+ * HyDE rewriter: turns a question into a short declarative passage that reads like an answer, so
+ * lexical search has domain terms to match instead of a bare interrogative.
+ *
+ * Measured recovery on the 4 CJK queries that produced zero lexical rows
+ * ("斜射光损失为什么更大", "PID 是什么条件下发生的", "热斑是怎么形成的", "PR 值是什么意思"):
+ * all 4 returned results after rewriting. The passage is capped short on purpose — a long generation
+ * drifts into terms the corpus does not contain and pulls in unrelated documents.
+ */
+export class HypotheticalAnswerRewriter implements QueryRewritePort {
+  private readonly options: HypotheticalAnswerRewriterOptions;
+
+  constructor(options: HypotheticalAnswerRewriterOptions) {
+    this.options = options;
+  }
+
+  async rewrite(input: { readonly query_id: string; readonly original_query: string; readonly signal?: AbortSignal }): Promise<string> {
+    const result = await this.options.generate({
+      request_id: `hyde.${input.query_id}`,
+      workload: this.options.workload,
+      system_prompt: [
+        "你是检索助手。针对用户问题，写一段简短的假想答案。",
+        "只用陈述句，包含该领域的专业术语。不要提问，不要解释，直接输出段落。",
+        "控制在 80 字以内。",
+      ].join(String.fromCharCode(10)),
+      user_prompt: `问题：${input.original_query}`,
+      max_output_tokens: this.options.max_output_tokens ?? 256,
+      budget: this.options.budget,
+      snapshots: {
+        prompt: this.options.prompt_snapshot ?? "retrieval.hyde.v1",
+        tools: "none",
+        knowledge: input.query_id,
+      },
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    return typeof result.text === "string" ? result.text.trim() : "";
+  }
+}
+
 export interface RetrievalGatewayOptions {
   readonly retrievers: readonly Retriever[];
   readonly authorization: RetrievalAuthorizationPort;
@@ -300,6 +390,22 @@ export interface RetrievalGatewayOptions {
   readonly reranker_budget?: ModelBudget;
   readonly reranker_failure_mode?: "fallback" | "strict";
   readonly rrf_constant?: number;
+  /**
+   * Consulted only when every retriever returned nothing. See {@link QueryRewritePort} for why this
+   * is a fallback rather than a preprocessing step.
+   */
+  readonly query_rewriter?: QueryRewritePort;
+}
+
+/**
+ * Retrieval could not be carried out. Distinct from `RetrievalPolicyError` (the caller asked for
+ * something disallowed) and from an empty pack (retrieval worked and found nothing).
+ */
+export class RetrievalUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RetrievalUnavailableError";
+  }
 }
 
 export class RetrievalPolicyError extends Error {
@@ -318,6 +424,7 @@ export class RetrievalGateway {
   private readonly rerankerBudget: ModelBudget;
   private readonly rerankerFailureMode: "fallback" | "strict";
   private readonly rrfConstant: number;
+  private readonly queryRewriter: QueryRewritePort | undefined;
 
   constructor(options: RetrievalGatewayOptions) {
     this.retrievers = new Map(options.retrievers.map((retriever) => [retriever.stage, retriever]));
@@ -329,6 +436,7 @@ export class RetrievalGateway {
     this.expander = options.expander;
     this.reranker = options.reranker;
     this.rerankerBudget = options.reranker_budget ?? { max_tokens: 32_000, max_cost_usd: 0, max_duration_ms: 10_000 };
+    this.queryRewriter = options.query_rewriter;
     this.rerankerFailureMode = options.reranker_failure_mode ?? "fallback";
     this.rrfConstant = options.rrf_constant ?? 60;
     if (this.rrfConstant <= 0) throw new RetrievalPolicyError("rrf_constant must be positive");
@@ -367,58 +475,134 @@ export class RetrievalGateway {
       .filter((stage): stage is SearchStage => stage !== "structured")
       .map((stage) => this.retrievers.get(stage))
       .filter((retriever): retriever is Retriever => Boolean(retriever));
-    const settled = await Promise.allSettled(
-      selectedRetrievers.map((retriever) =>
-        retriever.retrieve({
-          query_id: request.query_id,
-          query: request.original_query,
-          principal: request.principal,
-          purpose: request.purpose,
-          max_results: plan.candidate_k,
-          filters: request.filters ?? {},
-          ...(signal ? { signal } : {}),
-        }),
-      ),
-    );
-    signal?.throwIfAborted();
-    const rankedLists: RetrievalHit[][] = [];
-    const retrieverTrace: Array<{
-      id: string;
-      stage: SearchStage;
-      returned: number;
-      failed: boolean;
-    }> = [];
-    for (let index = 0; index < settled.length; index += 1) {
-      const retriever = selectedRetrievers[index]!;
-      const outcome = settled[index]!;
-      if (outcome.status === "fulfilled") {
-        const hits = [...outcome.value]
-          .filter(validHit)
-          .sort((left, right) => right.score - left.score)
-          .slice(0, plan.candidate_k);
-        rankedLists.push(hits);
-        retrieverTrace.push({ id: retriever.id, stage: retriever.stage, returned: hits.length, failed: false });
-      } else {
-        retrieverTrace.push({ id: retriever.id, stage: retriever.stage, returned: 0, failed: true });
+    const runRetrievers = async (queryText: string) => {
+      const settled = await Promise.allSettled(
+        selectedRetrievers.map((retriever) =>
+          retriever.retrieve({
+            query_id: request.query_id,
+            query: queryText,
+            principal: request.principal,
+            purpose: request.purpose,
+            max_results: plan.candidate_k,
+            filters: request.filters ?? {},
+            ...(signal ? { signal } : {}),
+          }),
+        ),
+      );
+      signal?.throwIfAborted();
+      const lists: RetrievalHit[][] = [];
+      const trace: Array<{ id: string; stage: SearchStage; returned: number; failed: boolean }> = [];
+      for (let index = 0; index < settled.length; index += 1) {
+        const retriever = selectedRetrievers[index]!;
+        const outcome = settled[index]!;
+        if (outcome.status === "fulfilled") {
+          const hits = [...outcome.value]
+            .filter(validHit)
+            .sort((left, right) => right.score - left.score)
+            .slice(0, plan.candidate_k);
+          lists.push(hits);
+          trace.push({ id: retriever.id, stage: retriever.stage, returned: hits.length, failed: false });
+        } else {
+          trace.push({ id: retriever.id, stage: retriever.stage, returned: 0, failed: true });
+        }
       }
+      return { lists, trace };
+    };
+
+    let { lists: rankedLists, trace: retrieverTrace } = await runRetrievers(request.original_query);
+    // Only rewrite when the original query found nothing at all. A rewrite that runs unconditionally
+    // measured -14% P@10 and -14% MRR on the 28 queries that were already fine, so the trigger has to
+    // be an actual empty result rather than a heuristic about the query text.
+    // A failed rewrite is not fatal: the empty pack is still a truthful answer.
+    let rewrittenQuery: string | undefined;
+    const foundNothing = retrieverTrace.length > 0
+      && retrieverTrace.every((entry) => entry.failed || entry.returned === 0)
+      && retrieverTrace.some((entry) => !entry.failed);
+    if (this.queryRewriter && foundNothing) {
+      try {
+        const candidate = (await this.queryRewriter.rewrite({
+          query_id: request.query_id,
+          original_query: request.original_query,
+          ...(signal ? { signal } : {}),
+        })).trim();
+        signal?.throwIfAborted();
+        if (candidate && candidate !== request.original_query) {
+          const retried = await runRetrievers(candidate);
+          // Keep the retry only if it actually recovered something, so a rewrite can never make the
+          // result worse than not having attempted it.
+          if (retried.trace.some((entry) => entry.returned > 0)) {
+            rankedLists = retried.lists;
+            retrieverTrace = retried.trace;
+            rewrittenQuery = candidate;
+          }
+        }
+      } catch {
+        signal?.throwIfAborted();
+      }
+    }
+
+    // Every retriever failing produces an empty pack that is indistinguishable from "no evidence
+    // exists". Reporting infrastructure failure as an absence of evidence lets a caller conclude a
+    // fact is unsupported when retrieval simply broke.
+    if (selectedRetrievers.length > 0 && retrieverTrace.every((entry) => entry.failed)) {
+      throw new RetrievalUnavailableError(
+        `All ${selectedRetrievers.length} retriever(s) failed for query ${request.query_id}`,
+      );
     }
 
     const fused = reciprocalRankFusion(rankedLists, this.rrfConstant).slice(0, plan.fusion_k);
     const authorized: FusedHit[] = [];
     let denied = 0;
-    for (const hit of fused) {
-      let allowed = false;
+    let authorizationErrors = 0;
+    // Batch first when the adapter supports it. Per-candidate re-checking is one round trip each:
+    // 24 candidates measured 54.7ms serially against PostgreSQL versus 3.5ms as a single statement.
+    // A batch failure is attributed to every candidate, matching what the serial path would have
+    // recorded had each individual check failed, so `authorizationErrors === fused.length` still
+    // distinguishes "backend is down" from "tenant may read nothing".
+    let batchAllowed: ReadonlySet<string> | undefined;
+    if (this.authorization.canReadAll && fused.length > 0) {
       try {
-        allowed = await this.authorization.canRead({
+        batchAllowed = await this.authorization.canReadAll({
           principal: request.principal,
           purpose: request.purpose,
-          hit,
+          hits: fused,
         });
-      } catch {
-        allowed = false;
+      } catch (error) {
+        signal?.throwIfAborted();
+        authorizationErrors = fused.length;
       }
-      if (allowed) authorized.push(hit);
-      else denied += 1;
+    }
+    if (batchAllowed) {
+      for (const hit of fused) {
+        if (batchAllowed.has(hit.id)) authorized.push(hit);
+        else denied += 1;
+      }
+    } else if (authorizationErrors === 0) {
+      for (const hit of fused) {
+        let allowed = false;
+        try {
+          allowed = await this.authorization.canRead({
+            principal: request.principal,
+            purpose: request.purpose,
+            hit,
+          });
+        } catch (error) {
+          signal?.throwIfAborted();
+          // Fail closed on the individual hit, but count it: an authorization backend that is down
+          // must not look like a tenant with no readable evidence.
+          authorizationErrors += 1;
+          allowed = false;
+        }
+        if (allowed) authorized.push(hit);
+        else denied += 1;
+      }
+    } else {
+      denied = fused.length;
+    }
+    if (fused.length > 0 && authorizationErrors === fused.length) {
+      throw new RetrievalUnavailableError(
+        `Authorization checks failed for all ${fused.length} candidate(s) of query ${request.query_id}`,
+      );
     }
 
     const fusedWindow = authorized.slice(0, plan.rerank_k);
@@ -522,6 +706,7 @@ export class RetrievalGateway {
         denied,
         selected: evidence.length,
         stop_reason: selected.stopped_by,
+        ...(rewrittenQuery ? { rewritten_query: rewrittenQuery } : {}),
       },
     };
     assertContract("EvidencePack", pack);
@@ -556,7 +741,7 @@ function reciprocalRankFusion(
   rankedLists: readonly (readonly RetrievalHit[])[],
   constant: number,
 ): readonly FusedHit[] {
-  const fused = new Map<string, { hit: RetrievalHit; score: number }>();
+  const fused = new Map<string, { hit: RetrievalHit; score: number; agreement: number; bestRank: number }>();
   for (const list of rankedLists) {
     for (let index = 0; index < list.length; index += 1) {
       const hit = list[index]!;
@@ -570,10 +755,29 @@ function reciprocalRankFusion(
         throw new RetrievalPolicyError(`Evidence ID ${hit.id} has conflicting immutable content`);
       }
       const contribution = 1 / (constant + index + 1);
-      fused.set(hit.id, { hit: existing?.hit ?? hit, score: (existing?.score ?? 0) + contribution });
+      fused.set(hit.id, {
+        hit: existing?.hit ?? hit,
+        score: (existing?.score ?? 0) + contribution,
+        agreement: (existing?.agreement ?? 0) + 1,
+        bestRank: Math.min(existing?.bestRank ?? Number.POSITIVE_INFINITY, index),
+      });
     }
   }
-  const ordered = [...fused.values()].sort((left, right) => right.score - left.score);
+  // Ties are common and must not be settled by retriever declaration order. Two hits that each rank
+  // first in exactly one list score identically, so before this tie-break the winner was whichever
+  // retriever happened to be configured first — measured on a 30720-chunk corpus, the lexical leg's
+  // wrong rank-1 displaced the vector leg's correct rank-1 on 3 of 32 queries and cost 0.047 MRR.
+  //
+  // `agreement` first: a document both retrievers found is better evidence than one only a single
+  // retriever found, which is the premise of hybrid retrieval in the first place. Then best rank, then
+  // id, so the order is total and reproducible rather than dependent on Map insertion order.
+  const ordered = [...fused.values()].sort(
+    (left, right) =>
+      right.score - left.score ||
+      right.agreement - left.agreement ||
+      left.bestRank - right.bestRank ||
+      (left.hit.id < right.hit.id ? -1 : left.hit.id > right.hit.id ? 1 : 0),
+  );
   const maximum = ordered[0]?.score ?? 1;
   return ordered.map(({ hit, score }) => ({ ...hit, score: score / maximum }));
 }

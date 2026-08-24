@@ -207,8 +207,49 @@ test(
       assert.deepEqual(lexicalHits.map((hit) => hit.id).sort(), ["chunk.foreign-public", "chunk.private", "chunk.public"]);
       const vectorHits = await vector.retrieve(call);
       assert.deepEqual(vectorHits.map((hit) => hit.id).sort(), ["chunk.foreign-public", "chunk.private", "chunk.public"]);
+
+      // `approximate` reorders the work so the vector index runs before authorization. That is only
+      // acceptable if the ACL still decides what comes out, so it is asserted here rather than trusted:
+      // the tenant-scoped secret must stay absent even though the fast path reached the rows first.
+      const approximateVector = new PostgresVectorRetriever({
+        db,
+        embeddings,
+        embedding_model: "embedding.integration.v1",
+        embedding_budget: { max_tokens: 100, max_cost_usd: 0.01, max_duration_ms: 1_000 },
+        ann_recall_mode: "approximate",
+      });
+      const approximateHits = await approximateVector.retrieve(call);
+      assert.deepEqual(
+        approximateHits.map((hit) => hit.id).sort(),
+        ["chunk.foreign-public", "chunk.private", "chunk.public"],
+      );
+      assert.equal(approximateHits.some((hit) => hit.id === "chunk.secret"), false);
+      assert.equal(approximateHits.some((hit) => hit.id === publicParent.chunk_id), false);
       assert.equal(lexicalHits.some((hit) => hit.id === publicParent.chunk_id), false);
       assert.equal(await authorization.canRead({ principal, purpose: call.purpose, hit: secretHit() }), false);
+
+      // The batch form is an optimisation, so it has to agree with the per-hit form exactly — including
+      // the denials. Anything it lets through that `canRead` rejects is an authorization bypass, and a
+      // fast bypass is worse than a slow check.
+      const mixed = [...lexicalHits, secretHit()];
+      const batch = await authorization.canReadAll({ principal, purpose: call.purpose, hits: mixed });
+      const serial = new Set<string>();
+      for (const hit of mixed) {
+        if (await authorization.canRead({ principal, purpose: call.purpose, hit })) serial.add(hit.id);
+      }
+      assert.deepEqual([...batch].sort(), [...serial].sort());
+      assert.equal(batch.has(secretHit().id), false);
+
+      // A tampered citation must not pass just because the chunk id is readable: the batch join binds
+      // all four columns, so swapping the digest has to drop the row.
+      const tampered = lexicalHits.map((hit) => ({
+        ...hit,
+        citation: { ...hit.citation, digest: `sha256:${"0".repeat(64)}` as `sha256:${string}` },
+      }));
+      assert.equal((await authorization.canReadAll({ principal, purpose: call.purpose, hits: tampered })).size, 0);
+
+      // An empty purpose is refused in both forms.
+      assert.equal((await authorization.canReadAll({ principal, purpose: "  ", hits: lexicalHits })).size, 0);
       const publicHit = lexicalHits.find((hit) => hit.id === "chunk.public");
       assert.ok(publicHit);
       assert.equal(
@@ -236,7 +277,12 @@ test(
         require_citations: true,
       });
       assert.equal(pack.status, "sufficient");
-      assert.deepEqual(pack.evidence.map((item) => item.evidence_id).sort(), ["chunk.foreign-public", "chunk.private"]);
+      // All three authorized chunks reach the pack. Previously only two did, because `marginal_gain`
+      // stopped selection as soon as two candidates scored equally — the tie that Reciprocal Rank
+      // Fusion produces whenever both retrievers rank the same document first. The ACL boundary is
+      // asserted separately above (`secretHit` is denied, the parent projection never surfaces), so
+      // the third chunk appearing here is correct selection, not a widened authorization scope.
+      assert.deepEqual(pack.evidence.map((item) => item.evidence_id).sort(), ["chunk.foreign-public", "chunk.private", "chunk.public"]);
 
       const expandedGateway = new RetrievalGateway({
         retrievers: [lexical, vector],
@@ -644,6 +690,69 @@ test(
       assert.equal(absent.value, null);
       assert.deepEqual(absent.included_ids, []);
       assert.equal(absent.details?.kind === "temporal_event" ? absent.details.event_id : undefined, null);
+      // The unknown subject is named, so "no event" cannot be misread as "the event type was wrong".
+      assert.deepEqual(absent.excluded_reasons, ["subject learner.absent has no readable events of any type"]);
+
+      // An empty result has two causes the rows cannot distinguish: the fact did not happen, or the
+      // query named vocabulary that does not exist. Unexplained, a fabricated event_type yields a
+      // confident count of 0 and, for comparison, a difference of 0 that reads as equality.
+      const unknownType = await aggregator.aggregate({ request: {
+        ...requestBase,
+        query_id: "query.structured.unknown-type",
+        intent: "count_events",
+        structured_filters: { subject_id: "learner.left", event_type: "lesson_invented" },
+      } });
+      assert.equal(unknownType.value, 0);
+      assert.deepEqual(unknownType.excluded_reasons, [
+        "no readable event of type lesson_invented exists; the count is not a fact about the subject",
+      ]);
+
+      const unknownComparison = await aggregator.aggregate({ request: {
+        ...requestBase,
+        query_id: "query.structured.unknown-comparison",
+        intent: "comparison",
+        structured_query: {
+          kind: "compare_event_counts",
+          left_subject_id: "learner.left",
+          right_subject_id: "learner.right",
+          event_type: "lesson_invented",
+        },
+      } });
+      assert.equal(unknownComparison.value, 0);
+      assert.deepEqual(unknownComparison.excluded_reasons, [
+        "no readable event of type lesson_invented exists; the count is not a fact about the subject",
+      ]);
+
+      // A genuine zero must stay silent, or every legitimately empty answer would look like a typo.
+      const genuineZero = await aggregator.aggregate({ request: {
+        ...requestBase,
+        query_id: "query.structured.genuine-zero",
+        intent: "count_events",
+        structured_filters: {
+          subject_id: "learner.right",
+          event_type: "lesson_completed",
+          from: "2027-01-01T00:00:00Z",
+          to: "2027-02-01T00:00:00Z",
+        },
+      } });
+      assert.equal(genuineZero.value, 0);
+      assert.deepEqual(genuineZero.excluded_reasons, []);
+
+      // The probe must not confirm vocabulary the principal cannot read. `event.hidden.tenant` exists
+      // under tenant.hidden with event_type lesson_completed, so a probe that ignored ACLs would
+      // report the type as known to a foreign tenant and leak which vocabulary that tenant uses.
+      const foreignPresence = await memories.probeEventVocabulary(
+        { tenant_id: "tenant.other" },
+        { subject_id: "learner.left", event_type: "lesson_completed" },
+      );
+      assert.equal(foreignPresence.event_type_known, false);
+      assert.equal(foreignPresence.subject_known, false);
+      const ownerPresence = await memories.probeEventVocabulary(principal, {
+        subject_id: "learner.left",
+        event_type: "lesson_completed",
+      });
+      assert.equal(ownerPresence.event_type_known, true);
+      assert.equal(ownerPresence.subject_known, true);
 
       const relationPath = await aggregator.aggregate({ request: {
         ...requestBase,
@@ -824,3 +933,126 @@ function secretHit(): RetrievalHit {
     },
   };
 }
+
+/**
+ * `to_tsvector('simple', ...)` does not segment Chinese, so a Chinese sentence becomes one lexeme
+ * that matches nothing. Measured on a 30720-chunk corpus before migration 018: all 32
+ * natural-language queries returned zero rows, which silently degraded hybrid retrieval to
+ * vector-only. This locks in the bigram path and, just as importantly, that Latin queries keep their
+ * exact-token AND semantics rather than being loosened into OR.
+ */
+test(
+  "Chinese sentences are retrievable without loosening Latin token matching",
+  { skip: connectionString ? false : "TEST_DATABASE_URL is not configured" },
+  async () => {
+    assert.ok(connectionString);
+    await migrateToLatest(connectionString);
+    const db = createDatabase(connectionString);
+
+    try {
+      await sql`
+        TRUNCATE TABLE
+          questlab.outbox_event,
+          questlab.structured_edge,
+          questlab.structured_event,
+          questlab.retrieval_index_version,
+          questlab.memory_record
+        RESTART IDENTITY CASCADE
+      `.execute(db);
+
+      const memories = new MemoryRepository(db);
+      const indexes = new RetrievalIndexRepository(db);
+      const indexer = new PostgresMemoryIndexer(db);
+      const tenantId = "tenant.cjk";
+
+      await memories.capture({
+        memory_id: "memory.cjk",
+        tenant_id: tenantId,
+        owner_type: "tenant",
+        owner_id: tenantId,
+        scope: "tenant",
+        stage: "semantic",
+        kind: "fact",
+        content_digest: digest("a"),
+        confidence: 0.9,
+        sensitivity: "internal",
+        status: "active",
+      });
+      await memories.grant("memory.cjk", { type: "tenant", id: tenantId });
+
+      // Lexical-only build: `indexBuild` declares an embedding model, and the indexer requires every
+      // child chunk's embedding snapshot to match its index version. This test is about tokenisation,
+      // so the vector columns stay out of it.
+      const { embedding_model: _model, embedding_dimensions: _dimensions, ...lexicalBuild } =
+        indexBuild("cjk", tenantId, "watermark.cjk");
+      const build = { ...lexicalBuild, index_kind: "lexical" as const };
+      const indexVersionId = build.index_version_id;
+      await indexes.createBuild(build);
+
+      const chunks = [
+        { id: "chunk.cjk.tilt", content: "固定倾角与纬度的关系：最佳倾角约等于当地纬度。" },
+        { id: "chunk.cjk.latin", content: "Inverter clipping begins above a DC to AC ratio of 1.3." },
+        // Shares exactly one bigram ('形成') with the query about hotspots below. Bigrams cross word
+        // boundaries, so this kind of accidental overlap is common and used to flood the whole result
+        // list with confidently wrong documents.
+        { id: "chunk.cjk.noise", content: "形成性评估的目的是调整教学，而不是给出最终成绩。" },
+      ];
+      for (const [ordinal, chunk] of chunks.entries()) {
+        await indexer.index({
+          chunk_id: chunk.id,
+          memory_id: "memory.cjk",
+          index_version_id: indexVersionId,
+          ordinal: ordinal + 1,
+          chunk_level: "child",
+          content: chunk.content,
+          chunk_digest: `sha256:${createHash("sha256").update(chunk.content).digest("hex")}`,
+          token_count: 40,
+          source_type: "text/markdown",
+          entity_keys: [chunk.id],
+          citation: { artifact_id: "artifact.cjk", uri: "s3://cjk/doc.md", digest: digest("c"), locator: {} },
+        });
+      }
+
+      await indexes.completeBuild({ ...indexBuildResult(indexBuild("cjk", tenantId, "watermark.cjk"), "ready", 1, chunks.length) });
+      await indexes.activate(indexVersionId, new Date("2026-08-10T09:00:00Z"));
+
+      const retriever = new PostgresLexicalRetriever(db, "postgres.fts.simple.v1", "memory.hybrid");
+      const search = (query: string) =>
+        retriever.retrieve({
+          query_id: `cjk.${query}`,
+          query,
+          principal: { tenant_id: tenantId },
+          purpose: "learning_support",
+          max_results: 10,
+          filters: {},
+        });
+
+      // The whole point: a natural Chinese question now matches, where it previously returned nothing.
+      const natural = await search("固定倾角应该设成多少度");
+      assert.ok(natural.some((hit) => hit.id === "chunk.cjk.tilt"), "Chinese sentence must retrieve the Chinese chunk");
+
+      // Space-separated Chinese must keep working through the plain token path.
+      const tokenized = await search("倾角 纬度");
+      assert.ok(tokenized.some((hit) => hit.id === "chunk.cjk.tilt"));
+
+      // A Latin query must still require every term. "clipping ratio" both appear; "clipping banana"
+      // does not, and must not match just because one term did.
+      assert.ok((await search("clipping ratio")).some((hit) => hit.id === "chunk.cjk.latin"));
+      assert.equal((await search("clipping banana")).length, 0);
+
+      // A Chinese query must not drag in an unrelated Latin chunk through the OR path.
+      assert.ok(!natural.some((hit) => hit.id === "chunk.cjk.latin"));
+
+      // One accidental bigram must not qualify as a match. '热斑是怎么形成的' shares only '形成'
+      // with the formative-assessment chunk, and returning it would be worse than returning nothing:
+      // it fills the lexical leg with wrong documents that then compete in fusion on equal footing.
+      const accidental = await search("热斑是怎么形成的");
+      assert.ok(
+        !accidental.some((hit) => hit.id === "chunk.cjk.noise"),
+        "a single shared bigram must not count as a lexical match",
+      );
+    } finally {
+      await db.destroy();
+    }
+  },
+);

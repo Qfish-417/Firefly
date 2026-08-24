@@ -47,7 +47,12 @@ export interface EvidenceCandidate {
 export interface SelectedEvidence {
   readonly candidates: readonly EvidenceCandidate[];
   readonly used_tokens: number;
-  readonly stopped_by: "context_k" | "token_budget" | "score_floor" | "exhausted";
+  /**
+   * Why selection stopped. `score_floor` and `marginal_gain` are distinct on purpose: the first means
+   * the next hit was weak in absolute terms, the second that it was merely not much better than the
+   * previous one. Collapsing them hides which threshold is actually limiting the evidence pack.
+   */
+  readonly stopped_by: "context_k" | "token_budget" | "score_floor" | "marginal_gain" | "exhausted";
 }
 
 interface IntentDefaults {
@@ -55,7 +60,32 @@ interface IntentDefaults {
   readonly fusion_k: number;
   readonly rerank_k: number;
   readonly context_k: number;
+  /**
+   * Absolute score below which evidence is dropped once `min_context_k` is met.
+   *
+   * Only bites when scores are on an absolute scale. Reciprocal Rank Fusion output is normalised so
+   * the top hit is 1.0, and rank `context_k` still sits at 0.92 (fact_lookup) or 0.82 (exploratory),
+   * far above any of these floors — so on a fusion-only pipeline this threshold never fires and
+   * `marginal_gain_floor` is what actually limits the pack. It becomes the operative guard once a
+   * reranker replaces the scores, because reranker output is a raw 0..1 relevance value rather than a
+   * max-normalised one.
+   */
   readonly score_floor: number;
+  /**
+   * How large a *relative* drop counts as a score cliff, as a fraction of the previous score. Once
+   * `min_context_k` is met, a candidate this much worse than the last accepted one stops selection.
+   *
+   * Calibrated between the two gap regimes measured on a 30720-chunk corpus:
+   *
+   *   0.0143-0.0161  consecutive ranks within a plateau, on both normalised fusion output and
+   *                  reranker output. Every candidate here was relevant, so stopping is pure loss.
+   *   0.3896-0.4639  where retriever agreement falls from two to one, i.e. the point past which only
+   *                  a single retriever vouched for the document.
+   *
+   * These values sit between the two, so plateaus are traversed and real cliffs truncate. The wide
+   * margin is deliberate: the boundary is twenty-five times clear of plateau noise, so the exact
+   * number does not need to be delicate.
+   */
   readonly marginal_gain_floor: number;
   readonly structured_query_required: boolean;
   readonly answer_source: RetrievalPlan["answer_source"];
@@ -69,7 +99,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     rerank_k: 10,
     context_k: 6,
     score_floor: 0.42,
-    marginal_gain_floor: 0.04,
+    marginal_gain_floor: 0.15,
     structured_query_required: false,
     answer_source: "rag",
     stages: ["lexical", "vector"],
@@ -80,7 +110,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     rerank_k: 16,
     context_k: 8,
     score_floor: 0.35,
-    marginal_gain_floor: 0.02,
+    marginal_gain_floor: 0.25,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "lexical", "temporal"],
@@ -91,7 +121,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     rerank_k: 18,
     context_k: 10,
     score_floor: 0.38,
-    marginal_gain_floor: 0.03,
+    marginal_gain_floor: 0.20,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "lexical", "vector", "temporal"],
@@ -102,7 +132,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     rerank_k: 20,
     context_k: 12,
     score_floor: 0.36,
-    marginal_gain_floor: 0.025,
+    marginal_gain_floor: 0.25,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "lexical", "vector", "graph", "temporal"],
@@ -113,7 +143,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     rerank_k: 24,
     context_k: 14,
     score_floor: 0.3,
-    marginal_gain_floor: 0.02,
+    marginal_gain_floor: 0.30,
     structured_query_required: false,
     answer_source: "rag",
     stages: ["lexical", "vector", "graph"],
@@ -124,7 +154,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     rerank_k: 18,
     context_k: 10,
     score_floor: 0.4,
-    marginal_gain_floor: 0.03,
+    marginal_gain_floor: 0.20,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "temporal", "lexical", "vector"],
@@ -135,10 +165,92 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     rerank_k: 20,
     context_k: 10,
     score_floor: 0.34,
-    marginal_gain_floor: 0.025,
+    marginal_gain_floor: 0.25,
     structured_query_required: false,
     answer_source: "rag",
     stages: ["multimodal", "lexical", "vector"],
+  },
+};
+
+/**
+ * What each intent is for, and what choosing it wrongly costs.
+ *
+ * This exists because `intent` is caller-supplied and nothing in the codebase described how to
+ * choose it — every caller had to infer the taxonomy from the `defaults` table above. Measured on a
+ * routing suite of 12 requests x 3 samples, the boundary that actually gets confused is
+ * `fact_lookup` vs `exploratory`: a single-mechanism question ("what does rising temperature do to
+ * output power?") routed to `exploratory` on 3 of 3 samples, which triples candidate_k (20 -> 44)
+ * and doubles context_k (8 -> 17) for a question that has one answer. The structured intents were
+ * never confused, because their trigger words are explicit.
+ *
+ * `selection_rule` is deliberately a *discriminating* rule rather than a description: "asks about
+ * one thing" versus "must enumerate several things" is what separates the two RAG intents, and
+ * stating it as a contrast is what a caller — or a model choosing a route — actually needs.
+ */
+export interface IntentGuidance {
+  readonly intent: QueryIntent;
+  readonly selection_rule: string;
+  readonly requires_structured_query: boolean;
+  /** What goes wrong when this intent is chosen and another was correct. */
+  readonly misroute_cost: string;
+}
+
+export const intentGuidance: Readonly<Record<QueryIntent, IntentGuidance>> = {
+  fact_lookup: {
+    intent: "fact_lookup",
+    selection_rule:
+      "The question has one answer: a definition, a value, a mechanism or a cause. Choose this even when the answer needs several sentences, as long as the question asks about a single thing.",
+    requires_structured_query: false,
+    misroute_cost:
+      "Sending a single-answer question to exploratory retrieves roughly twice the evidence for no gain in correctness, spending context budget a fuller answer could have used.",
+  },
+  count_events: {
+    intent: "count_events",
+    selection_rule:
+      "The question asks how many times something happened for one subject. Requires subject_id and event_type.",
+    requires_structured_query: true,
+    misroute_cost:
+      "Counting by reading retrieved text undercounts whenever the true count exceeds the retrieval window, and states a confident number while doing so.",
+  },
+  comparison: {
+    intent: "comparison",
+    selection_rule:
+      "The question contrasts two named subjects on the same event type: which is larger, or by how much.",
+    requires_structured_query: true,
+    misroute_cost:
+      "Two counts subtracted afterwards are not guaranteed to share one visibility snapshot, so the difference can disagree with both counts it came from.",
+  },
+  multi_hop: {
+    intent: "multi_hop",
+    selection_rule:
+      "The question asks how two named entities are connected, or asks for the chain between them.",
+    requires_structured_query: true,
+    misroute_cost:
+      "Text similarity returns documents mentioning both entities without establishing any relation, which reads as an answer while asserting a connection nothing verified.",
+  },
+  exploratory: {
+    intent: "exploratory",
+    selection_rule:
+      "The question asks for breadth: every factor, all causes, a survey, an overview. The giveaway is that a complete answer must enumerate several distinct items.",
+    requires_structured_query: false,
+    misroute_cost:
+      "Sending a survey question to fact_lookup silently truncates the enumeration, so the answer looks well-formed while omitting most of what was asked for.",
+  },
+  temporal: {
+    intent: "temporal",
+    selection_rule:
+      "The question asks when something happened: the first or the most recent occurrence. Requires subject_id, event_type and a first/last selector.",
+    requires_structured_query: true,
+    misroute_cost:
+      "Getting the selector backwards returns a real timestamp for the opposite occurrence, which no downstream check can detect.",
+  },
+  multimodal: {
+    intent: "multimodal",
+    selection_rule:
+      "Answering requires non-text sources: images, audio, diagrams or scanned pages.",
+    requires_structured_query: false,
+    misroute_cost:
+      "Text-only retrieval reports insufficient evidence for material that exists in another modality.",
   },
 };
 
@@ -190,8 +302,34 @@ export function selectEvidence(
       stoppedBy = "score_floor";
       break;
     }
-    if (selected.length >= plan.min_context_k && previousScore - candidate.score < plan.marginal_gain_floor) {
-      stoppedBy = "score_floor";
+    // Stop when the next candidate is *substantially worse* than the last accepted one, measured as a
+    // fraction of that score so the test does not depend on whatever scale the upstream stage emits.
+    //
+    // The comparison is `>=`, and that direction is the whole point. The obvious formulation — stop
+    // when the gap is *smaller* than the floor — inverts the question: it stops on ties and plateaus,
+    // which are precisely the cases where every candidate deserves to be kept. Both score scales this
+    // pipeline produces hit that trap:
+    //
+    //   Fused scores are Reciprocal Rank Fusion output normalised so the top hit is 1.0. A document
+    //   found by both retrievers scores roughly twice one found by a single retriever, so the top two
+    //   frequently tie at exactly 1.0000. A gap of zero is below any positive floor, so selection
+    //   stopped at rank 2 on 27 of 32 measured queries — reported as "diminishing returns" when the
+    //   real situation was two equally strong hits.
+    //
+    //   Reranked scores are absolute relevance, and on near-duplicate candidates a reranker returns a
+    //   plateau: measured consecutive gaps of 0.00001-0.0024 across a window whose every member was
+    //   relevant. That truncated all 32 queries to min_context_k, dropping nDCG@10 from 0.411 to
+    //   0.237 and making a correctly-ranking reranker look harmful.
+    //
+    // A real cliff is unmistakable and does not need a delicate threshold: where retriever agreement
+    // falls from two to one, the measured gap is 0.39-0.46, twenty-five times the 0.0143-0.0161 gap
+    // within a plateau. So the floors stay small — they only have to sit above plateau noise.
+    if (
+      selected.length >= plan.min_context_k &&
+      previousScore > 0 &&
+      (previousScore - candidate.score) / previousScore >= plan.marginal_gain_floor
+    ) {
+      stoppedBy = "marginal_gain";
       break;
     }
     if (usedTokens + candidate.token_count > plan.max_context_tokens) {
@@ -211,8 +349,18 @@ export function selectEvidence(
 }
 
 function validateInput(input: RetrievalPlannerInput): void {
-  if (input.token_budget <= 0 || input.estimated_chunk_tokens <= 0) {
-    throw new RangeError("token_budget and estimated_chunk_tokens must be positive");
+  if (!Number.isFinite(input.token_budget) || !Number.isFinite(input.estimated_chunk_tokens) ||
+    input.token_budget <= 0 || input.estimated_chunk_tokens <= 0) {
+    throw new RangeError("token_budget and estimated_chunk_tokens must be positive finite numbers");
+  }
+  // A non-finite count produces candidate_k = NaN, which reaches SQL as `LIMIT NaN` and makes every
+  // retriever fail. The plan must never carry a value it cannot compute a limit from.
+  if (input.required_entity_count !== undefined &&
+    (!Number.isInteger(input.required_entity_count) || input.required_entity_count < 1 || input.required_entity_count > 1_000)) {
+    throw new RangeError("required_entity_count must be an integer between 1 and 1000");
+  }
+  if (input.evidence_coverage_target !== undefined && !Number.isFinite(input.evidence_coverage_target)) {
+    throw new RangeError("evidence_coverage_target must be a finite number");
   }
 }
 

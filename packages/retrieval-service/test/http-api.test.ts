@@ -14,7 +14,7 @@ test("retrieval HTTP API validates bodies, exposes health and returns governed p
     ] }],
     authorization: { canRead: async () => true },
   });
-  const server = createRetrievalApiServer(gateway, { request_timeout_ms: 5_000 });
+  const server = createRetrievalApiServer(gateway, { request_timeout_ms: 5_000, allow_unauthenticated: true });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -48,6 +48,7 @@ test("retrieval HTTP API replaces caller principal with a signed server identity
   const encoded = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const signature = createHmac("sha256", secret).update(encoded).digest("hex");
   const server = createRetrievalApiServer(gateway, {
+    authenticate: () => true,
     resolve_identity: createHmacRetrievalIdentityResolver(secret, { now: () => now }),
   });
   server.listen(0, "127.0.0.1");
@@ -69,7 +70,7 @@ test("retrieval HTTP API rejects malformed structured filters before gateway exe
     authorization: { canRead: async () => true },
     aggregator: { aggregate: async () => ({ operation: "count_distinct", value: 0, included_ids: [], excluded_reasons: [], conflicts: [] }) },
   });
-  const server = createRetrievalApiServer(gateway);
+  const server = createRetrievalApiServer(gateway, { allow_unauthenticated: true });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -139,7 +140,7 @@ test("retrieval HTTP API validates comparison and temporal queries before aggreg
       },
     },
   });
-  const server = createRetrievalApiServer(gateway);
+  const server = createRetrievalApiServer(gateway, { allow_unauthenticated: true });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -233,7 +234,7 @@ test("retrieval HTTP API validates and routes bounded multi-hop queries", async 
       },
     },
   });
-  const server = createRetrievalApiServer(gateway);
+  const server = createRetrievalApiServer(gateway, { allow_unauthenticated: true });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -273,7 +274,7 @@ test("retrieval HTTP API rejects a signed identity whose principal agent contrad
   const claims = { principal: { tenant_id: "tenant.trusted", agent_id: "learning-director" }, agent_id: "learning-scientist", issued_at_ms: now, expires_at_ms: now + 60_000 };
   const encoded = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const signature = createHmac("sha256", secret).update(encoded).digest("hex");
-  const server = createRetrievalApiServer(gateway, { resolve_identity: createHmacRetrievalIdentityResolver(secret, { now: () => now }) });
+  const server = createRetrievalApiServer(gateway, { authenticate: () => true, resolve_identity: createHmacRetrievalIdentityResolver(secret, { now: () => now }) });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -301,3 +302,195 @@ async function httpJson(base: string, method: string, path: string, body?: unkno
     if (payload) req.end(payload); else req.end();
   });
 }
+
+function passthroughGateway(): RetrievalGateway {
+  return new RetrievalGateway({
+    retrievers: [{ id: "fake.lexical", stage: "lexical", retrieve: async () => [
+      { id: "hit.1", content: "text evidence one", score: 1, token_count: 3, source_type: "text/plain", citation: { artifact_id: "a.1", uri: "s3://bucket/a.txt", digest: `sha256:${"a".repeat(64)}` } },
+    ] }],
+    authorization: { canRead: async () => true },
+  });
+}
+
+const sampleRequest = {
+  query_id: "q.security.1",
+  original_query: "security",
+  intent: "fact_lookup",
+  agent_id: "learning-director",
+  principal: { tenant_id: "tenant.a" },
+  purpose: "answer",
+  token_budget: 500,
+  estimated_chunk_tokens: 20,
+  require_citations: true,
+} as const;
+
+async function withRetrievalServer(
+  options: Parameters<typeof createRetrievalApiServer>[1],
+  body: (base: string) => Promise<void>,
+  gateway: RetrievalGateway = passthroughGateway(),
+): Promise<void> {
+  const server = createRetrievalApiServer(gateway, options);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  try {
+    await body(`http://127.0.0.1:${address.port}`);
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+}
+
+test("the retrieval API refuses to serve without an authenticator and an identity resolver", () => {
+  const gateway = passthroughGateway();
+  assert.throws(() => createRetrievalApiServer(gateway), /allow_unauthenticated/u);
+  assert.throws(() => createRetrievalApiServer(gateway, { authenticate: () => true }), /allow_unauthenticated/u);
+  assert.throws(
+    () => createRetrievalApiServer(gateway, { resolve_identity: () => undefined }),
+    /allow_unauthenticated/u,
+  );
+});
+
+test("a rejected authenticator returns 401 before the body is parsed", async () => {
+  let gatewayCalls = 0;
+  const counting = new RetrievalGateway({
+    retrievers: [{ id: "fake.lexical", stage: "lexical", retrieve: async () => { gatewayCalls += 1; return []; } }],
+    authorization: { canRead: async () => true },
+  });
+  await withRetrievalServer({ authenticate: () => false, allow_unauthenticated: true }, async (base) => {
+    const response = await httpJson(base, "POST", "/retrieval", sampleRequest);
+    assert.equal(response.status, 401);
+    assert.deepEqual(response.body, { error: "unauthorized" });
+    assert.equal(gatewayCalls, 0);
+  }, counting);
+});
+
+test("an expired or tampered identity claim is rejected", async () => {
+  const secret = "identity-secret-value-at-least-32-chars";
+  const now = 1_760_000_000_000;
+  const sign = (claims: unknown): { encoded: string; signature: string } => {
+    const encoded = Buffer.from(JSON.stringify(claims)).toString("base64url");
+    return { encoded, signature: createHmac("sha256", secret).update(encoded).digest("hex") };
+  };
+  await withRetrievalServer({
+    authenticate: () => true,
+    resolve_identity: createHmacRetrievalIdentityResolver(secret, { now: () => now }),
+  }, async (base) => {
+    const expired = sign({
+      principal: { tenant_id: "tenant.a" },
+      agent_id: "learning-director",
+      expires_at_ms: now - 60_000,
+    });
+    const expiredResponse = await httpJson(base, "POST", "/retrieval", sampleRequest, {
+      "x-firefly-identity": expired.encoded,
+      "x-firefly-signature": expired.signature,
+    });
+    assert.equal(expiredResponse.status, 401);
+
+    const valid = sign({
+      principal: { tenant_id: "tenant.a" },
+      agent_id: "learning-director",
+      expires_at_ms: now + 60_000,
+    });
+    const flipped = `${valid.signature.slice(0, -1)}${valid.signature.endsWith("0") ? "1" : "0"}`;
+    const tampered = await httpJson(base, "POST", "/retrieval", sampleRequest, {
+      "x-firefly-identity": valid.encoded,
+      "x-firefly-signature": flipped,
+    });
+    assert.equal(tampered.status, 401);
+
+    const missing = await httpJson(base, "POST", "/retrieval", sampleRequest);
+    assert.equal(missing.status, 401);
+  });
+});
+
+test("an oversize body is refused with 413 and never reaches the gateway", async () => {
+  let gatewayCalls = 0;
+  const counting = new RetrievalGateway({
+    retrievers: [{ id: "fake.lexical", stage: "lexical", retrieve: async () => { gatewayCalls += 1; return []; } }],
+    authorization: { canRead: async () => true },
+  });
+  await withRetrievalServer({ allow_unauthenticated: true, max_body_bytes: 2_048 }, async (base) => {
+    const response = await httpJson(base, "POST", "/retrieval", {
+      ...sampleRequest,
+      original_query: "x".repeat(4_096),
+    });
+    assert.equal(response.status, 413);
+    assert.equal(gatewayCalls, 0);
+  }, counting);
+});
+
+test("every retriever failing returns 503, not an empty 200 pack", async () => {
+  const failing = new RetrievalGateway({
+    retrievers: [{ id: "fake.lexical", stage: "lexical", retrieve: async () => {
+      throw new Error('select * from "questlab"."memory_chunk" - password authentication failed for user "questlab"');
+    } }],
+    authorization: { canRead: async () => true },
+  });
+  await withRetrievalServer({ allow_unauthenticated: true }, async (base) => {
+    const response = await httpJson(base, "POST", "/retrieval", sampleRequest);
+    assert.equal(response.status, 503);
+    assert.deepEqual(response.body, { error: "retrieval_unavailable" });
+    const serialized = JSON.stringify(response.body);
+    assert.equal(serialized.includes("password"), false);
+    assert.equal(serialized.includes("memory_chunk"), false);
+  }, failing);
+});
+
+test("an authorization backend that is down returns 503 instead of an empty pack", async () => {
+  const failing = new RetrievalGateway({
+    retrievers: [{ id: "fake.lexical", stage: "lexical", retrieve: async () => [
+      { id: "hit.1", content: "text evidence one", score: 1, token_count: 3, source_type: "text/plain", citation: { artifact_id: "a.1", uri: "s3://bucket/a.txt", digest: `sha256:${"a".repeat(64)}` } },
+    ] }],
+    authorization: { canRead: async () => { throw new Error("connect ECONNREFUSED 10.0.0.5:5432 password=secret"); } },
+  });
+  await withRetrievalServer({ allow_unauthenticated: true }, async (base) => {
+    const response = await httpJson(base, "POST", "/retrieval", sampleRequest);
+    assert.equal(response.status, 503);
+    assert.equal(JSON.stringify(response.body).includes("10.0.0.5"), false);
+  }, failing);
+});
+
+test("malformed numeric planner inputs are rejected as client errors, not retriever failures", async () => {
+  await withRetrievalServer({ allow_unauthenticated: true }, async (base) => {
+    // "abc" previously became candidate_k=NaN, reached `LIMIT NaN`, and every retriever was
+    // reported as failed with a 422 instead of the request being refused.
+    for (const bad of ["abc", 0, -1, 1.5, 100_000]) {
+      const response = await httpJson(base, "POST", "/retrieval", { ...sampleRequest, required_entity_count: bad });
+      assert.equal(response.status, 400, `required_entity_count=${String(bad)}`);
+    }
+    for (const bad of ["abc", 5, -1]) {
+      const response = await httpJson(base, "POST", "/retrieval", { ...sampleRequest, evidence_coverage_target: bad });
+      assert.equal(response.status, 400, `evidence_coverage_target=${String(bad)}`);
+    }
+    const good = await httpJson(base, "POST", "/retrieval", {
+      ...sampleRequest, required_entity_count: 3, evidence_coverage_target: 0.9,
+    });
+    assert.equal(good.status, 200);
+  });
+});
+
+test("filters and unknown top-level keys are bounded", async () => {
+  await withRetrievalServer({ allow_unauthenticated: true }, async (base) => {
+    const badValue = await httpJson(base, "POST", "/retrieval", { ...sampleRequest, filters: { subject: { nested: 1 } } });
+    assert.equal(badValue.status, 400);
+
+    const badName = await httpJson(base, "POST", "/retrieval", { ...sampleRequest, filters: { "Bad-Name": "x" } });
+    assert.equal(badName.status, 400);
+
+    const tooMany = await httpJson(base, "POST", "/retrieval", {
+      ...sampleRequest,
+      filters: Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`f${index}`, "v"])),
+    });
+    assert.equal(tooMany.status, 400);
+
+    const unknown = await httpJson(base, "POST", "/retrieval", { ...sampleRequest, injected_field: "surprise" });
+    assert.equal(unknown.status, 400);
+
+    const good = await httpJson(base, "POST", "/retrieval", {
+      ...sampleRequest, filters: { source_type: "text/plain", verified: true, weight: 2 },
+    });
+    assert.equal(good.status, 200);
+  });
+});

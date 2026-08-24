@@ -1,13 +1,21 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import { RetrievalPolicyError, RetrievalUnavailableError } from "./index.ts";
 import type { RetrievalGateway, RetrievalPrincipal, RetrievalRequest } from "./index.ts";
 
 export interface RetrievalApiOptions {
   readonly max_body_bytes?: number;
   readonly request_timeout_ms?: number;
+  readonly shutdown_grace_ms?: number;
   readonly authenticate?: (request: IncomingMessage) => Promise<boolean> | boolean;
   readonly resolve_identity?: (request: IncomingMessage) => Promise<TrustedRetrievalIdentity | undefined> | TrustedRetrievalIdentity | undefined;
+  /**
+   * Serves without `authenticate` and `resolve_identity`. Without a resolver the caller-supplied
+   * `principal.tenant_id` is trusted verbatim, which is a cross-tenant read, so this has to be
+   * opted into explicitly instead of being the default for a forgotten option.
+   */
+  readonly allow_unauthenticated?: boolean;
 }
 
 export interface TrustedRetrievalIdentity {
@@ -17,6 +25,11 @@ export interface TrustedRetrievalIdentity {
 
 const agentIds = ["learning-director", "learning-scientist", "experience-engineer"] as const;
 const structuredFilterKeys = new Set(["subject_id", "event_type", "from", "to", "include_conflicts"]);
+const allowedRequestKeys = new Set([
+  "query_id", "original_query", "intent", "agent_id", "principal", "purpose", "token_budget",
+  "estimated_chunk_tokens", "required_entity_count", "evidence_coverage_target", "require_citations",
+  "filters", "structured_filters", "structured_query",
+]);
 
 /** Bounded HTTP/Agent-tool boundary around the governed RetrievalGateway. */
 export function createRetrievalApiServer(
@@ -30,6 +43,11 @@ export function createRetrievalApiServer(
   }
   if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 100 || requestTimeoutMs > 300_000) {
     throw new TypeError("request_timeout_ms must be between 100 and 300000");
+  }
+  if (!options.allow_unauthenticated && (!options.authenticate || !options.resolve_identity)) {
+    throw new TypeError(
+      "authenticate and resolve_identity are required; pass allow_unauthenticated: true to serve an untrusted principal",
+    );
   }
 
   return createServer(async (request, response) => {
@@ -65,12 +83,29 @@ export function createRetrievalApiServer(
     } catch (error) {
       if (controller.signal.aborted) {
         writeJson(response, 408, { error: "request_timeout_or_canceled" });
+        request.destroy();
       } else if (error instanceof RequestBodyError) {
         writeJson(response, error.code === "PAYLOAD_TOO_LARGE" ? 413 : 400, { error: error.code, message: error.message });
       } else if (error instanceof SyntaxError) {
         writeJson(response, 400, { error: "INVALID_REQUEST", message: error.message });
+      } else if (isPolicyRejection(error)) {
+        writeJson(response, 422, { error: "retrieval_rejected", message: error.message });
+      } else if (error instanceof RetrievalUnavailableError) {
+        // 503, not an empty 200: the caller must be able to retry rather than conclude "no evidence".
+        process.stderr.write(`${JSON.stringify({
+          type: "retrieval_unavailable",
+          message: error.message,
+        })}
+`);
+        writeJson(response, 503, { error: "retrieval_unavailable" });
       } else {
-        writeJson(response, 422, { error: "retrieval_rejected", message: error instanceof Error ? error.message : "Retrieval request rejected" });
+        // Driver and gateway errors carry SQL text, schema names and connection detail.
+        process.stderr.write(`${JSON.stringify({
+          type: "retrieval_api_error",
+          message: error instanceof Error ? error.message : String(error),
+        })}
+`);
+        writeJson(response, 500, { error: "retrieval_failed" });
       }
     } finally {
       clearTimeout(timeout);
@@ -123,6 +158,23 @@ async function readJson(request: IncomingMessage, maxBytes: number, signal: Abor
   catch { throw new RequestBodyError("INVALID_JSON", "Request body must be valid JSON"); }
 }
 
+/**
+ * Validates an untrusted retrieval request without serving HTTP.
+ *
+ * Exposed so callers that build requests programmatically — notably the evaluation harness, which
+ * scores whether a model-produced tool call would be accepted — check them against the same code
+ * the HTTP boundary runs. A second copy of these rules would drift and start reporting tool calls
+ * as valid that the real boundary rejects.
+ *
+ * Throws `SyntaxError` with a caller-safe message, exactly as the HTTP path does.
+ */
+export function validateRetrievalRequest(
+  value: unknown,
+  options: { readonly identity_resolver_configured?: boolean } = {},
+): RetrievalRequest {
+  return parseRetrievalRequest(value, options.identity_resolver_configured ?? false);
+}
+
 function parseRetrievalRequest(value: unknown, identityResolverConfigured = false): RetrievalRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new SyntaxError("Retrieval request must be a JSON object");
   const item = value as Record<string, unknown>;
@@ -133,9 +185,49 @@ function parseRetrievalRequest(value: unknown, identityResolverConfigured = fals
   if (!identityResolverConfigured && !validPrincipal(item.principal, item.agent_id as RetrievalRequest["agent_id"])) throw new SyntaxError("principal is invalid");
   if (!Number.isInteger(item.token_budget) || (item.token_budget as number) <= 0 || !Number.isInteger(item.estimated_chunk_tokens) || (item.estimated_chunk_tokens as number) <= 0) throw new SyntaxError("token budgets must be positive integers");
   if (typeof item.require_citations !== "boolean") throw new SyntaxError("require_citations must be boolean");
+  // Unvalidated, `required_entity_count: "abc"` propagates through the planner as candidate_k=NaN
+  // and reaches `LIMIT NaN`, which Postgres rejects; Promise.allSettled then swallows the driver
+  // error and every retriever is reported as failed.
+  if (item.required_entity_count !== undefined) {
+    const count = item.required_entity_count;
+    if (!Number.isInteger(count) || (count as number) < 1 || (count as number) > 1_000) {
+      throw new SyntaxError("required_entity_count must be an integer between 1 and 1000");
+    }
+  }
+  if (item.evidence_coverage_target !== undefined) {
+    const target = item.evidence_coverage_target;
+    if (typeof target !== "number" || !Number.isFinite(target) || target < 0 || target > 1) {
+      throw new SyntaxError("evidence_coverage_target must be a number between 0 and 1");
+    }
+  }
+  validateFilters(item.filters);
+  // Unknown top-level keys are refused so a client cannot smuggle fields past this boundary and
+  // have them reach the gateway through the blanket cast below.
+  const unknownKeys = Object.keys(item).filter((key) => !allowedRequestKeys.has(key));
+  if (unknownKeys.length > 0) throw new SyntaxError(`Request contains unknown field: ${unknownKeys[0]}`);
   validateStructuredFilters(item.structured_filters, item.intent as RetrievalRequest["intent"]);
   validateStructuredQuery(item.structured_query, item.intent as RetrievalRequest["intent"]);
   return item as unknown as RetrievalRequest;
+}
+
+/** Retriever filters reach parameterized SQL, but their size and value types still need bounding. */
+function validateFilters(value: unknown): void {
+  if (value === undefined) return;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SyntaxError("filters must be an object");
+  const filters = value as Record<string, unknown>;
+  const keys = Object.keys(filters);
+  if (keys.length > 16) throw new SyntaxError("filters must contain at most 16 entries");
+  for (const key of keys) {
+    if (!/^[a-z][a-z0-9_]{0,63}$/u.test(key)) throw new SyntaxError(`filters.${key} is not a valid filter name`);
+    const entry = filters[key];
+    if (typeof entry === "string") {
+      if (entry.length > 512) throw new SyntaxError(`filters.${key} exceeds 512 characters`);
+      continue;
+    }
+    if (typeof entry === "boolean") continue;
+    if (typeof entry === "number" && Number.isFinite(entry)) continue;
+    throw new SyntaxError(`filters.${key} must be a string, finite number or boolean`);
+  }
 }
 
 function validIdentityClaims(value: unknown): value is TrustedRetrievalIdentity & { readonly issued_at_ms: number; readonly expires_at_ms: number } {
@@ -257,12 +349,30 @@ function validateTimeRange(fromValue: unknown, toValue: unknown, prefix: string)
   if (from && to && from.getTime() > to.getTime()) throw new SyntaxError(`${prefix}.from must not be after to`);
 }
 
+/** Only policy rejections carry caller-safe text; everything else may embed SQL or credentials. */
+function isPolicyRejection(error: unknown): error is Error {
+  return error instanceof RetrievalPolicyError;
+}
+
 function singleHeader(value: string | readonly string[] | undefined): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function writeJson(response: ServerResponse, statusCode: number, body: unknown): void {
   if (response.writableEnded) return;
+  // Headers already went out, so a second write would throw ERR_HTTP_HEADERS_SENT out of the async
+  // handler and take the process down. Serialize first for the same reason.
+  if (response.headersSent) {
+    response.destroy();
+    return;
+  }
+  let payload: string;
+  try {
+    payload = JSON.stringify(body) ?? "null";
+  } catch {
+    payload = JSON.stringify({ error: "response_serialization_failed" });
+    statusCode = 500;
+  }
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-  response.end(JSON.stringify(body));
+  response.end(payload);
 }

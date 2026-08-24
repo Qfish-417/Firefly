@@ -7,7 +7,15 @@ import {
   type JsonObject,
   type StructuredEdge as StructuredEdgeContract,
 } from "@firefly/contracts";
-import { sql, type Kysely, type Selectable } from "kysely";
+import {
+  sql,
+  type Expression,
+  type ExpressionBuilder,
+  type Kysely,
+  type Selectable,
+  type SqlBool,
+  type Transaction,
+} from "kysely";
 
 import type {
   MemoryDeletionReceiptTable,
@@ -19,6 +27,8 @@ import type {
   StructuredEventTable,
 } from "./database.ts";
 import { enqueueOutbox } from "./event-repositories.ts";
+
+type MemoryExecutor = Kysely<QuestLabDatabase> | Transaction<QuestLabDatabase>;
 
 export type MemoryRecord = Selectable<MemoryRecordTable>;
 export type StructuredEvent = Selectable<StructuredEventTable>;
@@ -58,6 +68,60 @@ export interface EventQuery {
   readonly from?: Date;
   readonly to?: Date;
   readonly include_conflicts?: boolean;
+  /**
+   * Row cap. Unbounded reads load an entire tenant's `structured_event` table into the Retrieval
+   * API process, so the query always applies a limit; hitting it is reported as truncation rather
+   * than silently under-counting.
+   */
+  readonly limit?: number;
+}
+
+/** Default event row cap; one over the reporting threshold so truncation is detectable. */
+export const defaultEventQueryLimit = 5_001;
+export const maxEventQueryLimit = 20_001;
+
+function eventQueryLimit(query: EventQuery): number {
+  const limit = query.limit ?? defaultEventQueryLimit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > maxEventQueryLimit) {
+    throw new MemoryPolicyError("Event query limit is invalid");
+  }
+  return limit;
+}
+
+/**
+ * Who may read a `structured_event` row.
+ *
+ * Shared by the listing query and the vocabulary probes so both answer under one rule. Written once
+ * because a second copy is how a probe ends up able to confirm that an event type exists in a tenant
+ * the caller cannot read — the probe returns a boolean, so such a leak would be silent.
+ *
+ * The tenant/public check is intentionally applied twice: once as a coarse filter and once inside the
+ * per-scope branch, because `scope = 'tenant'` additionally requires `owner_id` to match, which the
+ * coarse filter does not establish.
+ */
+function eventVisibility(
+  expression: ExpressionBuilder<QuestLabDatabase & { event: StructuredEventTable }, "event">,
+  principal: MemoryPrincipal,
+): Expression<SqlBool> {
+  return expression.and([
+    expression.or([
+      expression("event.scope", "=", "public"),
+      expression("event.tenant_id", "=", principal.tenant_id),
+    ]),
+    expression.or([
+      expression("event.scope", "=", "public"),
+      expression.and([expression("event.scope", "=", "tenant"), expression("event.owner_id", "=", principal.tenant_id)]),
+      ...(principal.user_id
+        ? [expression.and([expression("event.scope", "=", "user_private"), expression("event.owner_id", "=", principal.user_id)])]
+        : []),
+      ...(principal.agent_id
+        ? [expression.and([expression("event.scope", "=", "agent_private"), expression("event.owner_id", "=", principal.agent_id)])]
+        : []),
+      ...(principal.session_id
+        ? [expression.and([expression("event.scope", "=", "session"), expression("event.owner_id", "=", principal.session_id)])]
+        : []),
+    ]),
+  ]);
 }
 
 export interface EventAggregate {
@@ -67,6 +131,28 @@ export interface EventAggregate {
   readonly included_event_ids: readonly string[];
   readonly excluded_conflict_count: number;
   readonly conflict_event_ids: readonly string[];
+  /** True when the row cap was reached, so `value` is a lower bound, not an exact count. */
+  readonly truncated: boolean;
+}
+
+/**
+ * Whether the vocabulary a structured query filtered on exists at all for this principal.
+ *
+ * An empty result set is ambiguous: "this subject genuinely never did this" and "this event type
+ * does not exist, so the filter matched nothing" both produce zero rows. Callers that cannot tell
+ * them apart report the first when the truth is the second, and a fabricated `event_type` becomes a
+ * confident `count = 0` or, worse, a `difference = 0` that reads as "the two subjects are equal".
+ *
+ * Resolved with two existence probes rather than by inspecting the empty result, because absence is
+ * not observable from the rows that are missing. Both probes respect the same visibility rules as
+ * the aggregate itself: an event type the principal cannot read must count as unknown, not as
+ * non-existent, otherwise the answer would leak which vocabulary exists in another tenant.
+ */
+export interface EventVocabularyPresence {
+  /** False when no readable event of this type exists for any subject. */
+  readonly event_type_known: boolean;
+  /** False when the subject has no readable events of any type. */
+  readonly subject_known: boolean;
 }
 
 export interface EdgeQuery {
@@ -256,25 +342,27 @@ export class MemoryRepository {
     readonly confidence: number;
     readonly conflict_status?: StructuredEventTable["conflict_status"];
   }): Promise<StructuredEvent> {
-    await this.assertStructuredSourceVisibility(input, "event");
-    const inserted = await this.db
-      .insertInto("questlab.structured_event")
-      .values({
-        ...input,
-        object: input.object,
-        occurred_to: input.occurred_to ?? null,
-        source_memory_ids: JSON.stringify(input.source_memory_ids),
-        conflict_status: input.conflict_status ?? "none",
-      })
-      .onConflict((conflict) => conflict.column("event_id").doNothing())
-      .returningAll()
-      .executeTakeFirst();
-    if (inserted) return inserted;
-    return this.db
-      .selectFrom("questlab.structured_event")
-      .selectAll()
-      .where("event_id", "=", input.event_id)
-      .executeTakeFirstOrThrow();
+    return this.db.transaction().execute(async (trx) => {
+      await this.assertStructuredSourceVisibility(input, "event", trx);
+      const inserted = await trx
+        .insertInto("questlab.structured_event")
+        .values({
+          ...input,
+          object: input.object,
+          occurred_to: input.occurred_to ?? null,
+          source_memory_ids: JSON.stringify(input.source_memory_ids),
+          conflict_status: input.conflict_status ?? "none",
+        })
+        .onConflict((conflict) => conflict.column("event_id").doNothing())
+        .returningAll()
+        .executeTakeFirst();
+      if (inserted) return inserted;
+      return trx
+        .selectFrom("questlab.structured_event")
+        .selectAll()
+        .where("event_id", "=", input.event_id)
+        .executeTakeFirstOrThrow();
+    });
   }
 
   async recordEdge(input: {
@@ -313,32 +401,34 @@ export class MemoryRepository {
     assertContract("StructuredEdge", contract);
     if (input.source_node_id === input.target_node_id) throw new MemoryPolicyError("Structured edges cannot be self-referential");
     if (input.valid_to && input.valid_to < input.valid_from) throw new MemoryPolicyError("Structured edge validity range is reversed");
-    await this.assertStructuredSourceVisibility(input, "edge");
-    const inserted = await this.db
-      .insertInto("questlab.structured_edge")
-      .values({
-        ...input,
-        schema_version: 1,
-        valid_to: input.valid_to ?? null,
-        source_memory_ids: JSON.stringify(input.source_memory_ids),
-        conflict_status: input.conflict_status ?? "none",
-      })
-      .onConflict((conflict) => conflict.column("edge_id").doNothing())
-      .returningAll()
-      .executeTakeFirst();
-    if (inserted) return inserted;
-    const existing = await this.db.selectFrom("questlab.structured_edge").selectAll().where("edge_id", "=", input.edge_id).executeTakeFirstOrThrow();
-    if (
-      existing.tenant_id !== input.tenant_id || existing.source_node_id !== input.source_node_id ||
-      existing.predicate !== input.predicate || existing.target_node_id !== input.target_node_id ||
-      existing.direction !== input.direction || existing.scope !== input.scope || existing.owner_id !== input.owner_id ||
-      existing.valid_from.getTime() !== input.valid_from.getTime() || existing.valid_to?.getTime() !== input.valid_to?.getTime() ||
-      existing.dedupe_key !== input.dedupe_key || !sameStrings(existing.source_memory_ids, input.source_memory_ids) ||
-      existing.confidence !== input.confidence || existing.conflict_status !== (input.conflict_status ?? "none")
-    ) {
-      throw new MemoryPolicyError(`Structured edge ID was reused with different content: ${input.edge_id}`);
-    }
-    return existing;
+    return this.db.transaction().execute(async (trx) => {
+      await this.assertStructuredSourceVisibility(input, "edge", trx);
+      const inserted = await trx
+        .insertInto("questlab.structured_edge")
+        .values({
+          ...input,
+          schema_version: 1,
+          valid_to: input.valid_to ?? null,
+          source_memory_ids: JSON.stringify(input.source_memory_ids),
+          conflict_status: input.conflict_status ?? "none",
+        })
+        .onConflict((conflict) => conflict.column("edge_id").doNothing())
+        .returningAll()
+        .executeTakeFirst();
+      if (inserted) return inserted;
+      const existing = await trx.selectFrom("questlab.structured_edge").selectAll().where("edge_id", "=", input.edge_id).executeTakeFirstOrThrow();
+      if (
+        existing.tenant_id !== input.tenant_id || existing.source_node_id !== input.source_node_id ||
+        existing.predicate !== input.predicate || existing.target_node_id !== input.target_node_id ||
+        existing.direction !== input.direction || existing.scope !== input.scope || existing.owner_id !== input.owner_id ||
+        existing.valid_from.getTime() !== input.valid_from.getTime() || existing.valid_to?.getTime() !== input.valid_to?.getTime() ||
+        existing.dedupe_key !== input.dedupe_key || !sameStrings(existing.source_memory_ids, input.source_memory_ids) ||
+        existing.confidence !== input.confidence || existing.conflict_status !== (input.conflict_status ?? "none")
+      ) {
+        throw new MemoryPolicyError(`Structured edge ID was reused with different content: ${input.edge_id}`);
+      }
+      return existing;
+    });
   }
 
   async deleteMemory(input: DeleteMemoryInput): Promise<MemoryDeletionReceipt> {
@@ -713,14 +803,17 @@ export class MemoryRepository {
     readonly scope: StructuredEventTable["scope"];
     readonly owner_id: string;
     readonly source_memory_ids: readonly string[];
-  }, factKind: "event" | "edge"): Promise<void> {
+  }, factKind: "event" | "edge", executor: MemoryExecutor = this.db): Promise<void> {
     if (input.source_memory_ids.length === 0) {
       throw new MemoryPolicyError(`Structured ${factKind}s must retain at least one source memory`);
     }
-    const sources = await this.db
+    // FOR SHARE keeps a concurrent deleteMemory from committing between this check and the
+    // insert, which would otherwise leave a structured fact derived from an erased memory.
+    const sources = await executor
       .selectFrom("questlab.memory_record")
       .select(["memory_id", "tenant_id", "scope", "owner_id", "status"])
       .where("memory_id", "in", input.source_memory_ids)
+      .forShare()
       .execute();
     if (
       new Set(input.source_memory_ids).size !== input.source_memory_ids.length ||
@@ -757,7 +850,9 @@ export class MemoryRepository {
     principal: MemoryPrincipal,
     query: EventQuery = {},
   ): Promise<EventAggregate> {
-    const rows = await this.listReadableEvents(principal, query);
+    const limit = eventQueryLimit(query);
+    const rows = await this.listReadableEvents(principal, { ...query, limit });
+    const truncated = rows.length >= limit;
     const conflicts = rows.filter((event) => event.conflict_status !== "none");
     const unique = new Map<string, StructuredEvent>();
     for (const row of rows) {
@@ -773,6 +868,7 @@ export class MemoryRepository {
       included_event_ids: included.map((event) => event.event_id),
       excluded_conflict_count: conflicts.length,
       conflict_event_ids: conflicts.map((event) => event.event_id),
+      truncated,
     };
   }
 
@@ -783,34 +879,87 @@ export class MemoryRepository {
     return this.db
       .selectFrom("questlab.structured_event as event")
       .selectAll("event")
-      .where((expression) =>
-        expression.or([
-          expression("event.scope", "=", "public"),
-          expression("event.tenant_id", "=", principal.tenant_id),
-        ]),
-      )
+      .where((expression) => eventVisibility(expression, principal))
       .$if(Boolean(query.subject_id), (builder) => builder.where("event.subject_id", "=", query.subject_id!))
       .$if(Boolean(query.event_type), (builder) => builder.where("event.event_type", "=", query.event_type!))
       .$if(Boolean(query.from), (builder) => builder.where("event.occurred_from", ">=", query.from!))
       .$if(Boolean(query.to), (builder) => builder.where("event.occurred_from", "<", query.to!))
-      .where((expression) =>
-        expression.or([
-          expression("event.scope", "=", "public"),
-          expression.and([expression("event.scope", "=", "tenant"), expression("event.owner_id", "=", principal.tenant_id)]),
-          ...(principal.user_id
-            ? [expression.and([expression("event.scope", "=", "user_private"), expression("event.owner_id", "=", principal.user_id)])]
-            : []),
-          ...(principal.agent_id
-            ? [expression.and([expression("event.scope", "=", "agent_private"), expression("event.owner_id", "=", principal.agent_id)])]
-            : []),
-          ...(principal.session_id
-            ? [expression.and([expression("event.scope", "=", "session"), expression("event.owner_id", "=", principal.session_id)])]
-            : []),
-        ]),
-      )
       .orderBy("event.occurred_from", "asc")
       .orderBy("event.event_id", "asc")
+      .limit(eventQueryLimit(query))
       .execute();
+  }
+
+  /**
+   * Probes whether the subject and event type a query filtered on are readable at all.
+   *
+   * Deliberately ignores the time range: a count of zero inside a window is a real answer when the
+   * event type exists, and narrowing it further would make every empty window look like a typo.
+   * What this distinguishes is only vocabulary that does not exist from facts that did not happen.
+   *
+   * Two bounded `limit(1)` probes rather than one grouped scan: the aggregate query has already been
+   * executed by the time a caller needs this, so the cost only lands on the empty-result path.
+   */
+  async probeEventVocabulary(
+    principal: MemoryPrincipal,
+    filters: { readonly subject_id?: string; readonly event_type?: string },
+  ): Promise<EventVocabularyPresence> {
+    const probe = (apply: (builder: ReturnType<MemoryRepository["eventProbeQuery"]>) => ReturnType<MemoryRepository["eventProbeQuery"]>) =>
+      apply(this.eventProbeQuery(principal)).executeTakeFirst();
+    const [eventTypeRow, subjectRow] = await Promise.all([
+      filters.event_type === undefined
+        ? Promise.resolve(undefined)
+        : probe((builder) => builder.where("event.event_type", "=", filters.event_type!)),
+      filters.subject_id === undefined
+        ? Promise.resolve(undefined)
+        : probe((builder) => builder.where("event.subject_id", "=", filters.subject_id!)),
+    ]);
+    return {
+      // Absent filters are reported as known: nothing was asserted, so nothing can be wrong.
+      event_type_known: filters.event_type === undefined ? true : Boolean(eventTypeRow),
+      subject_known: filters.subject_id === undefined ? true : Boolean(subjectRow),
+    };
+  }
+
+  private eventProbeQuery(principal: MemoryPrincipal) {
+    return this.db
+      .selectFrom("questlab.structured_event as event")
+      .select("event.event_id")
+      .where((expression) => eventVisibility(expression, principal))
+      .limit(1);
+  }
+
+  /**
+   * The event types this principal can actually read.
+   *
+   * Exists because a caller composing a structured query otherwise has to guess the vocabulary. A
+   * model asked "is A doing better than B?" translated the word 表现 ("performance") straight into
+   * `event_type: "表现"` on 3 of 3 samples — a value that passes request validation and then yields
+   * a confident zero. Guessing is the only available strategy when nothing enumerates the real
+   * values, so this turns an unanswerable question into a lookup.
+   *
+   * Bounded by `limit` because the result is meant for a prompt or a picker, not bulk export: a
+   * tenant with thousands of event types would otherwise produce an unusable list and a heavy
+   * query. Visibility reuses the read path predicate, so it cannot reveal another tenant's
+   * vocabulary.
+   */
+  async listReadableEventTypes(
+    principal: MemoryPrincipal,
+    options: { readonly limit?: number } = {},
+  ): Promise<readonly string[]> {
+    const limit = options.limit ?? 200;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new MemoryPolicyError("Event type limit must be between 1 and 1000");
+    }
+    const rows = await this.db
+      .selectFrom("questlab.structured_event as event")
+      .select("event.event_type")
+      .distinct()
+      .where((expression) => eventVisibility(expression, principal))
+      .orderBy("event.event_type", "asc")
+      .limit(limit)
+      .execute();
+    return rows.map((row) => row.event_type);
   }
 
   async listReadableEdges(principal: MemoryPrincipal, query: EdgeQuery): Promise<readonly StructuredEdge[]> {
