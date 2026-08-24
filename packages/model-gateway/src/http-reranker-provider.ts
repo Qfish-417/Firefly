@@ -1,4 +1,5 @@
 import { ModelGatewayError } from "./errors.ts";
+import { parseProviderEndpoint, readBoundedJson } from "./http-provider-boundary.ts";
 import type { RerankPort, RerankRequest, RerankResult } from "./types.ts";
 
 export interface HttpRerankerProviderOptions {
@@ -18,7 +19,7 @@ export class HttpRerankerProvider implements RerankPort {
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: HttpRerankerProviderOptions) {
-    const endpoint = parseEndpoint(options.endpoint, options.allow_insecure_localhost ?? false);
+    const endpoint = parseProviderEndpoint(options.endpoint, "Reranker", options.allow_insecure_localhost ?? false);
     if (!options.model.trim()) throw new TypeError("Reranker model is required");
     const timeout = options.timeout_ms ?? 30_000;
     const responseBytes = options.max_response_bytes ?? 1_000_000;
@@ -61,7 +62,7 @@ export class HttpRerankerProvider implements RerankPort {
     }
     let payload: Record<string, unknown>;
     try {
-      payload = await readJson(response, this.options.max_response_bytes);
+      payload = await readBoundedJson(response, this.options.max_response_bytes, "Reranker");
     } catch (error) {
       if (error instanceof ModelGatewayError) throw error;
       if (request.signal?.aborted) throw new ModelGatewayError("CANCELED", "Reranker request was canceled", false, { cause: error instanceof Error ? error : undefined });
@@ -90,37 +91,6 @@ function validateRequest(request: RerankRequest, maxDocuments: number): void {
   if (request.budget.max_tokens < 1 || request.budget.max_cost_usd < 0 || request.budget.max_duration_ms < 1) throw new ModelGatewayError("INVALID_REQUEST", "Rerank budget is invalid", false);
 }
 
-async function readJson(response: Response, maxBytes: number): Promise<Record<string, unknown>> {
-  const declared = Number(response.headers.get("content-length") ?? 0);
-  if (Number.isFinite(declared) && declared > maxBytes) throw new ModelGatewayError("PROVIDER_ERROR", "Reranker provider response exceeded the byte limit", false);
-  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-  if (contentType !== "application/json") throw new ModelGatewayError("PROVIDER_ERROR", "Reranker provider response must use application/json", false);
-  let text: string;
-  if (!response.body) text = await response.text();
-  else {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    const chunks: string[] = [];
-    let bytes = 0;
-    try {
-      while (true) {
-        const next = await reader.read();
-        if (next.done) break;
-        bytes += next.value.byteLength;
-        if (bytes > maxBytes) throw new ModelGatewayError("PROVIDER_ERROR", "Reranker provider response exceeded the byte limit", false);
-        chunks.push(decoder.decode(next.value, { stream: true }));
-      }
-      chunks.push(decoder.decode());
-    } finally {
-      reader.releaseLock();
-    }
-    text = chunks.join("");
-  }
-  let value: unknown;
-  try { value = JSON.parse(text); } catch { throw new ModelGatewayError("PROVIDER_ERROR", "Reranker provider returned invalid JSON", false); }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ModelGatewayError("PROVIDER_ERROR", "Reranker provider returned an invalid payload", false);
-  return value as Record<string, unknown>;
-}
 
 function parseRankings(payload: Record<string, unknown>, documentCount: number, topK: number): readonly { readonly index: number; readonly score: number }[] {
   const data = payload.results ?? payload.data;
@@ -136,15 +106,6 @@ function parseRankings(payload: Record<string, unknown>, documentCount: number, 
   return rankings;
 }
 
-function parseEndpoint(raw: string, allowInsecureLocalhost: boolean): string {
-  let endpoint: URL;
-  try { endpoint = new URL(raw); } catch { throw new TypeError("Reranker endpoint must be a valid URL"); }
-  if (endpoint.username || endpoint.password) throw new TypeError("Reranker endpoint must not contain URL credentials");
-  if (endpoint.protocol === "https:") return endpoint.toString();
-  const local = ["localhost", "127.0.0.1", "::1"].includes(endpoint.hostname);
-  if (endpoint.protocol !== "http:" || !allowInsecureLocalhost || !local) throw new TypeError("Reranker endpoint must use HTTPS; HTTP is allowed only for explicitly enabled localhost");
-  return endpoint.toString();
-}
 
 function optionalInteger(value: unknown, label: string): number {
   if (value === undefined) return 0;

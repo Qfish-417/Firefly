@@ -15,6 +15,7 @@ import type {
   ModelInvocationRecord,
   ModelRoute,
   ModelRoutingPolicy,
+  ModelUsage,
   RerankPort,
   RerankRequest,
   RerankResult,
@@ -267,6 +268,11 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
     };
   }
 
+  /**
+   * Post-flight gates run after the provider has already produced (and billed) a response, so every
+   * rejection carries `usage` for the ledger. `recordInvocation` settles it as a failed-but-billed
+   * attempt instead of writing `cost_microusd = NULL`.
+   */
   private finish(
     request: GenerationRequest,
     route: ModelRoute,
@@ -275,14 +281,21 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
     startedAt: number,
   ): GenerationResult {
     if (result.usage.total_tokens > request.budget.max_tokens) {
-      throw new ModelGatewayError("BUDGET_EXCEEDED", "Provider exceeded the token budget", false);
+      throw new ModelGatewayError("BUDGET_EXCEEDED", "Provider exceeded the token budget", false, {
+        usage: result.usage,
+      });
     }
     if (result.usage.cost_usd > request.budget.max_cost_usd) {
-      throw new ModelGatewayError("BUDGET_EXCEEDED", "Provider exceeded the cost budget", false);
+      throw new ModelGatewayError("BUDGET_EXCEEDED", "Provider exceeded the cost budget", false, {
+        usage: result.usage,
+      });
     }
     const latency = this.now() - startedAt;
     if (latency > request.budget.max_duration_ms) {
-      throw new ModelGatewayError("TIMEOUT", "Provider exceeded the duration budget", true);
+      // Not retryable: the provider answered and billed, retrying would pay again for nothing.
+      throw new ModelGatewayError("TIMEOUT", "Provider exceeded the duration budget", false, {
+        usage: result.usage,
+      });
     }
     return {
       request_id: request.request_id,
@@ -331,7 +344,7 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
       started_at_ms: input.startedAt,
       completed_at_ms: input.completedAt,
       latency_ms: Math.max(0, input.completedAt - input.startedAt),
-      ...(input.result?.usage ? { usage: input.result.usage } : {}),
+      ...usageFor(input.result, input.error),
       ...(input.error
         ? { error: { code: input.error.code, message: input.error.message, retryable: input.error.retryable } }
         : {}),
@@ -348,6 +361,18 @@ export class RoutedModelGateway implements TextGenerationPort, EmbeddingPort, Re
       // Observability must never change provider or workflow semantics.
     }
   }
+}
+
+/**
+ * A provider bills for what it produced even when a post-flight gate rejects the response, so the
+ * error-carried usage is the authoritative fallback for the ledger.
+ */
+function usageFor(
+  result: GenerationResult | undefined,
+  error: ModelGatewayError | undefined,
+): { usage?: ModelUsage } {
+  const usage = result?.usage ?? error?.usage;
+  return usage ? { usage } : {};
 }
 
 interface PreparedRoute {

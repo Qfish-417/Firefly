@@ -95,7 +95,14 @@ export function loadModelGatewayConfiguration(
   if (!isRouteMap(workloads)) {
     throw new ModelGatewayError("INVALID_REQUEST", "FIREFLY_MODEL_ROUTES has an invalid shape", false);
   }
+  // `{}` satisfies the shape check but routes nothing, so every request would fail at dispatch with
+  // a confusing "no route" error instead of at startup.
+  if (Object.keys(workloads).length === 0) {
+    throw new ModelGatewayError("INVALID_REQUEST", "FIREFLY_MODEL_ROUTES must declare at least one workload", false);
+  }
   const providers = parseCustomProviders(environment.FIREFLY_MODEL_PROVIDERS);
+  assertCredentialsResolvable(providers, environment);
+  assertRoutesResolvable(workloads, providers);
   return providers.length > 0 ? { workloads, providers } : { workloads };
 }
 
@@ -113,6 +120,27 @@ function parseCustomProviders(encoded: string | undefined): readonly CustomModel
     throw new ModelGatewayError("INVALID_REQUEST", "FIREFLY_MODEL_PROVIDERS must be an array", false);
   }
   return value.map((provider, index) => parseCustomProvider(provider, index));
+}
+
+/**
+ * A provider whose `api_key_env` names a missing or blank variable would otherwise send
+ * unauthenticated requests and fail at the first call with an opaque provider 401. A typo in the
+ * variable name is the common case.
+ */
+function assertCredentialsResolvable(
+  providers: readonly CustomModelProviderConfiguration[],
+  environment: NodeJS.ProcessEnv,
+): void {
+  for (const provider of providers) {
+    if (provider.api_key_env === undefined) continue;
+    if (!environment[provider.api_key_env]?.trim()) {
+      throw new ModelGatewayError(
+        "INVALID_REQUEST",
+        `Custom provider ${provider.id} references ${provider.api_key_env}, which is not set`,
+        false,
+      );
+    }
+  }
 }
 
 function parseCustomProvider(value: unknown, index: number): CustomModelProviderConfiguration {
@@ -136,8 +164,51 @@ function parseCustomProvider(value: unknown, index: number): CustomModelProvider
     api,
     ...(typeof value.api_key_env === "string" ? { api_key_env: value.api_key_env } : {}),
     ...(value.allow_insecure_localhost === true ? { allow_insecure_localhost: true } : {}),
+    ...parseRequestParameters(value.request_parameters, id),
     models: models.map((model, modelIndex) => parseCustomModel(model, id, modelIndex)),
   };
+}
+
+/**
+ * Validates the vendor-extension pass-through.
+ *
+ * Kept to a flat object of JSON scalars: nesting or functions here would be a way to smuggle
+ * structure into a request body that nothing else inspects. Reserved names are rejected outright
+ * because silently ignoring them (the injector preserves gateway-set fields) would look like the
+ * override took effect.
+ */
+function parseRequestParameters(
+  value: unknown,
+  provider: string,
+): { request_parameters?: Readonly<Record<string, unknown>> } {
+  if (value === undefined) return {};
+  if (!isRecord(value)) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom provider ${provider} request_parameters must be an object`, false);
+  }
+  const reserved = new Set(["model", "messages", "stream", "max_tokens", "max_completion_tokens", "temperature", "tools", "tool_choice"]);
+  for (const [key, parameter] of Object.entries(value)) {
+    if (reserved.has(key)) {
+      throw new ModelGatewayError(
+        "INVALID_REQUEST",
+        `Custom provider ${provider} may not override ${key} through request_parameters`,
+        false,
+      );
+    }
+    const kind = typeof parameter;
+    const scalar = kind === "string" || kind === "number" || kind === "boolean" || parameter === null;
+    const flatRecord = isRecord(parameter) && Object.values(parameter).every((nested) => {
+      const nestedKind = typeof nested;
+      return nestedKind === "string" || nestedKind === "number" || nestedKind === "boolean" || nested === null;
+    });
+    if (!scalar && !flatRecord) {
+      throw new ModelGatewayError(
+        "INVALID_REQUEST",
+        `Custom provider ${provider} request_parameters.${key} must be a JSON scalar or a flat object of scalars`,
+        false,
+      );
+    }
+  }
+  return { request_parameters: Object.freeze({ ...value }) };
 }
 
 function parseCustomModel(value: unknown, provider: string, index: number) {
@@ -158,6 +229,8 @@ function parseCustomModel(value: unknown, provider: string, index: number) {
   if (contextWindow <= 0 || maxOutputTokens <= 0) {
     throw new ModelGatewayError("INVALID_REQUEST", `Custom model ${provider}/${id} limits must be positive`, false);
   }
+  const cacheRead = optionalCost(value.cache_read_cost_per_million, provider, id, "cache_read_cost_per_million");
+  const cacheWrite = optionalCost(value.cache_write_cost_per_million, provider, id, "cache_write_cost_per_million");
   return {
     id,
     ...(typeof value.name === "string" ? { name: value.name } : {}),
@@ -165,8 +238,20 @@ function parseCustomModel(value: unknown, provider: string, index: number) {
     max_output_tokens: maxOutputTokens,
     input_cost_per_million: inputCost,
     output_cost_per_million: outputCost,
+    // Falling back to the input rate keeps cached spend accounted for; a relay that genuinely
+    // charges nothing for cache reads can declare 0 explicitly.
+    cache_read_cost_per_million: cacheRead ?? inputCost,
+    cache_write_cost_per_million: cacheWrite ?? inputCost,
     ...(typeof value.reasoning === "boolean" ? { reasoning: value.reasoning } : {}),
   };
+}
+
+function optionalCost(value: unknown, provider: string, model: string, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new ModelGatewayError("INVALID_REQUEST", `Custom model ${provider}/${model} has invalid ${field}`, false);
+  }
+  return value;
 }
 
 function stringField(value: unknown, field: string): string {
@@ -178,6 +263,34 @@ function stringField(value: unknown, field: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Every route naming a configured custom provider must name one of that provider's models.
+ *
+ * A typo here is otherwise only discovered when the workload first runs, and the failure looks like
+ * a provider outage rather than a configuration error. Routes to providers that pi-ai supplies are
+ * left alone, since their model catalogue is not known here.
+ */
+function assertRoutesResolvable(
+  workloads: Record<string, readonly ModelRouteConfiguration[]>,
+  providers: readonly CustomModelProviderConfiguration[],
+): void {
+  if (providers.length === 0) return;
+  const catalogue = new Map(providers.map((provider) => [provider.id, new Set(provider.models.map((model) => model.id))]));
+  for (const [workload, routes] of Object.entries(workloads)) {
+    for (const route of routes) {
+      const models = catalogue.get(route.provider);
+      if (!models) continue;
+      if (!models.has(route.model)) {
+        throw new ModelGatewayError(
+          "INVALID_REQUEST",
+          `Workload ${workload} routes to ${route.provider}/${route.model}, which that provider does not declare`,
+          false,
+        );
+      }
+    }
+  }
 }
 
 function isRouteMap(value: unknown): value is Record<string, readonly ModelRouteConfiguration[]> {

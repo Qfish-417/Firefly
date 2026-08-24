@@ -37,6 +37,13 @@ export interface CustomModelDefinition {
   readonly max_output_tokens: number;
   readonly input_cost_per_million: number;
   readonly output_cost_per_million: number;
+  /**
+   * Prompt-cache pricing. Hardcoding these to 0 makes cached spend invisible in the billing ledger,
+   * which understates real cost and lets a run exceed its budget without the cap noticing. Defaults
+   * to `input_cost_per_million` when the relay does not publish separate cache rates.
+   */
+  readonly cache_read_cost_per_million?: number;
+  readonly cache_write_cost_per_million?: number;
   readonly reasoning?: boolean;
 }
 
@@ -47,6 +54,17 @@ export interface CustomModelProviderConfiguration {
   readonly api: "openai-completions" | "openai-responses";
   readonly api_key_env?: string;
   readonly allow_insecure_localhost?: boolean;
+  /**
+   * Extra fields merged into every request body sent to this provider.
+   *
+   * For vendor extensions that the portable OpenAI subset does not model. The main case is telling a
+   * self-hosted reasoning model not to emit its chain of thought into `content`, which otherwise
+   * breaks Agents that require strict JSON (measured with vLLM + Qwen3.5-4B:
+   * `{"reasoning_effort":"none"}` turns an unparsable `Thinking Process:` reply into valid JSON).
+   *
+   * Fields the gateway already set win, so this cannot rewrite how a call was framed.
+   */
+  readonly request_parameters?: Readonly<Record<string, unknown>>;
   readonly models: readonly CustomModelDefinition[];
 }
 
