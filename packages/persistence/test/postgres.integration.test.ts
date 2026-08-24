@@ -4,6 +4,7 @@ import test from "node:test";
 import { sql } from "kysely";
 
 import {
+  ArtifactDigestConflictError,
   ArtifactIdentityConflictError,
   ArtifactRepository,
   EvolutionRunRepository,
@@ -11,6 +12,7 @@ import {
   MemoryRepository,
   MemoryPolicyError,
   ModelInvocationIdentityConflictError,
+  SentinelRepository,
   ModelInvocationRepository,
   OutboxRepository,
   WorkflowTaskRepository,
@@ -258,7 +260,7 @@ test(
 
       await context.test("workflow tasks use durable leases and checkpoints", async () => {
         const deadline = new Date(now.getTime() + 60 * 60 * 1000);
-        const task = await taskRepository.enqueue({
+        const task = await taskRepository.enqueueUngoverned({
           id: "task.integration.01",
           run_id: "run.integration.01",
           task_type: "AnalyzeLearningOutcomeTask",
@@ -270,7 +272,7 @@ test(
           deadline,
           max_attempts: 3,
         });
-        const replay = await taskRepository.enqueue({
+        const replay = await taskRepository.enqueueUngoverned({
           id: "task.integration.01",
           run_id: "run.integration.01",
           task_type: "AnalyzeLearningOutcomeTask",
@@ -331,6 +333,141 @@ test(
         );
         assert.equal(completed.status, "completed");
         assert.equal(completed.lease_owner, null);
+      });
+
+      await context.test("a failed attempt releases the lease and the last attempt is terminal", async () => {
+        const deadline = new Date(now.getTime() + 60 * 60 * 1000);
+        const task = await taskRepository.enqueueUngoverned({
+          id: "task.integration.fail.01",
+          run_id: "run.integration.01",
+          task_type: "AnalyzeLearningOutcomeTask",
+          subject: "learning-scientist.fail",
+          payload: { cohort: "cohort.synthetic.beginner" },
+          artifact_refs: [],
+          idempotency_key: "task:analyze:integration.fail.01",
+          available_at: now,
+          deadline,
+          max_attempts: 2,
+        });
+
+        const first = await taskRepository.claimNext("learning-scientist.fail", "worker.fail.01", 30_000, now);
+        assert.equal(first?.attempt, 1);
+        const released = await taskRepository.fail(
+          task.id,
+          "worker.fail.01",
+          { reason: "agent_execution_failed" },
+          { retry_after_ms: 0, now },
+        );
+        // Attempts remain, so the task must be claimable again rather than stuck as leased.
+        assert.equal(released.status, "pending");
+        assert.equal(released.lease_owner, null);
+
+        const second = await taskRepository.claimNext("learning-scientist.fail", "worker.fail.02", 30_000, now);
+        assert.equal(second?.attempt, 2);
+        const exhausted = await taskRepository.fail(
+          task.id,
+          "worker.fail.02",
+          { reason: "agent_execution_failed" },
+          { now },
+        );
+        assert.equal(exhausted.status, "failed");
+        assert.equal(exhausted.completed_at !== null, true);
+        assert.equal(
+          await taskRepository.claimNext("learning-scientist.fail", "worker.fail.03", 30_000, now),
+          undefined,
+        );
+        await assert.rejects(
+          () => taskRepository.fail(task.id, "worker.fail.02", { reason: "again" }, { now }),
+          /holding the lease/u,
+        );
+      });
+
+      /**
+       * Reporting a failure is not more work on the task, it is the report, so an expired lease must
+       * not block it. A slow failure is exactly when the lease has run out: a model call that hung for
+       * 561 seconds outlived its 30-second lease, `fail()` was rejected, and the task was left `leased`
+       * with `last_error` empty. `claimById` still reclaimed it so the run recovered, but the cause was
+       * lost and an operator saw a stalled task with no recorded reason.
+       */
+      await context.test("a worker can report a failure after its own lease expired", async () => {
+        const deadline = new Date(now.getTime() + 60 * 60 * 1000);
+        const task = await taskRepository.enqueueUngoverned({
+          id: "task.integration.fail.expired",
+          run_id: "run.integration.01",
+          task_type: "AnalyzeLearningOutcomeTask",
+          subject: "learning-scientist.expired",
+          payload: {},
+          artifact_refs: [],
+          idempotency_key: "task:analyze:integration.fail.expired",
+          available_at: now,
+          deadline,
+          max_attempts: 2,
+        });
+
+        const claimed = await taskRepository.claimNext("learning-scientist.expired", "worker.expired.01", 1_000, now);
+        assert.equal(claimed?.attempt, 1);
+
+        // Well past the 1 second lease: the work took longer than the lease allowed, which is the
+        // normal shape of a timeout.
+        const afterExpiry = new Date(now.getTime() + 120_000);
+        const released = await taskRepository.fail(
+          task.id,
+          "worker.expired.01",
+          { reason: "agent_execution_failed", detail: "Connection error." },
+          { now: afterExpiry },
+        );
+        assert.equal(released.status, "pending");
+        assert.equal(released.lease_owner, null);
+        // The point of the fix: the cause is on record rather than lost.
+        assert.equal((released.last_error as { reason?: string } | null)?.reason, "agent_execution_failed");
+
+        // Ownership is still enforced, so a stale worker cannot report on a task it no longer holds.
+        const reclaimed = await taskRepository.claimNext("learning-scientist.expired", "worker.expired.02", 30_000, afterExpiry);
+        assert.equal(reclaimed?.attempt, 2);
+        await assert.rejects(
+          () => taskRepository.fail(task.id, "worker.expired.01", { reason: "stale" }, { now: afterExpiry }),
+          /holding the lease/u,
+        );
+      });
+
+      await context.test("the reaper terminates tasks that claimNext can never pick up again", async () => {
+        const deadline = new Date(now.getTime() + 60 * 60 * 1000);
+        const stalled = await taskRepository.enqueueUngoverned({
+          id: "task.integration.reap.01",
+          run_id: "run.integration.01",
+          task_type: "AnalyzeLearningOutcomeTask",
+          subject: "learning-scientist.reap",
+          payload: {},
+          artifact_refs: [],
+          idempotency_key: "task:analyze:integration.reap.01",
+          available_at: now,
+          deadline,
+          max_attempts: 1,
+        });
+        const claimed = await taskRepository.claimNext("learning-scientist.reap", "worker.reap.01", 1_000, now);
+        assert.equal(claimed?.attempt, 1);
+
+        // The lease has expired and no attempts remain: claimNext skips this row forever.
+        const afterLease = new Date(now.getTime() + 5_000);
+        assert.equal(
+          await taskRepository.claimNext("learning-scientist.reap", "worker.reap.02", 30_000, afterLease),
+          undefined,
+        );
+
+        const reaped = await taskRepository.reapExpired({ now: afterLease });
+        assert.equal(reaped.some((task) => task.id === stalled.id), true);
+        const after = await taskRepository.findById(stalled.id);
+        assert.equal(after?.status, "failed");
+        assert.equal(after?.lease_owner, null);
+
+        // Reaping is idempotent: a second pass finds nothing to do.
+        assert.equal(
+          (await taskRepository.reapExpired({ now: afterLease })).some((task) => task.id === stalled.id),
+          false,
+        );
+      });
+
+      await context.test("model invocation attribution settles run budget usage", async () => {
 
         const attributedRecord = {
           invocation_id: "model-invocation.integration.attributed.01",
@@ -355,7 +492,7 @@ test(
           },
           attribution: {
             run_id: "run.integration.01",
-            task_id: task.id,
+            task_id: "task.integration.01",
             agent_id: "learning-scientist" as const,
             tenant_id: "tenant.integration",
             user_id: "user.integration.01",
@@ -400,6 +537,35 @@ test(
             average_latency_ms: 50,
           },
         ]);
+      });
+
+      await context.test("a recurring Sentinel incident reopens after resolution", async () => {
+        const sentinelRepository = new SentinelRepository(db);
+        const report = {
+          incident_id: "incident.integration.reopen.01",
+          run_id: "run.integration.01",
+          incident_type: "hop_limit" as const,
+          severity: "high" as const,
+          fingerprint: "fingerprint.integration.reopen",
+          action: "pause" as const,
+          details: { hop: 9 },
+          observed_at: now,
+        };
+        const opened = await sentinelRepository.reportIncident(report);
+        assert.equal(opened.status, "open");
+        assert.equal(opened.occurrence_count, 1);
+
+        await db
+          .updateTable("questlab.sentinel_incident")
+          .set({ status: "resolved" })
+          .where("incident_id", "=", report.incident_id)
+          .execute();
+
+        // The condition came back. Leaving the row `resolved` drops it out of the open-incident
+        // index, so operators would never be told it recurred.
+        const recurred = await sentinelRepository.reportIncident({ ...report, details: { hop: 11 } });
+        assert.equal(recurred.status, "open");
+        assert.equal(recurred.occurrence_count, 2);
       });
 
       await context.test("Inbox records each consumer event once", async () => {
@@ -454,6 +620,27 @@ test(
             metadata: { kind: "mutated" },
           }),
           ArtifactIdentityConflictError,
+        );
+
+        // Same content under a new ID hits UNIQUE (digest, scope, owner_id), which onConflict("id")
+        // does not cover; it must surface as a typed error naming the existing artifact.
+        await assert.rejects(
+          artifactRepository.store({
+            artifact_id: "artifact.duplicate.integration.01",
+            uri: "https://artifacts.firefly.local/duplicate/01.json",
+            digest: source.digest as `sha256:${string}`,
+            media_type: source.media_type,
+            scope: source.scope,
+            owner_id: source.owner_id,
+            lineage_ids: [],
+            metadata: { kind: "duplicate" },
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof ArtifactDigestConflictError);
+            assert.equal(error.digest, source.digest);
+            assert.equal(error.message.includes(source.id), true);
+            return true;
+          },
         );
       });
     } finally {

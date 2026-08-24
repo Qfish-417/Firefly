@@ -78,7 +78,16 @@ export class WorkflowTaskRepository {
     this.db = db;
   }
 
-  async enqueue(input: EnqueueTaskInput): Promise<WorkflowTaskRecord> {
+  /**
+   * Inserts a task **without** governance accounting.
+   *
+   * It does not increment `tasks_created`, check `max_tasks_per_run`, or validate hop/fingerprint
+   * limits, so it cannot be used on an Agent dispatch path: the Loop Sentinel would lose its only
+   * count of how many tasks a run has spawned. Production dispatch goes through
+   * `LoopSentinel.dispatch` -> {@link enqueueGoverned}. This entry point exists for fixtures and
+   * bootstrap rows, and is named accordingly so the bypass is visible at every call site.
+   */
+  async enqueueUngoverned(input: EnqueueTaskInput): Promise<WorkflowTaskRecord> {
     return this.enqueueWith(this.db, input);
   }
 
@@ -346,6 +355,72 @@ export class WorkflowTaskRepository {
     });
   }
 
+  /**
+   * Leases one specific task by identity.
+   *
+   * A caller that just enqueued a task and wants to execute that task must use this, not
+   * `claimNext`. `claimNext` answers "give me the next eligible task for this subject", which is a
+   * different question: with concurrent runs the next eligible task for `learning-director` can
+   * belong to another run, so an in-process orchestrator that enqueues and then calls `claimNext`
+   * steals a sibling run's task and then fails its own identity assertion.
+   *
+   * Eligibility is identical to `claimNext` (available, before deadline, not cancelled, attempts
+   * remaining, either pending or an expired lease), so this cannot bypass queue guarantees or
+   * steal a live lease. It returns undefined when the task is not claimable and leaves the caller
+   * to decide whether that is an error.
+   */
+  async claimById(
+    taskId: string,
+    workerId: string,
+    leaseDurationMs: number,
+    now = new Date(),
+  ): Promise<WorkflowTaskRecord | undefined> {
+    return this.db.transaction().execute(async (trx) => {
+      const task = await trx
+        .selectFrom("questlab.workflow_task")
+        .select("id")
+        .where("id", "=", taskId)
+        .where("available_at", "<=", now)
+        .where("deadline", ">", now)
+        .where("cancellation_requested", "=", false)
+        .whereRef("attempt", "<", "max_attempts")
+        .where((expression) =>
+          expression.or([
+            expression("status", "=", "pending"),
+            expression.and([
+              expression("status", "=", "leased"),
+              expression("lease_expires_at", "<", now),
+            ]),
+          ]),
+        )
+        // Another claimer holding this row means it is not ours to take; skip instead of blocking.
+        .forUpdate()
+        .skipLocked()
+        .executeTakeFirst();
+      if (!task) {
+        return undefined;
+      }
+
+      return trx
+        .updateTable("questlab.workflow_task")
+        .set({
+          status: "leased",
+          lease_owner: workerId,
+          lease_expires_at: new Date(now.getTime() + leaseDurationMs),
+          attempt: sql<number>`attempt + 1`,
+          updated_at: now,
+        })
+        .where("id", "=", task.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    });
+  }
+
+  /**
+   * Leases the next eligible task for a subject. This is the queue-worker entry point: the caller
+   * does not know which task it will receive. An orchestrator that needs one specific task must
+   * use `claimById`.
+   */
   async claimNext(
     subject: string,
     workerId: string,
@@ -372,6 +447,9 @@ export class WorkflowTaskRepository {
         )
         .orderBy("available_at", "asc")
         .orderBy("created_at", "asc")
+        // Without LIMIT 1 the FOR UPDATE locks every eligible task, so other SKIP LOCKED
+        // claimers skip the whole queue and leasing serializes to one worker at a time.
+        .limit(1)
         .forUpdate()
         .skipLocked()
         .executeTakeFirst();
@@ -524,6 +602,122 @@ export class WorkflowTaskRepository {
         })
         .execute();
       return task;
+    });
+  }
+  /**
+   * Releases a lease after a failed attempt.
+   *
+   * Without this a worker that throws leaves the row `leased` until the lease expires; once
+   * `attempt` reaches `max_attempts` the claim predicate excludes it forever, so the task stalls
+   * as `leased` and the run never completes or reports a failure. Attempts below the cap go back to
+   * `pending` with backoff; the final attempt is terminal `failed`.
+   */
+  async fail(
+    taskId: string,
+    workerId: string,
+    error: JsonObject,
+    options: { readonly retry_after_ms?: number; readonly now?: Date } = {},
+  ): Promise<WorkflowTaskRecord> {
+    const now = options.now ?? new Date();
+    const retryAfterMs = options.retry_after_ms ?? 0;
+    if (!Number.isInteger(retryAfterMs) || retryAfterMs < 0 || retryAfterMs > 86_400_000) {
+      throw new TaskLeaseError(taskId, "retry_after_ms must be between 0 and 86400000");
+    }
+    return this.db.transaction().execute(async (trx) => {
+      // Deliberately *not* filtered on `lease_expires_at >= now`. The lease is a claim on the right to
+      // work on a task; recording why the work failed is not more work, it is the report. A slow
+      // failure is exactly the case where the lease has run out — a model call that hung for 561
+      // seconds outlived its lease, so the handler could not write `last_error` and the task was left
+      // `leased` with no recorded cause. `claimById` still reclaims it once the lease expires, so the
+      // run recovered, but the reason was lost and an operator saw a stalled task with an empty error.
+      //
+      // Ownership is still required: only the worker that holds the lease may report on it, so a
+      // stale worker cannot overwrite the state of a task that has since been reclaimed by someone
+      // else. That is what `lease_owner = workerId` enforces.
+      const current = await trx
+        .selectFrom("questlab.workflow_task")
+        .selectAll()
+        .where("id", "=", taskId)
+        .where("status", "=", "leased")
+        .where("lease_owner", "=", workerId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!current) {
+        throw new TaskLeaseError(taskId, "cannot fail without holding the lease");
+      }
+      const exhausted = current.attempt >= current.max_attempts || current.cancellation_requested;
+      const task = await trx
+        .updateTable("questlab.workflow_task")
+        .set({
+          status: exhausted ? "failed" : "pending",
+          lease_owner: null,
+          lease_expires_at: null,
+          last_error: error,
+          available_at: exhausted ? current.available_at : new Date(now.getTime() + retryAfterMs),
+          ...(exhausted ? { completed_at: now } : {}),
+          updated_at: now,
+        })
+        .where("id", "=", taskId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return task;
+    });
+  }
+
+  /**
+   * Reclaims tasks whose lease expired and whose attempts are spent, plus tasks past their deadline.
+   *
+   * `claimNext` skips both classes, so without a reaper they stay `leased`/`pending` indefinitely
+   * with nothing reporting the stall. Returns the tasks it moved to a terminal state.
+   */
+  async reapExpired(
+    options: { readonly limit?: number; readonly now?: Date } = {},
+  ): Promise<readonly WorkflowTaskRecord[]> {
+    const now = options.now ?? new Date();
+    const limit = options.limit ?? 100;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new TaskLeaseError("*", "reap limit must be between 1 and 1000");
+    }
+    return this.db.transaction().execute(async (trx) => {
+      const stalled = await trx
+        .selectFrom("questlab.workflow_task")
+        .select(["id", "attempt", "max_attempts", "deadline", "status"])
+        .where("status", "in", ["pending", "leased"])
+        .where((expression) =>
+          expression.or([
+            // Deadline passed: no further attempt can succeed.
+            expression("deadline", "<=", now),
+            // Lease expired with attempts exhausted: claimNext will never pick it up again.
+            expression.and([
+              expression("status", "=", "leased"),
+              expression("lease_expires_at", "<", now),
+              expression.eb("attempt", ">=", expression.ref("max_attempts")),
+            ]),
+            expression.and([
+              expression("status", "=", "pending"),
+              expression.eb("attempt", ">=", expression.ref("max_attempts")),
+            ]),
+          ]),
+        )
+        .orderBy("created_at", "asc")
+        .limit(limit)
+        .forUpdate()
+        .skipLocked()
+        .execute();
+      if (stalled.length === 0) return [];
+      return trx
+        .updateTable("questlab.workflow_task")
+        .set({
+          status: "failed",
+          lease_owner: null,
+          lease_expires_at: null,
+          last_error: { reason: "task_reaped", detail: "lease expired or deadline passed with no attempts left" },
+          completed_at: now,
+          updated_at: now,
+        })
+        .where("id", "in", stalled.map((task) => task.id))
+        .returningAll()
+        .execute();
     });
   }
 }

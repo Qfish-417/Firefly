@@ -24,6 +24,35 @@ export class ArtifactIdentityConflictError extends Error {
   }
 }
 
+/**
+ * The same immutable content already exists under a different artifact ID.
+ *
+ * `artifact` carries `UNIQUE (digest, scope, owner_id)` (migration 001) which `onConflict("id")`
+ * does not cover, so this used to escape as a raw pg 23505 with no artifact context.
+ */
+export class ArtifactDigestConflictError extends Error {
+  readonly artifactId: string;
+  readonly digest: string;
+
+  constructor(artifactId: string, digest: string, existingArtifactId?: string) {
+    super(
+      `Artifact ${artifactId} duplicates digest ${digest} already stored in this scope` +
+        (existingArtifactId ? ` as ${existingArtifactId}` : ""),
+    );
+    this.name = "ArtifactDigestConflictError";
+    this.artifactId = artifactId;
+    this.digest = digest;
+  }
+}
+
+function isUniqueViolation(error: unknown, constraint: string): boolean {
+  return (
+    typeof error === "object" && error !== null &&
+    (error as { code?: unknown }).code === "23505" &&
+    String((error as { constraint?: unknown }).constraint ?? "").includes(constraint)
+  );
+}
+
 export class ArtifactRepository {
   private readonly db: Kysely<QuestLabDatabase>;
 
@@ -32,6 +61,24 @@ export class ArtifactRepository {
   }
 
   async store(input: StoreArtifactInput): Promise<ArtifactRecord> {
+    try {
+      return await this.storeOnce(input);
+    } catch (error) {
+      if (!isUniqueViolation(error, "artifact_digest_scope_owner_id_key")) throw error;
+      // A concurrent writer stored the same content under another ID. Report which one, instead of
+      // letting a raw driver error reach the caller.
+      const existing = await this.db
+        .selectFrom("questlab.artifact")
+        .select(["id"])
+        .where("digest", "=", input.digest)
+        .where("scope", "=", input.scope)
+        .where("owner_id", "=", input.owner_id)
+        .executeTakeFirst();
+      throw new ArtifactDigestConflictError(input.artifact_id, input.digest, existing?.id);
+    }
+  }
+
+  private async storeOnce(input: StoreArtifactInput): Promise<ArtifactRecord> {
     return this.db.transaction().execute(async (trx) => {
       const inserted = await trx
         .insertInto("questlab.artifact")

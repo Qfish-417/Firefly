@@ -7,7 +7,7 @@ import type {
   LearningOutcome,
   VerificationReport,
 } from "@firefly/contracts";
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 
 import type { QuestLabDatabase } from "./database.ts";
 
@@ -150,8 +150,27 @@ export class VerticalSliceRepository {
       .execute();
   }
 
+  /**
+   * Reads a whole run trace as one consistent snapshot.
+   *
+   * The 21 reads below used to run as independent statements, each seeing a different committed
+   * state. A trace fetched while the run advanced could therefore show, for example, a released
+   * plugin with no verification report — an audit record of a state that never existed. REPEATABLE
+   * READ pins every read to a single snapshot; it is read-only, so it cannot conflict.
+   */
   async getTrace(runId: string): Promise<EvolutionTrace | undefined> {
-    const run = await this.db
+    return this.db
+      .transaction()
+      .setIsolationLevel("repeatable read")
+      .setAccessMode("read only")
+      .execute((trx) => this.readTrace(trx, runId));
+  }
+
+  private async readTrace(
+    db: Kysely<QuestLabDatabase> | Transaction<QuestLabDatabase>,
+    runId: string,
+  ): Promise<EvolutionTrace | undefined> {
+    const run = await db
       .selectFrom("questlab.evolution_run")
       .selectAll()
       .where("id", "=", runId)
@@ -182,17 +201,17 @@ export class VerticalSliceRepository {
       canaryEvaluations,
       activePluginVersion,
     ] = await Promise.all([
-      this.db.selectFrom("questlab.evolution_transition").selectAll().where("run_id", "=", runId).orderBy("to_version").execute(),
-      this.db.selectFrom("questlab.workflow_task").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
-      this.db.selectFrom("questlab.approval").selectAll().where("run_id", "=", runId).orderBy("requested_at").execute(),
-      this.db.selectFrom("questlab.learning_event").selectAll().where("run_id", "=", runId).orderBy("occurred_at").execute(),
-      this.db.selectFrom("questlab.agent_result").selectAll().where("run_id", "=", runId).orderBy("completed_at").execute(),
-      this.db.selectFrom("questlab.learning_finding").selectAll().where("run_id", "=", runId).executeTakeFirst(),
-      this.db.selectFrom("questlab.improvement_plan").selectAll().where("run_id", "=", runId).executeTakeFirst(),
-      this.db.selectFrom("questlab.change_set").selectAll().where("run_id", "=", runId).executeTakeFirst(),
-      this.db.selectFrom("questlab.verification_report").selectAll().where("run_id", "=", runId).executeTakeFirst(),
-      this.db.selectFrom("questlab.learning_outcome").selectAll().where("run_id", "=", runId).executeTakeFirst(),
-      this.db
+      db.selectFrom("questlab.evolution_transition").selectAll().where("run_id", "=", runId).orderBy("to_version").execute(),
+      db.selectFrom("questlab.workflow_task").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
+      db.selectFrom("questlab.approval").selectAll().where("run_id", "=", runId).orderBy("requested_at").execute(),
+      db.selectFrom("questlab.learning_event").selectAll().where("run_id", "=", runId).orderBy("occurred_at").execute(),
+      db.selectFrom("questlab.agent_result").selectAll().where("run_id", "=", runId).orderBy("completed_at").execute(),
+      db.selectFrom("questlab.learning_finding").selectAll().where("run_id", "=", runId).executeTakeFirst(),
+      db.selectFrom("questlab.improvement_plan").selectAll().where("run_id", "=", runId).executeTakeFirst(),
+      db.selectFrom("questlab.change_set").selectAll().where("run_id", "=", runId).executeTakeFirst(),
+      db.selectFrom("questlab.verification_report").selectAll().where("run_id", "=", runId).executeTakeFirst(),
+      db.selectFrom("questlab.learning_outcome").selectAll().where("run_id", "=", runId).executeTakeFirst(),
+      db
         .selectFrom("questlab.artifact")
         .selectAll()
         .where((expression) =>
@@ -203,12 +222,12 @@ export class VerticalSliceRepository {
         )
         .orderBy("created_at")
         .execute(),
-      this.db.selectFrom("questlab.causal_edge").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
-      this.db.selectFrom("questlab.sentinel_incident").selectAll().where("run_id", "=", runId).orderBy("first_seen_at").execute(),
-      this.db.selectFrom("questlab.quarantine").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
-      this.db.selectFrom("questlab.run_budget_usage").selectAll().where("run_id", "=", runId).executeTakeFirst(),
-      this.db.selectFrom("questlab.plugin_release").selectAll().where("run_id", "=", runId).executeTakeFirst(),
-      this.db
+      db.selectFrom("questlab.causal_edge").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
+      db.selectFrom("questlab.sentinel_incident").selectAll().where("run_id", "=", runId).orderBy("first_seen_at").execute(),
+      db.selectFrom("questlab.quarantine").selectAll().where("run_id", "=", runId).orderBy("created_at").execute(),
+      db.selectFrom("questlab.run_budget_usage").selectAll().where("run_id", "=", runId).executeTakeFirst(),
+      db.selectFrom("questlab.plugin_release").selectAll().where("run_id", "=", runId).executeTakeFirst(),
+      db
         .selectFrom("questlab.plugin_release_transition")
         .innerJoin(
           "questlab.plugin_release",
@@ -219,7 +238,7 @@ export class VerticalSliceRepository {
         .where("questlab.plugin_release.run_id", "=", runId)
         .orderBy("questlab.plugin_release_transition.to_version")
         .execute(),
-      this.db
+      db
         .selectFrom("questlab.sandbox_run")
         .innerJoin(
           "questlab.plugin_release",
@@ -230,7 +249,7 @@ export class VerticalSliceRepository {
         .where("questlab.plugin_release.run_id", "=", runId)
         .orderBy("questlab.sandbox_run.started_at")
         .execute(),
-      this.db
+      db
         .selectFrom("questlab.canary_evaluation")
         .innerJoin(
           "questlab.plugin_release",
@@ -241,7 +260,7 @@ export class VerticalSliceRepository {
         .where("questlab.plugin_release.run_id", "=", runId)
         .orderBy("questlab.canary_evaluation.evaluated_at")
         .execute(),
-      this.db
+      db
         .selectFrom("questlab.plugin_release")
         .innerJoin(
           "questlab.plugin",

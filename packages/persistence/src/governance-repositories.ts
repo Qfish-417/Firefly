@@ -146,6 +146,10 @@ export class SentinelRepository {
             last_seen_at: input.observed_at,
             occurrence_count: sql<number>`"sentinel_incident"."occurrence_count" + 1`,
             details: input.details,
+            // A recurrence must reopen the incident. Leaving an acknowledged/resolved row untouched
+            // means the condition came back and nothing surfaces it: the open-incident index no
+            // longer matches the row, so operators never see it again.
+            status: "open",
           }),
       )
       .returningAll()

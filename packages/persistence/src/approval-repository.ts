@@ -12,6 +12,17 @@ export class ApprovalDecisionError extends Error {
   }
 }
 
+/** An approval ID was reused for a different run or subject. */
+export class ApprovalIdentityConflictError extends Error {
+  readonly approvalId: string;
+
+  constructor(approvalId: string) {
+    super(`Approval ID was reused for a different subject: ${approvalId}`);
+    this.name = "ApprovalIdentityConflictError";
+    this.approvalId = approvalId;
+  }
+}
+
 export class ApprovalRepository {
   private readonly db: Kysely<QuestLabDatabase>;
 
@@ -41,11 +52,22 @@ export class ApprovalRepository {
     if (inserted) {
       return inserted;
     }
-    return this.db
+    const existing = await this.db
       .selectFrom("questlab.approval")
       .selectAll()
       .where("id", "=", input.id)
       .executeTakeFirstOrThrow();
+    // A replay must be the *same* request. Returning the stored row unchecked means an approval
+    // granted for one subject can be replayed to authorize a different one, which is a decision
+    // the human approver never made.
+    if (
+      existing.run_id !== input.run_id ||
+      existing.subject_type !== input.subject_type ||
+      existing.subject_id !== input.subject_id
+    ) {
+      throw new ApprovalIdentityConflictError(input.id);
+    }
+    return existing;
   }
 
   async approvePlan(

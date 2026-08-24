@@ -35,6 +35,14 @@ export class PluginReleaseNotFoundError extends Error {
   }
 }
 
+/** A promotion referenced a plugin or version that does not exist or does not match. */
+export class PluginReleaseStateError extends Error {
+  constructor(subjectId: string, detail: string) {
+    super(`Plugin release state is invalid for ${subjectId}: ${detail}`);
+    this.name = "PluginReleaseStateError";
+  }
+}
+
 export interface PluginReleaseTransitionCommand {
   readonly event_id: string;
   readonly event: PluginReleaseEvent;
@@ -444,18 +452,35 @@ export class PluginReleaseRepository {
     pluginId: string,
     versionId: string,
   ): Promise<void> {
+    // Serialize activations for this plugin. Two concurrent promotions otherwise interleave
+    // deactivate/activate and can leave two active versions, or none.
+    const plugin = await trx
+      .selectFrom("questlab.plugin")
+      .select(["plugin_id"])
+      .where("plugin_id", "=", pluginId)
+      .forUpdate()
+      .executeTakeFirst();
+    if (!plugin) {
+      throw new PluginReleaseStateError(pluginId, `plugin ${pluginId} does not exist`);
+    }
     await trx
       .updateTable("questlab.plugin_version")
       .set({ status: "inactive" })
       .where("plugin_id", "=", pluginId)
       .where("status", "=", "active")
       .execute();
-    await trx
+    // `.returning()` is required: without it Kysely resolves an UpdateResult that is always
+    // truthy, so executeTakeFirstOrThrow could never detect a missing version row.
+    const activated = await trx
       .updateTable("questlab.plugin_version")
       .set({ status: "active" })
       .where("version_id", "=", versionId)
       .where("plugin_id", "=", pluginId)
-      .executeTakeFirstOrThrow();
+      .returning(["version_id"])
+      .executeTakeFirst();
+    if (!activated) {
+      throw new PluginReleaseStateError(versionId, `version ${versionId} does not belong to plugin ${pluginId}`);
+    }
     await trx
       .updateTable("questlab.plugin")
       .set({ active_version_id: versionId, updated_at: new Date() })

@@ -217,8 +217,10 @@ export interface RunBudgetUsageTable {
   run_id: string;
   tasks_created: Generated<number>;
   transitions_applied: Generated<number>;
-  tokens_used: Generated<number>;
-  cost_microusd: Generated<number>;
+  /** BIGINT. node-postgres returns int8 as a string, so read it through `Number`/`BigInt`. */
+  tokens_used: ColumnType<string, number | undefined, number>;
+  /** BIGINT, in microUSD. See `tokens_used` for the string-on-read caveat. */
+  cost_microusd: ColumnType<string, number | undefined, number>;
   tool_calls: Generated<number>;
   updated_at: Generated<Timestamp>;
 }
@@ -592,10 +594,46 @@ export interface QuestLabDatabase {
   "questlab.maintenance_cycle": MaintenanceCycleTable;
 }
 
-export function createDatabase(connectionString: string): Kysely<QuestLabDatabase> {
-  return new Kysely<QuestLabDatabase>({
-    dialect: new PostgresDialect({
-      pool: new Pool({ connectionString }),
-    }),
+export interface DatabasePoolOptions {
+  /** Maximum pooled connections. `getTrace` alone issues 20 concurrent queries. */
+  readonly max?: number;
+  readonly connection_timeout_ms?: number;
+  readonly idle_timeout_ms?: number;
+  /** Server-side cap so a stuck query cannot hold `FOR UPDATE` locks forever. */
+  readonly statement_timeout_ms?: number;
+  /** Receives idle-client errors. Without a listener `pg-pool` emits an unhandled `error`. */
+  readonly on_error?: (error: Error) => void;
+}
+
+const defaultPoolOptions = {
+  max: 24,
+  connection_timeout_ms: 10_000,
+  idle_timeout_ms: 30_000,
+  statement_timeout_ms: 60_000,
+} as const;
+
+export function createDatabase(
+  connectionString: string,
+  options: DatabasePoolOptions = {},
+): Kysely<QuestLabDatabase> {
+  const statementTimeout = options.statement_timeout_ms ?? defaultPoolOptions.statement_timeout_ms;
+  const pool = new Pool({
+    connectionString,
+    max: options.max ?? defaultPoolOptions.max,
+    connectionTimeoutMillis: options.connection_timeout_ms ?? defaultPoolOptions.connection_timeout_ms,
+    idleTimeoutMillis: options.idle_timeout_ms ?? defaultPoolOptions.idle_timeout_ms,
+    options: `-c statement_timeout=${statementTimeout}`,
   });
+  // `pg-pool` emits 'error' for idle clients; an unhandled EventEmitter error crashes the process.
+  pool.on("error", (error: Error) => {
+    const handler = options.on_error;
+    if (handler) {
+      handler(error);
+      return;
+    }
+    process.stderr.write(
+      `${JSON.stringify({ type: "postgres_pool_error", message: error.message })}\n`,
+    );
+  });
+  return new Kysely<QuestLabDatabase>({ dialect: new PostgresDialect({ pool }) });
 }
