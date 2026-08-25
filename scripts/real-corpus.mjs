@@ -38,18 +38,20 @@ export function safeKey(value) {
 const MIN_CHUNK_CHARS = 120;
 const MAX_CHUNK_CHARS = 700;
 
-/** 相关集至少这么大才配得上一条查询：太小的 topic 一次检索就能穷尽，测不出排序能力。 */
-const MIN_RELEVANT = 8;
-
 /**
- * 相关集上限。超过这个大小的 topic 不生成查询（chunk 仍留在语料里当干扰项）。
+ * gold set 的合法区间。
  *
- * 不是为了把数字做得好看，而是因为超大相关集让 R@10 失去分辨力：`pkg:openai` 有 847 个 chunk，
- * 取 10 条最多覆盖 1.2%，无论排序多好 R@10 都接近 0，指标不再反映检索质量。实测相关集 >100 的
- * 10 条查询 R@10 全部低于 0.02，其中 `pkg:dayjs` 的 P@10 已经是 1.00（前 10 条全对）却仍只有
- * R@10 = 0.018 —— 这时 Recall 衡量的是标注粒度，不是检索能力。
+ * 权威数据集（MS MARCO、KILT 等）的标准相关集通常只有 1~5 篇，极少超过 10。之前用"同一文件的
+ * 全部 chunk"当 gold set 是错的：`big-integer/README.md` 的 58 个 chunk 全被算成与
+ * "how do I use big integer" 相关，其中 `#### shiftLeft(n)`、`#### square()` 这类 API 条目与
+ * 查询没有任何词汇或语义重叠，任何检索器都不该把它们排进前 10。分母虚高一个量级，Recall 被
+ * 系统性压低到理论上限的 43%，读起来像"检索只有四成能力"，实际衡量的是标注宽度。
+ *
+ * 改按**小节**（h1~h4）划分 gold set。实测本语料 4058 个小节里 99% 含 1~5 个 chunk，正好落在
+ * 权威数据集的量级。上限设 8 而不是 5，是为了不丢掉少量偏长的小节；仍远小于文件粒度的 58。
  */
-const MAX_RELEVANT = 60;
+const MIN_RELEVANT = 1;
+const MAX_RELEVANT = 8;
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -69,21 +71,27 @@ function walk(dir, out = []) {
  */
 export function chunkMarkdown(text) {
   const out = [];
-  for (const section of text.split(/\n(?=#{1,4} )/)) {
+  for (const [sectionIndex, section] of text.split(/\n(?=#{1,4} )/).entries()) {
     const trimmed = section.trim();
     if (trimmed.length < MIN_CHUNK_CHARS) continue;
+    // 小节标题。gold set 以小节为单位，所以每个 chunk 必须记住自己属于哪个小节，
+    // 而标题本身又是唯一能不看正文就得到的"这一节讲什么"的描述，正好当查询。
+    const heading = trimmed.startsWith("#") ? trimmed.split("\n")[0].replace(/^#+\s*/, "").trim() : "";
     let buffer = "";
+    const push = (value) => {
+      if (value.length >= MIN_CHUNK_CHARS) out.push({ content: value, heading, section_index: sectionIndex });
+    };
     for (const paragraph of trimmed.split(/\n\s*\n/)) {
       const para = paragraph.trim();
       if (!para) continue;
       if (buffer.length + para.length < MAX_CHUNK_CHARS) {
         buffer = buffer ? `${buffer}\n\n${para}` : para;
       } else {
-        if (buffer.length >= MIN_CHUNK_CHARS) out.push(buffer);
+        push(buffer);
         buffer = para.length < MAX_CHUNK_CHARS ? para : para.slice(0, MAX_CHUNK_CHARS);
       }
     }
-    if (buffer.length >= MIN_CHUNK_CHARS) out.push(buffer);
+    push(buffer);
   }
   return out;
 }
@@ -107,8 +115,9 @@ export function topicOf(path) {
  * 默认用 `file`，因为它让 Recall 真正反映排序质量而不是标注宽窄；`package` 保留用于对照，
  * 它更接近"用户问一个库怎么用"的真实意图，只是不适合做 Recall 的分母。
  */
-export function buildRealCorpus(rootDir, granularity = "file") {
+export function buildRealCorpus(rootDir, granularity = "section") {
   const byTopic = new Map();
+  const headings = new Map();
   for (const file of walk(rootDir)) {
     if (statSync(file).size > 4_000_000) continue;
     let text;
@@ -118,33 +127,68 @@ export function buildRealCorpus(rootDir, granularity = "file") {
       continue;
     }
     const relative = file.split(sep).join("/").replace(rootDir.split(sep).join("/"), "").replace(/^\//, "");
-    const topic = granularity === "file" ? `file:${relative}` : topicOf(file);
-    const list = byTopic.get(topic) ?? [];
-    for (const [index, content] of chunkMarkdown(text).entries()) {
-      list.push({ content, topic_id: topic, source_path: relative, ordinal: index });
+    for (const [index, chunk] of chunkMarkdown(text).entries()) {
+      const topic = granularity === "section"
+        ? `sec:${relative}#${chunk.section_index}`
+        : granularity === "file" ? `file:${relative}` : topicOf(file);
+      const list = byTopic.get(topic) ?? [];
+      list.push({ content: chunk.content, topic_id: topic, source_path: relative, ordinal: index });
+      byTopic.set(topic, list);
+      if (chunk.heading && !headings.has(topic)) headings.set(topic, chunk.heading);
     }
-    byTopic.set(topic, list);
   }
 
   const chunks = [];
   for (const list of byTopic.values()) for (const chunk of list) chunks.push(chunk);
 
-  // 只有相关集足够大的 topic 才生成查询，但**所有** chunk 都进语料：小 topic 继续充当干扰项，
-  // 这与合成语料里干扰 topic 的作用一致。
+  // 只有 gold set 落在合法区间的 topic 才生成查询，但**所有** chunk 都进语料：其余继续充当
+  // 干扰项，这与合成语料里干扰 topic 的作用一致。
   const queryTopics = [...byTopic.entries()]
-    .filter(([, list]) => list.length >= MIN_RELEVANT && list.length <= MAX_RELEVANT)
+    .filter(([topic, list]) => list.length >= MIN_RELEVANT && list.length <= MAX_RELEVANT
+      // 小节粒度还要求有标题：没有标题就没有"不看正文可得的查询"，只能靠正文造查询，
+      // 那会退化成字符串匹配。
+      && (granularity !== "section" || Boolean(headings.get(topic))))
     .map(([topic]) => topic)
     .sort();
 
-  return { chunks, queryTopics, relevantCounts: new Map([...byTopic].map(([k, v]) => [k, v.length])) };
+  return {
+    chunks,
+    queryTopics,
+    headings,
+    relevantCounts: new Map([...byTopic].map(([k, v]) => [k, v.length])),
+  };
 }
 
 /**
  * 查询文本。用 topic 名字本身当查询，因为它是唯一不看 chunk 内容就能得到的描述 ——
  * 若从 chunk 里挑句子当查询，那句话必然出现在某个 chunk 中，检索退化成字符串匹配。
  */
-export function buildRealQuerySet(queryTopics) {
+export function buildRealQuerySet(queryTopics, headings = new Map()) {
   const built = queryTopics.map((topic, index) => {
+    // 小节粒度：用小节标题当查询。标题是文档作者写的"这一节讲什么"，是不看正文就能得到的
+    // 最贴近查询意图的文本；同时带上包名/文件名消歧，因为 node_modules 里有大量同名标题
+    // （`## Installation`、`## License`），不消歧的话同一句查询会对应多个 gold set。
+    if (topic.startsWith("sec:")) {
+      const path = topic.slice(4).split("#")[0];
+      const pkg = /node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(path);
+      const scope = pkg
+        ? pkg[1].replace(/^@/, "").replace(/\//g, " ").replace(/[-_]/g, " ")
+        : basename(path, ".md").replace(/[-_]/g, " ");
+      const heading = (headings.get(topic) ?? "")
+        // 标题里常有徽章、链接、行内代码，这些是排版不是语义。
+        .replace(/\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)/g, " ")
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+        .replace(/[`*_#|]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const readable = `${scope} ${heading}`.replace(/\s+/g, " ").trim();
+      return {
+        query_id: `rq.${String(index + 1).padStart(3, "0")}`,
+        topic_id: topic,
+        query_natural: `in ${scope}, ${heading}`,
+        query_tokenized: readable,
+      };
+    }
     // Scope must stay in the query. Dropping it turned `@anthropic-ai/sdk` into "how do I use sdk",
     // which is a different question entirely: measured, that query returned chunks from `openai` and
     // from an ADR, scoring P@10 = 0 against a 473-chunk relevant set. 16 of 96 queries were affected.

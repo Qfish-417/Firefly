@@ -32,7 +32,12 @@ function argument(name, fallback) {
 const tenantId = argument("tenant", "tenant.eval");
 const logicalName = argument("logical-name", "memory.rt");
 const indexVersionId = argument("index-version", "iv.real.001");
-const granularity = argument("granularity", "file");
+const granularity = argument("granularity", "section");
+/**
+ * 查询抽样上限。小节粒度下可查询小节有 2847 个，全跑一轮 6 场景 × 2 轮要几万次检索。
+ * 等距抽样保证同一语料每次跑出同一批查询，数字可比。
+ */
+const maxQueries = Number(argument("max-queries", "300"));
 const repeats = Number(argument("repeats", "2"));
 const cutoffs = argument("cutoffs", "1,5,10,20").split(",").map(Number);
 const RELEVANT_GRADE = 2;
@@ -48,6 +53,17 @@ const embeddings = new HttpEmbeddingProvider({
   allow_insecure_localhost: process.env.EMBEDDING_ALLOW_INSECURE_LOCALHOST === "true",
   ...(process.env.EMBEDDING_SEND_DIMENSIONS === "true" ? { send_dimensions: true } : {}),
 });
+
+/** 等距抽样：不用随机，保证可复现。 */
+function sampleQueries(all) {
+  if (all.length <= maxQueries) return all;
+  const step = all.length / maxQueries;
+  const out = [];
+  for (let index = 0; out.length < maxQueries && Math.floor(index) < all.length; index += step) {
+    out.push(all[Math.floor(index)]);
+  }
+  return out;
+}
 
 function percentile(sorted, p) {
   if (sorted.length === 0) return null;
@@ -160,7 +176,7 @@ async function evaluate({ label, stages, form, rerank = false }) {
   const labels = await loadLabels();
   const relevantCounts = await loadRelevantCounts();
   const corpus = buildRealCorpus(process.cwd(), granularity);
-  const queries = buildRealQuerySet(corpus.queryTopics);
+  const queries = sampleQueries(buildRealQuerySet(corpus.queryTopics, corpus.headings));
   const maxCutoff = Math.max(...cutoffs);
   process.stderr.write(`运行 ${label} (${queries.length} 查询 x ${repeats} 轮) ...\n`);
 
@@ -239,7 +255,7 @@ const results = [];
 for (const scenario of scenarios) results.push(await evaluate(scenario));
 
 const corpus = buildRealCorpus(process.cwd(), granularity);
-const queries = buildRealQuerySet(corpus.queryTopics);
+const queries = sampleQueries(buildRealQuerySet(corpus.queryTopics, corpus.headings));
 const cap = queries.reduce((sum, q) => {
   const total = corpus.relevantCounts.get(q.topic_id);
   return sum + Math.min(10, total) / total;

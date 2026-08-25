@@ -38,7 +38,7 @@ const distractorDepth = Number(argument("distractor-depth", String(depth)));
 const varyRelevantSets = argument("vary-relevant-sets", "false") === "true";
 // 用仓库内真实 Markdown 作为语料，而不是合成文本。标注由文件路径推导，见 real-corpus.mjs。
 const useRealCorpus = argument("real", "false") === "true";
-const realGranularity = argument("granularity", "file");
+const realGranularity = argument("granularity", "section");
 const realCorpus = useRealCorpus ? buildRealCorpus(process.cwd(), realGranularity) : undefined;
 const tenantId = argument("tenant", "tenant.eval");
 const logicalName = argument("logical-name", process.env.RETRIEVAL_LOGICAL_NAME?.trim() || "memory.hybrid");
