@@ -291,6 +291,8 @@ export class PostgresLexicalRetriever implements Retriever {
     call.signal?.throwIfAborted();
     const access = readableMemoryPredicate(call.principal);
     const filters = retrievalFilterPredicate(call.filters);
+    // 表格与分隔线会被解析成 tsquery 操作符并压爆解析栈，必须先清掉，否则整次检索抛错。
+    const queryText = sanitizeTsQueryText(call.query);
     // Two tsqueries, because `simple` does not segment Chinese: a Chinese sentence collapses into a
     // single lexeme that matches nothing (measured: 0 rows for '固定倾角应该设成多少度', 960 rows for
     // the space-separated '倾角 纬度'). Migration 018 stores a character-bigram vector alongside the
@@ -301,7 +303,7 @@ export class PostgresLexicalRetriever implements Retriever {
     // words ('角应', '该设') which no document contains, so requiring all of them would match nothing.
     // OR asks the useful question — does the document share any Chinese bigram with the query — and
     // ts_rank_cd still ranks by how many matched and how close they are.
-    const cjkTerms = toCjkBigrams(call.query);
+    const cjkTerms = toCjkBigrams(queryText);
     // A single shared bigram is not evidence of relevance: it is usually a word-boundary artifact.
     // '热斑是怎么形成的' shares only '形成' with '形成性评估' (formative assessment), an unrelated
     // topic, and that one accidental bigram was enough to fill the entire lexical result list with
@@ -319,11 +321,11 @@ export class PostgresLexicalRetriever implements Retriever {
     // coincidence ('document' appears in 0.8% of chunks across unrelated packages), and requiring two
     // removed that noise on the measured corpus. A one-term query keeps a threshold of 1, otherwise it
     // could never match.
-    const latinTerms = toLatinTerms(call.query);
+    const latinTerms = toLatinTerms(queryText);
     const latinMinimumMatches = Math.min(2, latinTerms.length);
     const result = await sql<MemorySearchRow>`
       WITH query AS (
-        SELECT websearch_to_tsquery('simple', ${call.query}) AS value,
+        SELECT websearch_to_tsquery('simple', ${queryText}) AS value,
                ${latinTerms.length === 0 ? sql`NULL::tsquery` : sql`to_tsquery('simple', ${latinTerms.join(" | ")})`} AS latin_value,
                ${latinTerms.length === 0 ? sql`NULL::text[]` : sql`${latinTerms}::text[]`} AS latin_terms,
                ${cjkTerms.length === 0 ? sql`NULL::tsquery` : sql`to_tsquery('simple', ${cjkTerms.join(" | ")})`} AS cjk_value,
@@ -1603,6 +1605,31 @@ function validateVector(vector: readonly number[]): void {
  * Only characters from the CJK ranges reach the output, so the result cannot contain tsquery
  * operators (`&`, `|`, `!`, `:`, parentheses) or quotes regardless of what the caller passed.
  */
+/**
+ * 清理查询文本里会被 `websearch_to_tsquery` 当成操作符的字符序列。
+ *
+ * 起因是一次真实失败：把 exceljs README 里的一段 Markdown 表格当查询，整个检索请求抛出
+ * `tsquery stack too small`。原因是独立的 `-` 被解析成 NOT 操作符（`a - b` 得到 `'a' & !'b'`），
+ * 表格分隔行 `| ---- | ---- |` 于是连续压入几十个操作符直到栈溢出。实测
+ * `websearch_to_tsquery('simple', repeat('- ', 60))` 单独就会报错，与本仓库的改动无关，是
+ * PostgreSQL 的既有行为。
+ *
+ * 为什么要修：查询文本不总是用户手打的短句。相似文档推荐、去重、HyDE 生成的假设答案都可能包含
+ * 表格或分隔线，而"查询里有表格"不该让整次检索失败——返回不相关结果已经够糟，直接抛错更糟。
+ *
+ * 只压缩连续的操作符字符，不动单词内部的连字符：`a-b` 仍然是一个词组（`'a-b' <-> 'a' <-> 'b'`），
+ * 因为 `client-s3` 这类包名的检索依赖它。
+ */
+function sanitizeTsQueryText(query: string): string {
+  return query
+    // 连续两个以上的 - 或 | 换成空格：它们只可能来自表格与分隔线，不承载词义。
+    .replace(/[-|]{2,}/g, " ")
+    // 被空白包围的单个 - 是 NOT 操作符，同样来自排版而非查询意图。
+    .replace(/(^|\s)[-|](?=\s|$)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
  * English function words. `simple` neither stems nor removes stopwords, so these have to be listed
  * explicitly.

@@ -1058,6 +1058,22 @@ test(
       // if it counted, one function word plus any coincidence would refill the list with noise.
       assert.equal((await search("what is the banana")).length, 0);
 
+      // 查询里含 Markdown 表格不得让整次检索失败。独立的 `-` 会被解析成 NOT 操作符，表格分隔行
+      // 因此连续压入几十个操作符直到 `tsquery stack too small`：实测把 exceljs README 的一段表格
+      // 当查询时，整个请求抛错而不是返回结果。相似文档推荐与 HyDE 都可能产生这种查询文本。
+      const table = await search(
+        ["| Name | Default | Description |", "| ---- | ---- | ---- |", "| clipping | 0 | ratio |"].join("\n"),
+      );
+      assert.ok(table.some((hit) => hit.id === "chunk.cjk.latin"), "表格式查询须按其中的实词检索");
+
+      // 连字符必须留在词内，不能被当成操作符清掉：`client-s3`、`sha256-js` 这类包名依赖它。
+      // 保留后 `websearch_to_tsquery` 把它解析成词组 `'a-b' <-> 'a' <-> 'b'`，因此只在文档确实
+      // 相邻出现这两个词时才命中——fixture 写的是 "clipping begins above a DC to AC ratio"，
+      // 两词不相邻，所以词组查询理应不命中。这里断言的是"连字符没被清成空格"，
+      // 若被清掉就会退化成两个独立词元并错误命中。
+      assert.equal((await search("clipping-ratio")).length, 0);
+      assert.ok((await search("clipping ratio")).some((hit) => hit.id === "chunk.cjk.latin"));
+
       // One accidental bigram must not qualify as a match. '热斑是怎么形成的' shares only '形成'
       // with the formative-assessment chunk, and returning it would be worse than returning nothing:
       // it fills the lexical leg with wrong documents that then compete in fusion on equal footing.
