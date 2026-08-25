@@ -106,11 +106,35 @@ interface IntentDefaults {
 }
 
 const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
+  /**
+   * `context_k` and `rerank_k` were raised from 6/10 after measuring that the retrieval side was
+   * losing nothing and the selection side was discarding most of what it found.
+   *
+   * At `candidate_k = 16` the union of the lexical and vector retrievers already contains **all 12**
+   * relevant chunks for every query in the 31104-chunk corpus. Raising `candidate_k` to 64 grows the
+   * union from 16.7 to 66.8 candidates while relevant hits stay at exactly 12.0 — pure noise. So the
+   * retrievers were never the constraint.
+   *
+   * `context_k = 6` was. Recall@10 at the evidence layer is bounded by
+   * `min(context_k, relevant_total) / relevant_total`, which caps it at 6/12 = 0.500 no matter how
+   * good retrieval is; measured 0.492, i.e. already at that ceiling. Widening the selection window:
+   *
+   *   context_k  rerank_k  evidence  R@10   facet@10  citation precision
+   *   6          10        5.9       0.492  0.820     1.000
+   *   11         18        10.1      0.794  0.977     0.991
+   *   14         24        10.8      0.794  0.977     0.955
+   *   17         29        11.4      0.794  0.977     0.930
+   *
+   * Recall saturates at 0.794 (95% of the 10/12 = 0.833 ceiling for k=10) while citation precision
+   * decays monotonically past that point, because once the window exceeds the relevant set every
+   * further slot must be filled with a non-relevant chunk. 11/18 sits at the knee: +61% Recall@10 and
+   * +19% facet coverage for -0.9% citation precision.
+   */
   fact_lookup: {
-    candidate_k: 16,
-    fusion_k: 24,
-    rerank_k: 10,
-    context_k: 6,
+    candidate_k: 24,
+    fusion_k: 36,
+    rerank_k: 18,
+    context_k: 11,
     score_floor: 0.42,
     marginal_gain_floor: 0.15,
     structured_query_required: false,

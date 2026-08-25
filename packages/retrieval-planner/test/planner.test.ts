@@ -142,8 +142,11 @@ test("stopping because of diminishing returns is reported distinctly", () => {
     estimated_chunk_tokens: 120,
     available_stages: ["vector"],
   });
+  // The candidate list has to outnumber `context_k`, otherwise selection stops on `exhausted` and the
+  // plateau/tie/cliff distinctions this test exists to check are never reached.
+  const candidateCount = plan.context_k + 4;
   const build = (score: (index: number) => number): EvidenceCandidate[] =>
-    Array.from({ length: 8 }, (_, index) => ({
+    Array.from({ length: candidateCount }, (_, index) => ({
       id: `p${index}`,
       score: score(index),
       token_count: 100,
