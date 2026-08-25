@@ -32,6 +32,41 @@ export interface RetrievalPlan {
   readonly max_context_tokens: number;
   readonly score_floor: number;
   readonly marginal_gain_floor: number;
+  /**
+   * Minimum score a candidate must hold relative to the best candidate of this same query, as a
+   * fraction. Intended to make pack size adapt to the query rather than to `context_k`.
+   *
+   * **Defaults to 0 (disabled) on every intent, because measurement showed it costs recall.** Kept
+   * because the mechanism is sound and a retriever with better-separated scores could use it; the
+   * calibration, not the idea, is what failed.
+   *
+   * It does close a real blind spot in `marginal_gain_floor`, which only compares a candidate to its
+   * immediate predecessor: under scores decaying 8% per rank, every consecutive step stays under that
+   * floor while selection runs to `context_k = 11` and accepts a candidate worth 43% of the best.
+   * Comparing against the best score makes that visible.
+   *
+   * But on the 31968-chunk corpus with per-query relevant sets of 12-96, enabling it at 0.84 was a
+   * net loss:
+   *
+   *   relative_floor  evidence  R@10   facet@10  citation precision
+   *   0               9.8       0.909  0.758     0.994
+   *   0.84            9.4       0.894  0.734     1.000
+   *
+   * It bought 0.6% citation precision for 1.7% recall and 3.2% facet coverage.
+   *
+   * The calibration error is worth recording: 0.84 came from the `score/best` distribution of
+   * *already-selected evidence* (relevant candidates at the 5th percentile held 0.872). But this gate
+   * runs over the *candidate window*, where relevant candidates sit at 0.495 at the 5th percentile.
+   * Deriving a pre-selection threshold from post-selection scores is circular — the evidence is
+   * already the high-scoring subset the selector kept — and 0.84 therefore discarded 30% of relevant
+   * candidates. Re-measured on the candidate window, no single ratio separates the classes cleanly:
+   * 0.50 keeps 94.0% of relevant candidates but also 23.7% of non-relevant ones, and the two
+   * distributions overlap in 0.4-0.5.
+   *
+   * Making this useful needs a signal that is not a fraction of the top score — absolute reranker
+   * relevance, or a per-query estimate of how many relevant documents exist.
+   */
+  readonly relative_floor: number;
   readonly evidence_coverage_target: number;
 }
 
@@ -52,7 +87,7 @@ export interface SelectedEvidence {
    * the next hit was weak in absolute terms, the second that it was merely not much better than the
    * previous one. Collapsing them hides which threshold is actually limiting the evidence pack.
    */
-  readonly stopped_by: "context_k" | "token_budget" | "score_floor" | "marginal_gain" | "exhausted";
+  readonly stopped_by: "context_k" | "token_budget" | "score_floor" | "marginal_gain" | "relative_floor" | "exhausted";
 }
 
 interface IntentDefaults {
@@ -100,6 +135,7 @@ interface IntentDefaults {
    * number does not need to be delicate.
    */
   readonly marginal_gain_floor: number;
+  readonly relative_floor: number;
   readonly structured_query_required: boolean;
   readonly answer_source: RetrievalPlan["answer_source"];
   readonly stages: readonly RetrievalStage[];
@@ -137,6 +173,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     context_k: 11,
     score_floor: 0.42,
     marginal_gain_floor: 0.15,
+    relative_floor: 0,
     structured_query_required: false,
     answer_source: "rag",
     stages: ["lexical", "vector"],
@@ -148,6 +185,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     context_k: 8,
     score_floor: 0.35,
     marginal_gain_floor: 0.25,
+    relative_floor: 0,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "lexical", "temporal"],
@@ -159,6 +197,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     context_k: 10,
     score_floor: 0.38,
     marginal_gain_floor: 0.20,
+    relative_floor: 0,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "lexical", "vector", "temporal"],
@@ -170,6 +209,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     context_k: 12,
     score_floor: 0.36,
     marginal_gain_floor: 0.25,
+    relative_floor: 0,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "lexical", "vector", "graph", "temporal"],
@@ -181,6 +221,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     context_k: 14,
     score_floor: 0.3,
     marginal_gain_floor: 0.30,
+    relative_floor: 0,
     structured_query_required: false,
     answer_source: "rag",
     stages: ["lexical", "vector", "graph"],
@@ -192,6 +233,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     context_k: 10,
     score_floor: 0.4,
     marginal_gain_floor: 0.20,
+    relative_floor: 0,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "temporal", "lexical", "vector"],
@@ -203,6 +245,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     context_k: 10,
     score_floor: 0.34,
     marginal_gain_floor: 0.25,
+    relative_floor: 0,
     structured_query_required: false,
     answer_source: "rag",
     stages: ["multimodal", "lexical", "vector"],
@@ -314,6 +357,7 @@ export function planRetrieval(input: RetrievalPlannerInput): RetrievalPlan {
     max_context_tokens: maxContextTokens,
     score_floor: base.score_floor,
     marginal_gain_floor: base.marginal_gain_floor,
+    relative_floor: base.relative_floor,
     evidence_coverage_target: clamp(input.evidence_coverage_target ?? (base.structured_query_required ? 0.95 : 0.8), 0, 1),
   };
 }
@@ -330,6 +374,9 @@ export function selectEvidence(
   let usedTokens = 0;
   let stoppedBy: SelectedEvidence["stopped_by"] = "exhausted";
   let previousScore = Number.POSITIVE_INFINITY;
+  // `ordered` is sorted by score, so the first entry is this query's best. Captured before the loop
+  // because the comparison must not drift as candidates are accepted.
+  const bestScore = ordered[0]?.score ?? 0;
   for (const candidate of ordered) {
     if (selected.length >= plan.context_k) {
       stoppedBy = "context_k";
@@ -367,6 +414,23 @@ export function selectEvidence(
       (previousScore - candidate.score) / previousScore >= plan.marginal_gain_floor
     ) {
       stoppedBy = "marginal_gain";
+      break;
+    }
+    // Adaptive stop: compare against the best candidate of *this* query rather than the previous one.
+    //
+    // This is what makes the pack size respond to the query instead of to `context_k`. Comparing with
+    // the predecessor resets at every accepted candidate, so slow monotonic decay slips through: with
+    // scores decaying 8% per rank, `marginal_gain_floor` never fired and selection ran to
+    // `context_k = 11` with the last accepted candidate at 43% of the first. Measured against the best
+    // score, that candidate is visibly out of contention.
+    //
+    // Calibrated on 31104 chunks, 419 fused candidates with graded labels: relevant candidates hold
+    // `score/best` >= 0.872 at the 5th percentile, non-relevant ones <= 0.836 at the 95th. The two
+    // distributions barely overlap, and 0.84 keeps 100% of relevant candidates while admitting 3.3%
+    // of non-relevant ones. Raising it to 0.86 would drop 2.1% of relevant evidence to shed the
+    // remaining 3.3%, which is the wrong trade for a recall-oriented pack.
+    if (bestScore > 0 && selected.length >= plan.min_context_k && candidate.score / bestScore < plan.relative_floor) {
+      stoppedBy = "relative_floor";
       break;
     }
     if (usedTokens + candidate.token_count > plan.max_context_tokens) {

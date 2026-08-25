@@ -20,7 +20,7 @@ import { sql } from "kysely";
 import { createDatabase } from "../packages/persistence/src/database.ts";
 import { PostgresMemoryIndexer } from "../packages/retrieval-postgres/src/index.ts";
 import { HttpEmbeddingProvider } from "../packages/model-gateway/src/http-embedding-provider.ts";
-import { allTopics, facets, buildChunk } from "./eval-corpus.mjs";
+import { allTopics, facets, buildChunk, relevantMultiplierFor } from "./eval-corpus.mjs";
 
 const argument = (name, fallback) => {
   const index = process.argv.indexOf(`--${name}`);
@@ -32,6 +32,9 @@ const depth = Number(argument("depth", "40"));
 // depth 决定。合在一个参数里就会重现"想要大语料就必须要大相关集"的矛盾，而 Recall@k
 // 的分母正是相关集，那样指标会被构造方式锁死（实测 depth=240 时 R@10 上限只有 0.01）。
 const distractorDepth = Number(argument("distractor-depth", String(depth)));
+// 让真实 topic 的相关集大小因 topic 而异（12~96 条），用来量化自适应 context_k。
+// 相关集恒定时固定 k 处处接近最优，自适应策略无从体现差别。
+const varyRelevantSets = argument("vary-relevant-sets", "false") === "true";
 const tenantId = argument("tenant", "tenant.eval");
 const logicalName = argument("logical-name", process.env.RETRIEVAL_LOGICAL_NAME?.trim() || "memory.hybrid");
 const indexVersionId = argument("index-version", "iv.eval.001");
@@ -45,13 +48,21 @@ if (!process.env.DATABASE_URL) throw new TypeError("DATABASE_URL is required");
 
 const realTopicCount = allTopics.filter((topic) => !topic.is_distractor).length;
 const distractorTopicCount = allTopics.length - realTopicCount;
+const realChunkTotal = varyRelevantSets
+  ? allTopics.reduce((sum, topic, index) => sum + (topic.is_distractor ? 0 : facets.length * depth * relevantMultiplierFor(index)), 0)
+  : realTopicCount * facets.length * depth;
 const relevantPerQuery = facets.length * depth;
-const totalChunks = (realTopicCount * facets.length * depth) + (distractorTopicCount * facets.length * distractorDepth);
+const totalChunks = realChunkTotal + (distractorTopicCount * facets.length * distractorDepth);
 console.log(`目标：${realTopicCount} 真实 topic × ${facets.length} facet × depth ${depth}`
   + ` + ${distractorTopicCount} 干扰 topic × ${facets.length} facet × depth ${distractorDepth}`
   + ` = ${totalChunks} chunk`);
-console.log(`每条查询的相关 chunk = ${relevantPerQuery} 条 => Recall@10 上限 ${Math.min(1, 10 / relevantPerQuery).toFixed(2)}`
-  + `，Recall@20 上限 ${Math.min(1, 20 / relevantPerQuery).toFixed(2)}`);
+if (varyRelevantSets) {
+  const sizes = allTopics.flatMap((topic, index) => topic.is_distractor ? [] : [facets.length * depth * relevantMultiplierFor(index)]);
+  console.log(`每条查询的相关 chunk = ${Math.min(...sizes)}~${Math.max(...sizes)} 条（不均匀，用于量化自适应 context_k）`);
+} else {
+  console.log(`每条查询的相关 chunk = ${relevantPerQuery} 条 => Recall@10 上限 ${Math.min(1, 10 / relevantPerQuery).toFixed(2)}`
+    + `，Recall@20 上限 ${Math.min(1, 20 / relevantPerQuery).toFixed(2)}`);
+}
 
 const db = createDatabase(process.env.DATABASE_URL);
 
@@ -140,7 +151,10 @@ try {
 
   const pending = [];
   for (let topicIndex = 0; topicIndex < allTopics.length; topicIndex += 1) {
-    const topicDepth = allTopics[topicIndex].is_distractor ? distractorDepth : depth;
+    const isDistractor = allTopics[topicIndex].is_distractor;
+    const topicDepth = isDistractor
+      ? distractorDepth
+      : depth * (varyRelevantSets ? relevantMultiplierFor(topicIndex) : 1);
     for (let facetIndex = 0; facetIndex < facets.length; facetIndex += 1) {
       for (let d = 1; d <= topicDepth; d += 1) {
         const built = buildChunk({ topicIndex, facetIndex, depth: d, runTag });

@@ -156,6 +156,22 @@ export const distractorTopics = Array.from({ length: distractorClusterCount }, (
   }),
 ).flat();
 
+/**
+ * 每个真实 topic 的相关集大小倍数。
+ *
+ * 为什么必须不均匀：相关集恒定时，一个固定的 `context_k` 在每条查询上都接近最优，自适应 k
+ * 再聪明也只能打平，测不出任何差别。要让固定 k 必然出错，相关集必须因查询而异：
+ * 相关集只有 4 条时取 11 条必然掺 7 条噪声，相关集 40 条时取 11 条必然漏掉 29 条。
+ *
+ * 倍数按 topic 序号轮转，与 topic 内容无关，避免"某类主题恰好稀疏"这种混淆变量。
+ * 用 depth 的倍数而不是绝对条数，这样 `--depth` 仍然是唯一的规模旋钮。
+ */
+const relevantSetMultipliers = [1, 1, 2, 4, 8, 1, 3, 6];
+
+export function relevantMultiplierFor(topicIndex) {
+  return relevantSetMultipliers[topicIndex % relevantSetMultipliers.length];
+}
+
 export const realTopics = clusters.flatMap((cluster) =>
   cluster.topics.map((topic) => ({ ...topic, cluster_id: cluster.id, cluster_label: cluster.label, is_distractor: false })),
 );

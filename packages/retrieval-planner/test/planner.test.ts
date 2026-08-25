@@ -215,3 +215,61 @@ test("the breadth of a plan follows the intent that guidance tells callers to pi
   );
   assert.ok(survey.context_k > single.context_k, "exploratory should keep more context than fact_lookup");
 });
+
+test("selection adapts its size to the query instead of running to context_k", () => {
+  const plan = planRetrieval({
+    intent: "fact_lookup",
+    agent_id: "learning-director",
+    token_budget: 8_000,
+    estimated_chunk_tokens: 120,
+  });
+  const build = (score: (index: number) => number): EvidenceCandidate[] =>
+    Array.from({ length: plan.context_k + 8 }, (_, index) => ({
+      id: `c${index}`,
+      score: score(index),
+      token_count: 100,
+      source_type: ["text/markdown", "application/pdf", "text/html", "text/plain"][index % 4]!,
+      entity_keys: ["topic.t", `facet.f${index % 4}`, `depth.${index}`],
+      access_allowed: true,
+    }));
+
+  // `relative_floor` defaults to 0 because enabling it measured a net recall loss, so the mechanism
+  // is exercised with an explicit value. Slow monotonic decay is the case `marginal_gain_floor`
+  // cannot see: every consecutive step is far below its 0.15 floor, so with the floor at 0 selection
+  // runs the full length of `context_k` and accepts a candidate worth 43% of the best one.
+  const gated = { ...plan, relative_floor: 0.84 };
+  assert.equal(plan.relative_floor, 0);
+  assert.equal(selectEvidence(build((index) => 0.92 ** index), plan).stopped_by, "context_k");
+  const decaying = selectEvidence(build((index) => 0.92 ** index), gated);
+  assert.equal(decaying.stopped_by, "relative_floor");
+  assert.ok(decaying.candidates.length < plan.context_k);
+  const worst = decaying.candidates[decaying.candidates.length - 1]!.score;
+  assert.ok(worst / decaying.candidates[0]!.score >= gated.relative_floor);
+
+  // A genuinely uniform candidate list must still fill the window: adapting downward is only correct
+  // when the tail is actually weaker.
+  const uniform = selectEvidence(build(() => 0.9), gated);
+  assert.equal(uniform.candidates.length, plan.context_k);
+  assert.equal(uniform.stopped_by, "context_k");
+});
+
+test("relative_floor never truncates below min_context_k", () => {
+  // A query whose second-best candidate is already far behind must still return enough evidence to
+  // be answerable; the floor is a relevance signal, not a licence to return one chunk.
+  const plan = planRetrieval({
+    intent: "fact_lookup",
+    agent_id: "learning-director",
+    token_budget: 8_000,
+    estimated_chunk_tokens: 120,
+  });
+  const cliffAtOne = Array.from({ length: 6 }, (_, index) => ({
+    id: `c${index}`,
+    score: index === 0 ? 1 : 0.01,
+    token_count: 100,
+    source_type: ["text/markdown", "application/pdf"][index % 2]!,
+    entity_keys: ["topic.t", `facet.f${index}`],
+    access_allowed: true,
+  }));
+  const selected = selectEvidence(cliffAtOne, { ...plan, relative_floor: 0.84 });
+  assert.ok(selected.candidates.length >= plan.min_context_k);
+});

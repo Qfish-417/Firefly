@@ -252,6 +252,8 @@ export interface QueryPlan {
   readonly max_context_tokens: number;
   readonly score_floor: number;
   readonly marginal_gain_floor: number;
+  /** Minimum score relative to this query's best candidate. See RetrievalPlan.relative_floor. */
+  readonly relative_floor: number;
   readonly evidence_coverage_target: number;
 }
 
@@ -354,7 +356,7 @@ export interface EvidencePack {
     readonly authorized: number;
     readonly denied: number;
     readonly selected: number;
-    readonly stop_reason: "context_k" | "token_budget" | "score_floor" | "marginal_gain" | "exhausted";
+    readonly stop_reason: "context_k" | "token_budget" | "score_floor" | "marginal_gain" | "relative_floor" | "exhausted";
     /**
      * Present only when the original query returned nothing and a rewrite recovered results. Absent
      * on the normal path, so a caller can always tell whether the evidence answers the question that

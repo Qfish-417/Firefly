@@ -49,6 +49,7 @@ const validQueryPlan = {
   max_context_tokens: 1_400,
   score_floor: 0.35,
   marginal_gain_floor: 0.02,
+  relative_floor: 0.84,
   evidence_coverage_target: 0.95,
 } satisfies QueryPlan;
 

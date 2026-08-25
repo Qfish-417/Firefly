@@ -558,6 +558,7 @@
         "max_context_tokens",
         "score_floor",
         "marginal_gain_floor",
+        "relative_floor",
         "evidence_coverage_target"
       ],
       "properties": {
@@ -592,6 +593,7 @@
         "max_context_tokens": { "type": "integer", "minimum": 1 },
         "score_floor": { "type": "number", "minimum": 0, "maximum": 1 },
         "marginal_gain_floor": { "type": "number", "minimum": 0, "maximum": 1 },
+        "relative_floor": { "type": "number", "minimum": 0, "maximum": 1 },
         "evidence_coverage_target": { "type": "number", "minimum": 0, "maximum": 1 }
       },
       "allOf": [
@@ -874,7 +876,7 @@
         "authorized": { "type": "integer", "minimum": 0 },
         "denied": { "type": "integer", "minimum": 0 },
         "selected": { "type": "integer", "minimum": 0 },
-        "stop_reason": { "enum": ["context_k", "token_budget", "score_floor", "marginal_gain", "exhausted"] },
+        "stop_reason": { "enum": ["context_k", "token_budget", "score_floor", "marginal_gain", "relative_floor", "exhausted"] },
         "rewritten_query": { "type": "string", "minLength": 1 }
       }
     },
