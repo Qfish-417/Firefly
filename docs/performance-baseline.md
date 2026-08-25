@@ -189,3 +189,14 @@ ACL 谓词跨表：`memory.scope = 'public' OR index_version.tenant_id = ...` �
 3. 生产部署需要为每个 `(embedding_model, embedding_dimensions)` 路由各建一条 HNSW 表达式索引；
    仓库不内置该迁移，因为写死维度会让其他路由的索引静默失效。
 4. 向量检索的容量测试必须在放开内存限制的实例上进行，不能用 min 档。
+
+## 补充更正：halfvec 的精度归因反了
+
+本文此前记录「halfvec 相对 fp32 的 recall@10 为 0.69」，把损失归给 fp16 舍入。该数字来自一个
+有缺陷的探针，**结论是错的**。
+
+两个缺陷：`SET LOCAL` 在事务外是静默空操作，所以三条本该不同的路径跑的是同一个计划；ANN 索引
+未按语料分区，`ef_search=40` 先取全局近邻再按 `index_version_id` 过滤，新语料被过滤到 0 行。
+
+修正后：**fp16 舍入损失的 recall 是 1.000（完全无损）**，0.8156 的损失全部来自 HNSW 近似。
+降到 fp16 存储不需要权衡，需要权衡的是 ANN 召回率。

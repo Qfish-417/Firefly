@@ -72,20 +72,34 @@ function spearman(rankA, rankB) {
   return dA === 0 || dB === 0 ? null : Number((num / Math.sqrt(dA * dB)).toFixed(4));
 }
 
+/**
+ * 必须在事务内执行：`SET LOCAL` 在事务外是静默空操作。
+ *
+ * 这一点最初写错了，代价是整轮数据作废。原实现在事务外发 `SET LOCAL enable_indexscan = off`，
+ * PostgreSQL 接受语句但立刻丢弃设置（`SHOW enable_indexscan` 仍是 `on`），于是三条路径
+ * 跑的是同一个计划，"fp16 舍入损失"与"HNSW 近似损失"根本没被分开。
+ *
+ * 另外必须开 `hnsw.iterative_scan`。ANN 索引没有按 `index_version_id` 分区，本库 5 套语料
+ * 共 86784 行都在同一个 HNSW 图里；`ef_search=40` 先取全局最近的 ~40 行，再由
+ * `Filter: index_version_id = ...` 逐行剔除。实测新语料被剔到 0 行
+ * （`Rows Removed by Filter: 40`），recall 因此假性跌到 0.0187。`relaxed_order` 让 pgvector
+ * 在结果不足时继续迭代扫描，返回行数恢复正常。
+ */
 async function search(literal, elementType, forceScan) {
-  // enable_indexscan=off 强制顺序扫描，用来测 fp32 精确解与索引扫描的代价差。
-  if (forceScan) await sql`SET LOCAL enable_indexscan = off`.execute(db);
-  else await sql`SET LOCAL enable_indexscan = on`.execute(db);
   const cast = sql.raw(`${elementType}(${dimensions})`);
-  const t0 = performance.now();
-  const rows = await sql`
-    SELECT chunk_id, (embedding::${cast} <=> ${literal}::${cast})::double precision AS distance
-    FROM questlab.memory_chunk
-    WHERE index_version_id = ${indexVersionId} AND chunk_level = 'child' AND embedding IS NOT NULL
-    ORDER BY embedding::${cast} <=> ${literal}::${cast}
-    LIMIT ${k}
-  `.execute(db);
-  return { ids: rows.rows.map((row) => row.chunk_id), elapsed: performance.now() - t0 };
+  return db.transaction().execute(async (trx) => {
+    if (forceScan) await sql`SET LOCAL enable_indexscan = off`.execute(trx);
+    else await sql`SET LOCAL hnsw.iterative_scan = relaxed_order`.execute(trx);
+    const t0 = performance.now();
+    const rows = await sql`
+      SELECT chunk_id, (embedding::${cast} <=> ${literal}::${cast})::double precision AS distance
+      FROM questlab.memory_chunk
+      WHERE index_version_id = ${indexVersionId} AND chunk_level = 'child' AND embedding IS NOT NULL
+      ORDER BY embedding::${cast} <=> ${literal}::${cast}
+      LIMIT ${k}
+    `.execute(trx);
+    return { ids: rows.rows.map((row) => row.chunk_id), elapsed: performance.now() - t0 };
+  });
 }
 
 const queries = buildQuerySet().slice(0, queryLimit);

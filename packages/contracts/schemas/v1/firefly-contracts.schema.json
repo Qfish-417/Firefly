@@ -170,15 +170,22 @@
         "payload": { "type": "object" }
       }
     },
+    "CompositeSnapshot": {
+      "$comment": "A provenance snapshot that may concatenate several Identifiers with '|'. Agents record model and routing together so a result traces to both the model build and the routing table that selected it; two sha256 digests with their prefixes exceed Identifier's 160-character limit, and '|' is outside its character class.",
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/|-]*$"
+    },
     "ExecutionSnapshots": {
       "type": "object",
       "additionalProperties": false,
       "required": ["input_version"],
       "properties": {
         "input_version": { "$ref": "#/$defs/Identifier" },
-        "model": { "$ref": "#/$defs/Identifier" },
+        "model": { "$ref": "#/$defs/CompositeSnapshot" },
         "prompt": { "$ref": "#/$defs/Identifier" },
-        "tools": { "$ref": "#/$defs/Identifier" },
+        "tools": { "$ref": "#/$defs/CompositeSnapshot" },
         "knowledge": { "$ref": "#/$defs/Identifier" }
       }
     },

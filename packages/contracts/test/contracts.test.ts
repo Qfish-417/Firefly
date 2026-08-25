@@ -677,3 +677,41 @@ test("failed deletion acknowledgements require retry semantics", () => {
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((error) => error.params.missingProperty === "error"));
 });
+
+test("execution snapshots accept concatenated model and routing provenance", () => {
+  // All three Agents record `${model}|${routing}` so a result traces to both the model build and
+  // the routing table that selected it. Two sha256 digests plus their prefixes come to 187
+  // characters and contain '|', which the plain Identifier type rejected on both counts: every
+  // model-backed run failed contract validation after leasing its task, and the failure surfaced
+  // only as `start:TypeError`.
+  const modelAndRouting =
+    "model:pi-ai-0.83.0:sha256:1d6d23fdf6e5b7e88ee31df9c332561c6d4b7b6346f0984a238807c5d57fdf6e"
+    + "|routing:model-routing.v1:sha256:18c6f0b67368beb96a143ae989246afb70f36c0e2a39963eca2518a3761d8468";
+  assert.ok(modelAndRouting.length > 160);
+
+  const base = validContracts.AgentResult as { snapshots: Record<string, string> };
+  const result = validateContract("AgentResult", {
+    ...base,
+    snapshots: {
+      ...base.snapshots,
+      model: modelAndRouting,
+      tools: "tools:none:model-gateway.v1|plugin-engineering:isolated-worktree-sandbox.v1",
+    },
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("execution snapshots still reject whitespace and control characters", () => {
+  // Loosening the pattern to admit '|' must not turn the snapshot into a free-text field: these
+  // values are provenance identifiers that end up in the audit ledger.
+  const newline = String.fromCharCode(10);
+  for (const model of ["model:a routing:b", `model:a${newline}routing:b`, "|leading-separator"]) {
+    const base = validContracts.AgentResult as { snapshots: Record<string, string> };
+    const result = validateContract("AgentResult", {
+      ...base,
+      snapshots: { ...base.snapshots, model },
+    });
+    assert.equal(result.valid, false, `expected ${JSON.stringify(model)} to be rejected`);
+  }
+});
