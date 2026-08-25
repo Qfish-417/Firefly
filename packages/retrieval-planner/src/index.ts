@@ -66,9 +66,22 @@ interface IntentDefaults {
    * Only bites when scores are on an absolute scale. Reciprocal Rank Fusion output is normalised so
    * the top hit is 1.0, and rank `context_k` still sits at 0.92 (fact_lookup) or 0.82 (exploratory),
    * far above any of these floors — so on a fusion-only pipeline this threshold never fires and
-   * `marginal_gain_floor` is what actually limits the pack. It becomes the operative guard once a
-   * reranker replaces the scores, because reranker output is a raw 0..1 relevance value rather than a
-   * max-normalised one.
+   * `marginal_gain_floor` is what actually limits the pack.
+   *
+   * This threshold has **never fired in any measured scenario**: across 11 scenarios x 32 queries
+   * (352 selections) the stop reasons were `context_k` 287, `marginal_gain` 61, `exhausted` 4, and
+   * `score_floor` 0.
+   *
+   * An earlier version of this comment claimed the floor becomes "the operative guard" once a
+   * reranker replaces the scores. That was wrong, and the reranked scenarios disprove it: all 32
+   * queries in each of `hybrid-natural-rerank`, `hybrid-tokenized-rerank` and
+   * `vector-only-natural-rerank` stopped on `context_k`. The reason is ordering, not score scale —
+   * `context_k` (6 for fact_lookup) is reached before the candidate list ever descends to a score
+   * this low, so the floor is unreachable regardless of how the scores are produced.
+   *
+   * It is kept because it is the only guard that is absolute rather than relative, and a future
+   * retriever with genuinely calibrated scores would need it. But it is currently untested in
+   * production terms: no measurement has exercised this path.
    */
   readonly score_floor: number;
   /**
