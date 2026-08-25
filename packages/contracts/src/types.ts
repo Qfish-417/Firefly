@@ -254,6 +254,8 @@ export interface QueryPlan {
   readonly marginal_gain_floor: number;
   /** Minimum score relative to this query's best candidate. See RetrievalPlan.relative_floor. */
   readonly relative_floor: number;
+  /** Max evidence chunks one source may contribute. See RetrievalPlan.max_chunks_per_source. */
+  readonly max_chunks_per_source: number;
   readonly evidence_coverage_target: number;
 }
 

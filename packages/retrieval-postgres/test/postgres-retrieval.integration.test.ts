@@ -1043,6 +1043,21 @@ test(
       // A Chinese query must not drag in an unrelated Latin chunk through the OR path.
       assert.ok(!natural.some((hit) => hit.id === "chunk.cjk.latin"));
 
+      // A natural-language English sentence must match too. `websearch_to_tsquery` ANDs every token,
+      // so before the Latin OR path existed this required 'what', 'does' and 'the' to appear in the
+      // same chunk: measured on 5432 real documentation chunks, all 96 natural-language queries
+      // returned nothing and hybrid retrieval silently degraded to vector-only, scoring identically
+      // to it on every query.
+      const englishSentence = await search("what does the clipping ratio specify");
+      assert.ok(
+        englishSentence.some((hit) => hit.id === "chunk.cjk.latin"),
+        "an English question must retrieve the chunk whose content words it shares",
+      );
+
+      // Stopwords must not count toward the minimum. 'the' alone matched 41.9% of the real corpus, so
+      // if it counted, one function word plus any coincidence would refill the list with noise.
+      assert.equal((await search("what is the banana")).length, 0);
+
       // One accidental bigram must not qualify as a match. '热斑是怎么形成的' shares only '形成'
       // with the formative-assessment chunk, and returning it would be worse than returning nothing:
       // it fills the lexical leg with wrong documents that then compete in fusion on equal footing.

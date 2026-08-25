@@ -309,9 +309,23 @@ export class PostgresLexicalRetriever implements Retriever {
     // share three or more. Queries with a single bigram of their own keep a threshold of one,
     // otherwise they could never match at all.
     const cjkMinimumMatches = Math.min(2, cjkTerms.length);
+    // Latin terms get the same OR-with-a-minimum treatment as CJK bigrams, for the same reason.
+    // `websearch_to_tsquery` ANDs everything, so a natural-language sentence needs every one of its
+    // words in one chunk; measured on real documents that returned 0 rows for all 96 queries while the
+    // content word alone returned 47. AND semantics stay primary — an exact all-terms match still
+    // scores highest through `query.value` — and the OR form only lifts partial matches above zero.
+    //
+    // The minimum of 2 content words mirrors the CJK threshold: one shared word is regularly a
+    // coincidence ('document' appears in 0.8% of chunks across unrelated packages), and requiring two
+    // removed that noise on the measured corpus. A one-term query keeps a threshold of 1, otherwise it
+    // could never match.
+    const latinTerms = toLatinTerms(call.query);
+    const latinMinimumMatches = Math.min(2, latinTerms.length);
     const result = await sql<MemorySearchRow>`
       WITH query AS (
         SELECT websearch_to_tsquery('simple', ${call.query}) AS value,
+               ${latinTerms.length === 0 ? sql`NULL::tsquery` : sql`to_tsquery('simple', ${latinTerms.join(" | ")})`} AS latin_value,
+               ${latinTerms.length === 0 ? sql`NULL::text[]` : sql`${latinTerms}::text[]`} AS latin_terms,
                ${cjkTerms.length === 0 ? sql`NULL::tsquery` : sql`to_tsquery('simple', ${cjkTerms.join(" | ")})`} AS cjk_value,
                ${cjkTerms.length === 0 ? sql`NULL::text[]` : sql`${cjkTerms}::text[]`} AS cjk_terms
       )
@@ -332,6 +346,12 @@ export class PostgresLexicalRetriever implements Retriever {
               -- Weighted below the exact-token match: a bigram hit is weaker evidence than a whole
               -- token, so it must not outrank one. It only has to lift matches above zero.
               ELSE COALESCE(ts_rank_cd(chunk.cjk_search_vector, query.cjk_value), 0) * 0.5
+            END
+          + CASE
+              WHEN query.latin_value IS NULL THEN 0
+              -- Same weighting rationale as the CJK term: a partial word match is weaker evidence
+              -- than the full AND match already scored by query.value, so it must not outrank one.
+              ELSE COALESCE(ts_rank_cd(chunk.search_vector, query.latin_value), 0) * 0.5
             END
         )::double precision AS score
       FROM questlab.memory_chunk AS chunk
@@ -354,6 +374,15 @@ export class PostgresLexicalRetriever implements Retriever {
               INTERSECT
               SELECT unnest(query.cjk_terms)
             )) >= ${cjkMinimumMatches}
+          )
+          OR (
+            query.latin_value IS NOT NULL
+            AND chunk.search_vector @@ query.latin_value
+            AND cardinality(ARRAY(
+              SELECT unnest(tsvector_to_array(chunk.search_vector))
+              INTERSECT
+              SELECT unnest(query.latin_terms)
+            )) >= ${latinMinimumMatches}
           )
         )
         AND ${access}
@@ -1574,6 +1603,42 @@ function validateVector(vector: readonly number[]): void {
  * Only characters from the CJK ranges reach the output, so the result cannot contain tsquery
  * operators (`&`, `|`, `!`, `:`, parentheses) or quotes regardless of what the caller passed.
  */
+/**
+ * English function words. `simple` neither stems nor removes stopwords, so these have to be listed
+ * explicitly.
+ *
+ * Measured on the 5432-chunk real-document corpus, document frequency separates them unambiguously:
+ * 'the' matches 41.9% of chunks while every content word in the same query matches under 1%
+ * ('adr' 0.9%, 'document' 0.8%, 'specify' 0.6%). Counting a stopword as a match would let one
+ * ubiquitous term satisfy the minimum-match threshold and refill the result list with noise, which is
+ * the same failure the CJK path guards against.
+ */
+const LATIN_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "does", "for", "from", "how",
+  "i", "in", "is", "it", "its", "of", "on", "or", "that", "the", "this", "to", "use", "using", "was",
+  "what", "when", "where", "which", "who", "why", "will", "with", "you", "your",
+]);
+
+/**
+ * Content-bearing Latin tokens of a query, lowercased and deduplicated.
+ *
+ * Exists because `websearch_to_tsquery('simple', ...)` ANDs every token, so a natural-language
+ * sentence requires *all* of its words — including function words — in one chunk. On real documents
+ * that matches nothing: `'what' & 'does' & 'the' & 'adr' & 'document' & 'specify'` returned 0 rows
+ * where the bare term 'adr' returned 47, and all 96 natural-language queries came back empty. Hybrid
+ * retrieval silently degraded to vector-only, scoring bit-identically on all 96 queries.
+ */
+function toLatinTerms(query: string): readonly string[] {
+  const tokens = query.toLowerCase().match(/[a-z0-9][a-z0-9._-]*/g);
+  if (!tokens) return [];
+  const terms = new Set<string>();
+  for (const token of tokens) {
+    if (token.length < 2 || LATIN_STOPWORDS.has(token)) continue;
+    terms.add(token);
+  }
+  return [...terms].slice(0, 64);
+}
+
 function toCjkBigrams(query: string): readonly string[] {
   const runs = query.match(/[一-鿿㐀-䶿豈-﫿]+/g);
   if (!runs) return [];

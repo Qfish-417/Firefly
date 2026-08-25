@@ -21,6 +21,7 @@ import { createDatabase } from "../packages/persistence/src/database.ts";
 import { PostgresMemoryIndexer } from "../packages/retrieval-postgres/src/index.ts";
 import { HttpEmbeddingProvider } from "../packages/model-gateway/src/http-embedding-provider.ts";
 import { allTopics, facets, buildChunk, relevantMultiplierFor } from "./eval-corpus.mjs";
+import { buildRealCorpus, safeKey } from "./real-corpus.mjs";
 
 const argument = (name, fallback) => {
   const index = process.argv.indexOf(`--${name}`);
@@ -35,6 +36,10 @@ const distractorDepth = Number(argument("distractor-depth", String(depth)));
 // 让真实 topic 的相关集大小因 topic 而异（12~96 条），用来量化自适应 context_k。
 // 相关集恒定时固定 k 处处接近最优，自适应策略无从体现差别。
 const varyRelevantSets = argument("vary-relevant-sets", "false") === "true";
+// 用仓库内真实 Markdown 作为语料，而不是合成文本。标注由文件路径推导，见 real-corpus.mjs。
+const useRealCorpus = argument("real", "false") === "true";
+const realGranularity = argument("granularity", "file");
+const realCorpus = useRealCorpus ? buildRealCorpus(process.cwd(), realGranularity) : undefined;
 const tenantId = argument("tenant", "tenant.eval");
 const logicalName = argument("logical-name", process.env.RETRIEVAL_LOGICAL_NAME?.trim() || "memory.hybrid");
 const indexVersionId = argument("index-version", "iv.eval.001");
@@ -53,10 +58,22 @@ const realChunkTotal = varyRelevantSets
   : realTopicCount * facets.length * depth;
 const relevantPerQuery = facets.length * depth;
 const totalChunks = realChunkTotal + (distractorTopicCount * facets.length * distractorDepth);
-console.log(`目标：${realTopicCount} 真实 topic × ${facets.length} facet × depth ${depth}`
+if (useRealCorpus) {
+  const sizes = realCorpus.queryTopics.map((t) => realCorpus.relevantCounts.get(t)).sort((a, b) => a - b);
+  const cap = realCorpus.queryTopics.reduce((sum, t) => {
+    const total = realCorpus.relevantCounts.get(t);
+    return sum + Math.min(10, total) / total;
+  }, 0) / realCorpus.queryTopics.length;
+  console.log(`真实语料：${realCorpus.chunks.length} chunk，来自仓库内 Markdown`);
+  console.log(`可查询 topic ${realCorpus.queryTopics.length} 个，相关集 ${sizes[0]}~${sizes[sizes.length - 1]}`
+    + `（中位 ${sizes[Math.floor(sizes.length / 2)]}）`);
+  console.log(`Recall@10 加权理论上限 = ${cap.toFixed(3)}`);
+} else console.log(`目标：${realTopicCount} 真实 topic × ${facets.length} facet × depth ${depth}`
   + ` + ${distractorTopicCount} 干扰 topic × ${facets.length} facet × depth ${distractorDepth}`
   + ` = ${totalChunks} chunk`);
-if (varyRelevantSets) {
+if (useRealCorpus) {
+  // 真实语料的相关集统计已在上面打印，不适用合成语料的 depth 口径。
+} else if (varyRelevantSets) {
   const sizes = allTopics.flatMap((topic, index) => topic.is_distractor ? [] : [facets.length * depth * relevantMultiplierFor(index)]);
   console.log(`每条查询的相关 chunk = ${Math.min(...sizes)}~${Math.max(...sizes)} 条（不均匀，用于量化自适应 context_k）`);
 } else {
@@ -125,8 +142,11 @@ try {
 
   // 一个 topic 一个 memory_record：ACL 以 memory 为粒度，
   // 这样也顺带验证跨 memory 的授权过滤在评测负载下是否正常。
-  for (const topic of allTopics) {
-    const memoryId = `mem.eval.${runTag}.${topic.id}`;
+  const memoryTopics = useRealCorpus
+    ? realCorpus.queryTopics.concat([...realCorpus.relevantCounts.keys()].filter((t) => !realCorpus.queryTopics.includes(t))).map((id) => ({ id }))
+    : allTopics;
+  for (const topic of memoryTopics) {
+    const memoryId = `mem.eval.${runTag}.${useRealCorpus ? safeKey(topic.id) : topic.id}`;
     await sql`
       INSERT INTO questlab.memory_record
         (memory_id, tenant_id, owner_type, owner_id, scope, stage, kind, content_digest,
@@ -150,6 +170,35 @@ try {
   let embedRetries = 0;
 
   const pending = [];
+  if (useRealCorpus) {
+    // 真实 chunk 的 entity_keys 只放 topic 与来源文件：合成语料的 facet/depth 是构造产物，
+    // 真实文档没有对应物，硬造会让 selectEvidence 的去重规则按虚构维度工作。
+    for (const [index, chunk] of realCorpus.chunks.entries()) {
+      pending.push({
+        chunk_id: `chunk.real.${runTag}.${index}`,
+        memory_id: `mem.eval.${runTag}.${safeKey(chunk.topic_id)}`,
+        index_version_id: indexVersionId,
+        ordinal: index,
+        chunk_level: "child",
+        content: chunk.content,
+        // 必须是内容本身的摘要：索引器会校验 chunk_digest === sha256(content)，
+        // 这是防止内容被替换而摘要不变的完整性检查，掺入路径会让校验失败。
+        chunk_digest: digest(chunk.content),
+        token_count: Math.max(1, Math.round(chunk.content.length / 3)),
+        source_type: "text/markdown",
+        // entity_key 与 URI 都受契约的字符约束。真实路径里有中文文件名和空格，直接塞进去
+        // 会违反 `^[A-Za-z0-9][A-Za-z0-9._:@/-]*$`，所以这里做一次可逆的编码：
+        // 原始路径保留在 citation.locator 里，标注仍然可复核。
+        entity_keys: [`topic.${safeKey(chunk.topic_id)}`, `source.${safeKey(chunk.source_path)}`],
+        citation: {
+          artifact_id: `artifact.real.${runTag}.${safeKey(chunk.topic_id)}`,
+          uri: `https://corpus.firefly.local/${chunk.source_path.split("/").map(encodeURIComponent).join("/")}`,
+          digest: digest(chunk.source_path),
+          locator: { path: chunk.source_path, ordinal: chunk.ordinal },
+        },
+      });
+    }
+  } else
   for (let topicIndex = 0; topicIndex < allTopics.length; topicIndex += 1) {
     const isDistractor = allTopics[topicIndex].is_distractor;
     const topicDepth = isDistractor

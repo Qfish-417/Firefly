@@ -50,6 +50,7 @@ const validQueryPlan = {
   score_floor: 0.35,
   marginal_gain_floor: 0.02,
   relative_floor: 0.84,
+  max_chunks_per_source: 4,
   evidence_coverage_target: 0.95,
 } satisfies QueryPlan;
 

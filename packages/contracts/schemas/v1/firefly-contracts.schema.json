@@ -559,6 +559,7 @@
         "score_floor",
         "marginal_gain_floor",
         "relative_floor",
+        "max_chunks_per_source",
         "evidence_coverage_target"
       ],
       "properties": {
@@ -594,6 +595,7 @@
         "score_floor": { "type": "number", "minimum": 0, "maximum": 1 },
         "marginal_gain_floor": { "type": "number", "minimum": 0, "maximum": 1 },
         "relative_floor": { "type": "number", "minimum": 0, "maximum": 1 },
+        "max_chunks_per_source": { "type": "integer", "minimum": 1, "maximum": 64 },
         "evidence_coverage_target": { "type": "number", "minimum": 0, "maximum": 1 }
       },
       "allOf": [

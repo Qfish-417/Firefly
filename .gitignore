@@ -49,6 +49,7 @@ Thumbs.db
 .tunnel.mjs
 .tunnel.err
 .rag-*.json
+.real-*.json
 .agent-*.json
 .halfvec*.json
 .ans-*.json
@@ -59,6 +60,9 @@ Thumbs.db
 .ab-*.err
 .tunnel.out
 .rag-*.err
+.real-*.err
+.seed-real.log
+.seed-vary.log
 .ans-*.err
 .agent-*.err
 .halfvec-*.err

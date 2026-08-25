@@ -67,6 +67,34 @@ export interface RetrievalPlan {
    * relevance, or a per-query estimate of how many relevant documents exist.
    */
   readonly relative_floor: number;
+  /**
+   * 同一来源（相同 entity_keys 签名 + 相同 source_type）最多贡献多少条证据。
+   *
+   * 去重规则原本是"不引入新 entity_key 就丢弃"，等价于每个来源只留 1 条。这在合成语料上从不触发，
+   * 因为那里每个 chunk 都带 `facet.fN` 与 `depth.N`，条条都有新 key。真实文档没有这种构造维度：
+   * 同一个 Markdown 文件切出的 chunk 共享 `[topic.<文件>, source.<文件>]`，source_type 又全是
+   * text/markdown，于是第 2 条起全部被当成冗余丢弃。
+   *
+   * 实测后果（5432 chunk 真实文档语料，big-integer README 58 chunk）：检索层已把 11 条正确 chunk
+   * 排进前 20，证据层只交出 5 条、其中相关 1 条，stop_reason 是 exhausted。整体 R@10 只到理论上限
+   * 的 8~9%，而 MRR 0.73 说明排序本身是好的。
+   *
+   * 保留"不让单一来源灌满整包"的原意，但把上限从 1 放宽成可配置值：一个文件的多个段落是不同内容，
+   * 不是重复证据。
+   *
+   * 定标（真实文档语料，103 查询，hybrid）：
+   *
+   *   上限  R@10   达上限  引用精确率  tokens
+   *   1     0.054   8%     0.232       685
+   *   4     0.164  25%     0.451       947
+   *   8     0.202  32%     0.480      1054
+   *   11    0.204  33%     0.482      1071
+   *
+   * 召回与引用精确率**同向上升**，这是判据：若丢掉的是噪声，放宽上限应当拉低精确率。8 之后饱和
+   * （8→11 只多 0.002 召回），因此取 8。不取 11，那已越过 `context_k = 11`，等于取消单来源限制，
+   * 失去"一个来源灌满整包"的防护。
+   */
+  readonly max_chunks_per_source: number;
   readonly evidence_coverage_target: number;
 }
 
@@ -136,6 +164,7 @@ interface IntentDefaults {
    */
   readonly marginal_gain_floor: number;
   readonly relative_floor: number;
+  readonly max_chunks_per_source: number;
   readonly structured_query_required: boolean;
   readonly answer_source: RetrievalPlan["answer_source"];
   readonly stages: readonly RetrievalStage[];
@@ -174,6 +203,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     score_floor: 0.42,
     marginal_gain_floor: 0.15,
     relative_floor: 0,
+    max_chunks_per_source: 8,
     structured_query_required: false,
     answer_source: "rag",
     stages: ["lexical", "vector"],
@@ -186,6 +216,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     score_floor: 0.35,
     marginal_gain_floor: 0.25,
     relative_floor: 0,
+    max_chunks_per_source: 8,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "lexical", "temporal"],
@@ -198,6 +229,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     score_floor: 0.38,
     marginal_gain_floor: 0.20,
     relative_floor: 0,
+    max_chunks_per_source: 8,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "lexical", "vector", "temporal"],
@@ -210,6 +242,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     score_floor: 0.36,
     marginal_gain_floor: 0.25,
     relative_floor: 0,
+    max_chunks_per_source: 8,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "lexical", "vector", "graph", "temporal"],
@@ -222,6 +255,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     score_floor: 0.3,
     marginal_gain_floor: 0.30,
     relative_floor: 0,
+    max_chunks_per_source: 8,
     structured_query_required: false,
     answer_source: "rag",
     stages: ["lexical", "vector", "graph"],
@@ -234,6 +268,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     score_floor: 0.4,
     marginal_gain_floor: 0.20,
     relative_floor: 0,
+    max_chunks_per_source: 8,
     structured_query_required: true,
     answer_source: "structured_plus_evidence",
     stages: ["structured", "temporal", "lexical", "vector"],
@@ -246,6 +281,7 @@ const defaults: Readonly<Record<QueryIntent, IntentDefaults>> = {
     score_floor: 0.34,
     marginal_gain_floor: 0.25,
     relative_floor: 0,
+    max_chunks_per_source: 8,
     structured_query_required: false,
     answer_source: "rag",
     stages: ["multimodal", "lexical", "vector"],
@@ -358,6 +394,7 @@ export function planRetrieval(input: RetrievalPlannerInput): RetrievalPlan {
     score_floor: base.score_floor,
     marginal_gain_floor: base.marginal_gain_floor,
     relative_floor: base.relative_floor,
+    max_chunks_per_source: base.max_chunks_per_source,
     evidence_coverage_target: clamp(input.evidence_coverage_target ?? (base.structured_query_required ? 0.95 : 0.8), 0, 1),
   };
 }
@@ -377,6 +414,9 @@ export function selectEvidence(
   // `ordered` is sorted by score, so the first entry is this query's best. Captured before the loop
   // because the comparison must not drift as candidates are accepted.
   const bestScore = ordered[0]?.score ?? 0;
+  // 每个来源已贡献的条数。键含 entity_keys 签名，因此同一文件的不同段落算同一来源，
+  // 不同文件即使 source_type 相同也各自计数。
+  const perSource = new Map<string, number>();
   for (const candidate of ordered) {
     if (selected.length >= plan.context_k) {
       stoppedBy = "context_k";
@@ -437,11 +477,24 @@ export function selectEvidence(
       stoppedBy = "token_budget";
       break;
     }
+    // 冗余判定：不引入新实体、且与首条同类型的候选，只在该来源已经贡献够多时才丢弃。
+    //
+    // 原规则无条件丢弃，等于每个来源只留 1 条。它对"同一份文档被检索器重复命中"是对的，对"同一份
+    // 文档的不同段落"是错的——后者是不同内容。真实文档语料上这条规则把检索层已经排进前 20 的 11 条
+    // 正确 chunk 砍到只剩 1 条，R@10 因此只到理论上限的 8~9%。
     const introducesEntity = (candidate.entity_keys ?? []).some((key) => !seenEntities.has(key));
-    if (selected.length > 0 && !introducesEntity && candidate.source_type === selected[0]?.source_type) {
+    const sourceKey = `${candidate.source_type}|${[...(candidate.entity_keys ?? [])].sort().join(",")}`;
+    const fromSource = perSource.get(sourceKey) ?? 0;
+    if (
+      selected.length > 0
+      && !introducesEntity
+      && candidate.source_type === selected[0]?.source_type
+      && fromSource >= plan.max_chunks_per_source
+    ) {
       continue;
     }
     selected.push(candidate);
+    perSource.set(sourceKey, fromSource + 1);
     usedTokens += candidate.token_count;
     for (const key of candidate.entity_keys ?? []) seenEntities.add(key);
     previousScore = candidate.score;

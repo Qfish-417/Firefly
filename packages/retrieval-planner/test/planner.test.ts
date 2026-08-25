@@ -53,9 +53,22 @@ test("evidence selection filters ACL failures, score tails, token overflow and s
     { id: "secret", score: 1, token_count: 10, source_type: "document", entity_keys: ["s"], access_allowed: false },
   ];
 
+  // "b" 与 "a" 同来源同类型且不带新实体，但同来源不再只准留 1 条：一份文档的不同段落是不同内容。
+  // 上限由 `max_chunks_per_source` 控制，这里取 1 以锁定原有的严格去重行为。
+  const strict = selectEvidence(candidates, { ...plan, max_chunks_per_source: 1 });
+  assert.deepEqual(strict.candidates.map((candidate) => candidate.id), ["a", "c"]);
+  assert.equal(strict.used_tokens, 180);
+
+  // 默认上限下 "b" 会被保留。真实文档语料上这条规则曾把检索层排进前 20 的 11 条正确 chunk 砍到
+  // 只剩 1 条，因为同一 Markdown 文件的所有 chunk 共享 entity_keys 且 source_type 全是 text/markdown。
   const selected = selectEvidence(candidates, plan);
-  assert.deepEqual(selected.candidates.map((candidate) => candidate.id), ["a", "c"]);
-  assert.equal(selected.used_tokens, 180);
+  assert.ok(plan.max_chunks_per_source > 1);
+  assert.deepEqual(selected.candidates.map((candidate) => candidate.id), ["a", "b", "c"]);
+
+  // 无论上限多大，ACL 拒绝的候选都不得进入证据包。
+  assert.ok(!selected.candidates.some((candidate) => candidate.id === "secret"));
+  // 低分尾部仍然被闸门挡住。
+  assert.ok(!selected.candidates.some((candidate) => candidate.id === "d"));
 });
 
 test("available retriever stages are narrowed without changing the intent contract", () => {
