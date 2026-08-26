@@ -95,3 +95,58 @@ test("HTTP reranker distinguishes retryable HTTP outages from malformed success 
     (error: unknown) => error instanceof ModelGatewayError && error.code === "PROVIDER_ERROR" && error.retryable === false,
   );
 });
+
+test("a provider that ignores top_k is still usable", async () => {
+  // 本地部署的 Qwen3-VL-Embedding-2B 的 /v1/rerank 忽略 top_k，总是返回全部文档的打分：
+  // 请求 top_k=2、4 篇文档，返回 4 条。原先断言"恰好 top_k 条"，于是整条重排链路对这个
+  // provider 完全不可用，尽管它的打分本身是正确的。服务端截断是可选优化而非协议保证。
+  const provider = new HttpRerankerProvider({
+    endpoint: "https://rerank.example.test/v1/rerank",
+    model: "rerank-test",
+    fetch_impl: async () => Response.json({
+      results: [
+        { index: 0, relevance_score: 0.2 },
+        { index: 3, relevance_score: 0.95 },
+        { index: 1, relevance_score: 0.5 },
+        { index: 2, relevance_score: 0.7 },
+      ],
+      usage: { input_tokens: 9, total_tokens: 9 },
+    }),
+  });
+
+  const result = await provider.rerank({
+    request_id: "rerank.untruncated",
+    workload: "retrieval.query.rerank",
+    query: "solar output",
+    documents: ["alpha", "beta", "gamma", "delta"],
+    top_k: 2,
+    budget,
+  });
+
+  // 客户端自己按分数降序截断，不依赖 provider 的返回顺序——"按分数排序"同样不是协议保证。
+  assert.deepEqual(result.rankings, [{ index: 3, score: 0.95 }, { index: 2, score: 0.7 }]);
+});
+
+test("fewer rankings than requested is still an error", async () => {
+  // 少于 top_k 是真异常：provider 没给够结果，调用方无法凑出前 top_k。
+  const provider = new HttpRerankerProvider({
+    endpoint: "https://rerank.example.test/v1/rerank",
+    model: "rerank-test",
+    fetch_impl: async () => Response.json({
+      results: [{ index: 0, relevance_score: 0.8 }],
+      usage: { input_tokens: 4, total_tokens: 4 },
+    }),
+  });
+
+  await assert.rejects(
+    provider.rerank({
+      request_id: "rerank.short",
+      workload: "test",
+      query: "q",
+      documents: ["a", "b", "c"],
+      top_k: 2,
+      budget,
+    }),
+    /unexpected ranking count/,
+  );
+});

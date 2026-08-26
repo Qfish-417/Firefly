@@ -73,3 +73,5 @@ Thumbs.db
 .seed-*.log
 .ck.mjs
 .p.mjs
+.seed-ctx*.log
+.ctx-*.json

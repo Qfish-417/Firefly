@@ -36,6 +36,17 @@ export interface IndexMemoryChunkInput {
   readonly embedding_model?: string;
 }
 
+/**
+ * 查询侧 instruct 前缀。
+ *
+ * Qwen3 embedding 系列训练时对查询使用 `Instruct: <任务描述>\nQuery: <查询>` 格式，文档侧不加。
+ * 两侧都不加会丢掉这部分训练信号：实测向量单腿 R@10 0.720 -> 0.754（+0.034），R@1 0.410 -> 0.425。
+ * 对照组 `query: ` 前缀只到 0.737，说明收益来自模型认识这个具体格式，而不是"加了点前缀"。
+ *
+ * 只作用于查询侧。已入库的文档向量不带前缀，这与训练时的非对称用法一致，所以加前缀不需要重建索引。
+ */
+const DEFAULT_QUERY_INSTRUCTION = "Instruct: Given a documentation search query, retrieve the passage that answers it\nQuery: ";
+
 export interface PostgresVectorRetrieverOptions {
   readonly db: Kysely<QuestLabDatabase>;
   readonly embeddings: EmbeddingPort;
@@ -43,6 +54,13 @@ export interface PostgresVectorRetrieverOptions {
   readonly embedding_budget: ModelBudget;
   readonly logical_name?: string;
   readonly id?: string;
+  /**
+   * 查询侧 instruct 前缀，`false` 表示不加。默认用 `DEFAULT_QUERY_INSTRUCTION`。
+   *
+   * 留成开关而不是硬编码，因为它与模型绑定：换成不认识这个格式的 embedding 模型时前缀会变成纯
+   * 噪声。切换 embedding 模型时必须重测这一项。
+   */
+  readonly query_instruction?: string | false;
   /**
    * Whether vector search may use the ANN index, trading recall for latency.
    *
@@ -615,10 +633,13 @@ export class PostgresVectorRetriever implements Retriever {
 
   async retrieve(call: RetrieverCall): Promise<readonly RetrievalHit[]> {
     call.signal?.throwIfAborted();
+    // 前缀只进 embedding 输入，不改 call.query：调用方看到的查询、追踪里记录的查询都应该是原句。
+    const instruction = this.options.query_instruction ?? DEFAULT_QUERY_INSTRUCTION;
+    const embeddingInput = instruction === false ? call.query : `${instruction}${call.query}`;
     const result = await this.options.embeddings.embed({
       request_id: `${call.query_id}:vector`,
       workload: "retrieval.query.embed",
-      inputs: [call.query],
+      inputs: [embeddingInput],
       budget: this.options.embedding_budget,
       ...(call.signal ? { signal: call.signal } : {}),
     });

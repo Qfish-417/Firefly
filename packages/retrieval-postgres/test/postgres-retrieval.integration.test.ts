@@ -1087,3 +1087,68 @@ test(
     }
   },
 );
+
+test(
+  "the query instruction reaches the embedding input without altering the caller's query",
+  { skip: connectionString ? false : "TEST_DATABASE_URL is not configured" },
+  async () => {
+    // instruct 前缀必须只进 embedding 输入，不改 call.query：调用方看到的查询、追踪里记录的
+    // 查询都应该是用户原句，否则日志与引用都会带上一段模型专用的提示词。
+    assert.ok(connectionString);
+    await migrateToLatest(connectionString);
+    const db = createDatabase(connectionString);
+    try {
+      const captured: string[] = [];
+      const embeddings: EmbeddingPort = {
+        embed: async (request) => {
+          captured.push(String(request.inputs[0]));
+          return {
+            vectors: request.inputs.map(() => [1, 0, 0]),
+            usage: { input_tokens: 1, output_tokens: 0, cached_input_tokens: 0, total_tokens: 1, cost_usd: 0 },
+          };
+        },
+      };
+      const budget = { max_tokens: 1_000, max_cost_usd: 0.5, max_duration_ms: 10_000 } as const;
+      const call = {
+        query: "what does the clipping ratio specify",
+        principal: { tenant_id: "tenant.instruction" },
+        purpose: "learning_support",
+        max_results: 5,
+        filters: {},
+        budget,
+      } as const;
+
+      const instructed = new PostgresVectorRetriever({
+        db,
+        id: "postgres.vector.instruction",
+        logical_name: "memory.instruction",
+        embeddings,
+        embedding_model: "test-embedding@2026-08",
+        embedding_budget: budget,
+      });
+      // 没有 active 索引版本时检索会拒绝，但 embedding 调用发生在那之前，前缀已经可观测。
+      await instructed.retrieve({ ...call, query_id: "q.instruction.1" }).catch(() => undefined);
+
+      assert.equal(captured.length, 1);
+      assert.match(captured[0]!, /^Instruct: /);
+      assert.match(captured[0]!, /\nQuery: what does the clipping ratio specify$/);
+
+      // 前缀与模型绑定：换成不认识这个格式的 embedding 模型时它是纯噪声，所以必须能关掉。
+      const plain = new PostgresVectorRetriever({
+        db,
+        id: "postgres.vector.plain",
+        logical_name: "memory.instruction",
+        embeddings,
+        embedding_model: "test-embedding@2026-08",
+        embedding_budget: budget,
+        query_instruction: false,
+      });
+      await plain.retrieve({ ...call, query_id: "q.instruction.2" }).catch(() => undefined);
+
+      assert.equal(captured.length, 2);
+      assert.equal(captured[1], "what does the clipping ratio specify");
+    } finally {
+      await db.destroy();
+    }
+  },
+);

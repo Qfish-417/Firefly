@@ -53,6 +53,21 @@ const MAX_CHUNK_CHARS = 700;
 const MIN_RELEVANT = 1;
 const MAX_RELEVANT = 8;
 
+/**
+ * 必须排除的文件：评测自身的产物。
+ *
+ * 起因是实测发现的语料污染。`docs/evaluation-report.md` 逐字包含查询文本——报告里写着
+ * `≤6 字符（如"职责"、"产品定位"）`，而查询就是 `in ..., 1. 产品定位`。48 个 chunk 含 "R@10"。
+ *
+ * 双向都是错的：报告的 chunk 会作为竞争者挤掉真正的小节（污染分子），而报告自己的小节也进了
+ * gold set，检索到它算"命中"（虚高）。评测文档描述评测语料，就是自我引用泄漏。
+ */
+const EXCLUDED_PATHS = [
+  "docs/evaluation-report.md",
+  "docs/performance-baseline.md",
+  "README.md",
+];
+
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === ".git") continue;
@@ -69,17 +84,51 @@ function walk(dir, out = []) {
  * 不按固定字符数硬切，因为那样会把代码块和表格截断在中间，产生语义不完整的 chunk ——
  * 检索器会拿到半个句子，评测出来的分数就不反映真实能力。
  */
-export function chunkMarkdown(text) {
+export function chunkMarkdown(text, { contextualize = true, documentLabel = "" } = {}) {
   const out = [];
+  // 标题栈：h1~h4 的当前路径。一个 chunk 的上下文不只是它自己的小节标题，还包括所有父级标题
+  // ——`## Overview` 在 `# pi-ai` 下和在 `# exceljs` 下是两回事。
+  const stack = [];
   for (const [sectionIndex, section] of text.split(/\n(?=#{1,4} )/).entries()) {
     const trimmed = section.trim();
-    if (trimmed.length < MIN_CHUNK_CHARS) continue;
+    const headingLine = trimmed.startsWith("#") ? trimmed.split("\n")[0] : "";
+    const level = headingLine ? (/^#+/.exec(headingLine)?.[0].length ?? 1) : 0;
     // 小节标题。gold set 以小节为单位，所以每个 chunk 必须记住自己属于哪个小节，
     // 而标题本身又是唯一能不看正文就得到的"这一节讲什么"的描述，正好当查询。
-    const heading = trimmed.startsWith("#") ? trimmed.split("\n")[0].replace(/^#+\s*/, "").trim() : "";
+    const heading = headingLine.replace(/^#+\s*/, "").trim();
+    if (level > 0) {
+      stack.length = Math.max(0, level - 1);
+      stack[level - 1] = heading;
+    }
+    if (trimmed.length < MIN_CHUNK_CHARS) continue;
+    // 文档标识 + 标题路径前置到每个 chunk。
+    //
+    // 起因是两个实测出的缺陷：
+    //   1. 一个小节被切成多个 chunk 时，只有第 1 个带标题行，其余是纯正文，完全不含"这一节讲
+    //      什么"。前 800 个 chunk 里只有 77% 以标题开头。修复后 gold set>1 的 R@10 从 0.502
+    //      涨到 0.692。
+    //   2. 文档自身的标识（包名/文件名）只存在 entity_keys 里，不在可检索文本里。查询提到
+    //      `exceljs` 时，`exceljs/README.md` 的正文可能根本不含这个词，词法腿匹配不上，向量腿
+    //      也拿不到这个信号。
+    //
+    // 产品侧的后果比跑分更重要：Agent 拿到一个中段 chunk 时，既不知道它属于哪一节，也不知道它
+    // 出自哪个文档，引用和上下文都缺失。这是标准做法（contextual retrieval），不是为跑分改口径。
+    const prefix = contextualize
+      ? [documentLabel, ...stack.filter(Boolean)].filter(Boolean).join(" > ")
+      : "";
     let buffer = "";
     const push = (value) => {
-      if (value.length >= MIN_CHUNK_CHARS) out.push({ content: value, heading, section_index: sectionIndex });
+      if (value.length < MIN_CHUNK_CHARS) return;
+      // 以标题开头的 chunk 只补文档标识，不重复标题路径，否则同一句话出现两次。
+      const startsWithHeading = value.trimStart().startsWith("#");
+      const applied = startsWithHeading
+        ? (documentLabel && contextualize ? `${documentLabel}\n\n${value}` : value)
+        : (prefix ? `${prefix}\n\n${value}` : value);
+      out.push({
+        content: applied,
+        heading,
+        section_index: sectionIndex,
+      });
     };
     for (const paragraph of trimmed.split(/\n\s*\n/)) {
       const para = paragraph.trim();
@@ -127,7 +176,12 @@ export function buildRealCorpus(rootDir, granularity = "section") {
       continue;
     }
     const relative = file.split(sep).join("/").replace(rootDir.split(sep).join("/"), "").replace(/^\//, "");
-    for (const [index, chunk] of chunkMarkdown(text).entries()) {
+    if (EXCLUDED_PATHS.includes(relative)) continue;
+    // 文档标识：node_modules 下用包名（用户就是这么称呼它的），其余用文件名。这与查询里用来
+    // 消歧的 scope 同源，都只依赖路径，不看正文。
+    const packageName = /node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(relative)?.[1];
+    const documentLabel = packageName ?? basename(relative, ".md").replace(/[-_]/g, " ");
+    for (const [index, chunk] of chunkMarkdown(text, { documentLabel }).entries()) {
       const topic = granularity === "section"
         ? `sec:${relative}#${chunk.section_index}`
         : granularity === "file" ? `file:${relative}` : topicOf(file);

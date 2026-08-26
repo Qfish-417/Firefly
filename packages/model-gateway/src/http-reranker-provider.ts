@@ -94,7 +94,19 @@ function validateRequest(request: RerankRequest, maxDocuments: number): void {
 
 function parseRankings(payload: Record<string, unknown>, documentCount: number, topK: number): readonly { readonly index: number; readonly score: number }[] {
   const data = payload.results ?? payload.data;
-  if (!Array.isArray(data) || data.length !== topK) throw new ModelGatewayError("PROVIDER_ERROR", "Reranker provider returned an unexpected ranking count", false);
+  // 只要求"至少 top_k 条、不超过文档数"，而不是"恰好 top_k 条"。
+  //
+  // 起因是一次真实失败：本地部署的 Qwen3-VL-Embedding-2B 的 /v1/rerank 忽略请求里的 top_k，
+  // 总是返回全部文档的打分（请求 top_k=3、5 篇文档，返回 5 条）。原先断言 `length !== topK`
+  // 直接抛 PROVIDER_ERROR，于是整条重排链路对这个 provider 完全不可用——而它的排序结果本身是
+  // 正确的，只是多返回了几条。
+  //
+  // 服务端截断是可选优化，不是协议保证：Cohere、Jina 等实现会截断，vLLM 一类的打分端点通常不截。
+  // 客户端本来就要按分数排序并取前 top_k，多余的条目丢掉即可；少于 top_k 才是真的异常，说明
+  // provider 没给够结果。
+  if (!Array.isArray(data) || data.length < topK || data.length > documentCount) {
+    throw new ModelGatewayError("PROVIDER_ERROR", "Reranker provider returned an unexpected ranking count", false);
+  }
   const rankings = data.map((item, position) => {
     const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
     const index = record.index;
@@ -103,7 +115,9 @@ function parseRankings(payload: Record<string, unknown>, documentCount: number, 
     return { index: index as number, score };
   });
   if (new Set(rankings.map((ranking) => ranking.index)).size !== rankings.length) throw new ModelGatewayError("PROVIDER_ERROR", "Reranker provider returned duplicate document indexes", false);
-  return rankings;
+  // provider 未截断时自己截：按分数降序取前 top_k。不依赖 provider 返回的顺序，因为"按分数排序"
+  // 同样不是协议保证，而调用方拿到的必须是有序的前 top_k。
+  return [...rankings].sort((left, right) => right.score - left.score).slice(0, topK);
 }
 
 
