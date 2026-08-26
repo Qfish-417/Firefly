@@ -281,7 +281,16 @@ export function buildRealQuerySet(queryTopics, headings = new Map()) {
   return built.filter((query) => seen.get(query.query_natural) === 1);
 }
 
+/**
+ * 真实语料的相关性判定：同一小节即相关。
+ *
+ * 自己做 safeKey 编码，不要求调用方先编码。库里的 `topic.` entity_key 受契约字符集限制，是
+ * safeKey 编码过的，而查询里的 `topic_id` 是原始路径（含中文、`#`）。此前把编码责任留给调用方，
+ * 结果 eval-real 编码了、eval-answer 忘了编码，citation_precision 在 32 条查询上恒为 0 —— 与
+ * 早先 safeKey 实现两份导致全部查询零命中是同一类错误，所以这次把编码收进函数内部。
+ */
 export function gradeForReal(query, label) {
   if (!label) return 0;
-  return label.topic_id === query.topic_id ? 3 : 0;
+  const want = safeKey(query.topic_id);
+  return label.topic_id === want || label.topic_id === query.topic_id ? 3 : 0;
 }

@@ -75,3 +75,9 @@ Thumbs.db
 .p.mjs
 .seed-ctx*.log
 .ctx-*.json
+.e2e-*.json
+.e2e-*.err
+.ans-real.json
+.ans-real.err
+.real-chk.json
+.real-chk.err

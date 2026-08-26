@@ -25,6 +25,7 @@ import { HttpEmbeddingProvider } from "../packages/model-gateway/src/http-embedd
 import { HttpRerankerProvider } from "../packages/model-gateway/src/http-reranker-provider.ts";
 import { createPiAiModelGateway, loadModelGatewayConfiguration } from "../packages/model-gateway/src/configuration.ts";
 import { buildQuerySet, gradeFor } from "./eval-corpus.mjs";
+import { buildRealCorpus, buildRealQuerySet, gradeForReal } from "./real-corpus.mjs";
 
 const argument = (name, fallback) => {
   const hit = process.argv.find((value) => value.startsWith(`--${name}=`));
@@ -39,6 +40,14 @@ const tenantId = argument("tenant", "tenant.eval");
 const indexVersionId = argument("index-version", "iv.eval.001");
 const logicalName = argument("logical-name", process.env.RETRIEVAL_LOGICAL_NAME?.trim() || "memory.hybrid");
 const useRerank = process.argv.includes("--rerank");
+/**
+ * 用真实文档语料而不是合成语料。
+ *
+ * 合成语料的 chunk 是 (topic, facet, depth) 构造的近重复段落，答案质量看起来会偏高：证据之间
+ * 高度相似，裁判几乎总能判"答案被证据支撑"。真实文档的证据是人写的散文，句式与措辞都不规整，
+ * 才能暴露生成侧的问题。检索侧已验证过同一件事——合成语料掩盖了两个产品缺陷（报告第 20 节）。
+ */
+const useReal = process.argv.includes("--real");
 
 const db = createDatabase(process.env.DATABASE_URL);
 const dimensions = Number(process.env.EMBEDDING_DIMENSIONS);
@@ -81,7 +90,10 @@ async function loadLabels() {
     const keys = row.entity_keys ?? [];
     const topic = keys.find((k) => k.startsWith("topic."))?.slice(6);
     const facet = keys.find((k) => k.startsWith("facet."))?.slice(6);
+    // 真实语料的 chunk 只有 topic（= 小节），没有 facet —— facet 是合成语料构造出来的维度。
+    // 早先这里要求 topic && facet，用真实语料时 labels 会整个为空，citation_precision 恒为 0。
     if (topic && facet) labels.set(row.chunk_id, { topic_id: topic, facet_id: facet });
+    else if (topic) labels.set(row.chunk_id, { topic_id: topic });
   }
   return labels;
 }
@@ -155,7 +167,21 @@ function summarize(values) {
 }
 
 const labels = await loadLabels();
-const queries = buildQuerySet().slice(0, queryLimit);
+const realCorpus = useReal ? buildRealCorpus(process.cwd(), "section") : undefined;
+const queries = useReal
+  // 等距抽样，保证同一语料每次跑同一批查询，数字可比。
+  ? (() => {
+    const all = buildRealQuerySet(realCorpus.queryTopics, realCorpus.headings);
+    if (all.length <= queryLimit) return all;
+    const step = all.length / queryLimit;
+    const out = [];
+    for (let index = 0; out.length < queryLimit && Math.floor(index) < all.length; index += step) {
+      out.push(all[Math.floor(index)]);
+    }
+    return out;
+  })()
+  : buildQuerySet().slice(0, queryLimit);
+const grade = useReal ? gradeForReal : gradeFor;
 const rows = [];
 let answerFailures = 0;
 let judgeFailures = 0;
@@ -182,7 +208,7 @@ for (const query of queries) {
   // 客观指标：引用的 chunk 有多少确实与该 topic 相关（grade >= 2）
   const grades = pack.evidence.map((item) => {
     const label = labels.get(item.evidence_id);
-    return label ? gradeFor(query, label) : 0;
+    return label ? grade(query, label) : 0;
   });
   const citationPrecision = grades.length === 0 ? 0 : grades.filter((g) => g >= 2).length / grades.length;
 
