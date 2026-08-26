@@ -28,7 +28,9 @@ services:
     environment:
       POSTGRES_DB: firefly
       POSTGRES_USER: firefly
-      POSTGRES_PASSWORD: firefly123
+      # 原为字面量 firefly123。即使是仅供追溯的 legacy 栈，也不该把口令写死在仓库里；
+      # 改成必需变量后它同样 fail closed，与 lite/dev 一致。
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
       - "5432:5432"
     volumes:

@@ -53,8 +53,9 @@ services:
       DATABASE_URL: postgresql://questlab:questlab@postgres:5432/questlab
       RETRIEVAL_HOST: 0.0.0.0
       RETRIEVAL_PORT: 3200
-      RETRIEVAL_API_TOKEN: ${RETRIEVAL_API_TOKEN:-questlab-lite-retrieval-token}
-      RETRIEVAL_IDENTITY_HMAC_SECRET: ${RETRIEVAL_IDENTITY_HMAC_SECRET:-questlab-lite-identity-secret-32-bytes-minimum}
+      # 必需且无默认值：缺失时 compose 拒绝解析，而不是静默套用一个人人皆知的弱口令。
+      RETRIEVAL_API_TOKEN: ${RETRIEVAL_API_TOKEN:?RETRIEVAL_API_TOKEN is required}
+      RETRIEVAL_IDENTITY_HMAC_SECRET: ${RETRIEVAL_IDENTITY_HMAC_SECRET:?RETRIEVAL_IDENTITY_HMAC_SECRET is required (>=32 chars)}
       RETRIEVAL_LOGICAL_NAME: ${RETRIEVAL_LOGICAL_NAME:-memory.hybrid}
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}

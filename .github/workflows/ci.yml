@@ -57,13 +57,26 @@ jobs:
             -c "CREATE EXTENSION IF NOT EXISTS vector;"
       - run: npm run db:migrate
       # The integration suite silently skips without TEST_DATABASE_URL, which is how it rotted
-      # unnoticed before. This step fails the job if the suite reports any skipped test.
-      - name: Run integration tests and forbid silent skips
+      # unnoticed before, so skips must stay visible. "Zero skips" was too strong an assertion
+      # though: two tests legitimately require services this job does not provide
+      # (TEST_S3_ENDPOINT, TEST_SANDBOX_IMAGE), so the job could never pass. Conflating "no S3
+      # endpoint" with "the database wiring is broken" hides the failure that actually matters.
+      #
+      # The gate now targets the real risk: any test skipped for want of TEST_DATABASE_URL fails
+      # the job, and the total must not exceed the two known external dependencies.
+      - name: Run integration tests and forbid database-related skips
         run: |
           set -o pipefail
           npm run test:integration 2>&1 | tee integration.log
-          if grep -qE "^# skipped [1-9]|^ℹ skipped [1-9]" integration.log; then
-            echo "Integration tests were skipped; TEST_DATABASE_URL wiring is broken." >&2
+          if grep -q "SKIP TEST_DATABASE_URL is not configured" integration.log; then
+            echo "Integration tests skipped for want of TEST_DATABASE_URL; the wiring is broken." >&2
+            exit 1
+          fi
+          skipped=$(sed -n 's/^ℹ skipped \([0-9]*\)$/\1/p' integration.log | tail -1)
+          skipped=${skipped:-0}
+          if [ "$skipped" -gt 2 ]; then
+            echo "Expected at most 2 skips (S3 endpoint, sandbox image) but saw $skipped." >&2
+            grep "SKIP" integration.log >&2 || true
             exit 1
           fi
 

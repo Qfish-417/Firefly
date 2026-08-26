@@ -4,11 +4,20 @@
 
 ## 启动与停止
 
+`RETRIEVAL_API_TOKEN` 与 `RETRIEVAL_IDENTITY_HMAC_SECRET` 是必需变量且**没有默认值**：缺失时
+`docker compose` 直接拒绝解析，而不是套用一个写在仓库里、人人皆知的弱口令。首次启动前先设置：
+
 ```powershell
+$env:RETRIEVAL_API_TOKEN = "<自定义 token>"
+$env:RETRIEVAL_IDENTITY_HMAC_SECRET = "<至少 32 个字符>"
+
 npm run lite:up
 Invoke-RestMethod http://127.0.0.1:53200/health
 npm run lite:down
 ```
+
+HMAC secret 短于 32 字符时进程会在启动阶段拒绝服务（`createHmacRetrievalIdentityResolver` 校验），
+这是刻意的：一个可被穷举的身份签名比没有签名更危险，因为它看起来是有保护的。
 
 `lite:down` 不删除数据库卷，用户记忆和结构化事实可以跨重启保留。确实需要清空本地数据时，应先确认目标项目，再显式执行：
 
