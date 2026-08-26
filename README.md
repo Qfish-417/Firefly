@@ -16,7 +16,11 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 
 ## 文档入口
 
-按以下顺序阅读：
+**第一次接触这个仓库，先读 [上手指南](./docs/onboarding.md)** —— 最短路径：项目在做什么、
+先看哪 4 个包、五分钟跑起来（命令均已实测）、检索链路顺序、以及几个容易踩的坑。
+求职场景另有 [STAR 简历介绍](./docs/resume-star.md)。
+
+其余按以下顺序阅读：
 
 1. [开工架构与实施顺序](./FireFly-QuestLab-开工架构与实施顺序.md)：编码阶段的事实源，包含通信协议、模块边界、仓库结构、里程碑和 GitHub 权限。
 2. [v3 目标架构图](./FireFly-QuestLab-目标架构-v3.drawio)：43 页分层主图，包含联邦治理、循环防护、Model Gateway、RAG、索引切换、后台 Worker、Parent/Child 扩展、固定索引质量评测、删除修复调度、retired 索引回收、结构化图事实、受治理重排、本地轻量运行、三 Agent CLI 与审计视图。
@@ -31,7 +35,7 @@ FireFly QuestLab 是一个以项目制学习世界为业务主体、以真实学
 11. [模型 Provider 接入说明](./docs/model-provider-integration.md)：内置模型目录、三 Agent 选型、凭据变量与无付费接入诊断。
 12. [M5.33 加固说明](./docs/hardening-m5.33.md)：本轮安全、健壮性与解耦改动的清单、验证方式与行为变更。
 13. [性能基线](./docs/performance-baseline.md)：RAG 检索与三 Agent 闭环的可复跑量化、瓶颈定位与已知不足。
-14. [量化评测报告](./docs/evaluation-report.md)：30720 chunk 带标注语料、真实远程模型下的全量数据——11 个检索场景 x 5 个 k 值（1/3/5/10/20）的 MRR / MAP / nDCG / Recall / Precision，7 个 intent 的检索计划，4 档语料规模曲线，halfvec 相对 fp32 的精度损失拆分（fp16 舍入 vs HNSW 近似），LLM-as-judge 答案质量与客观引用精确率，以及 Agent 顺序与并发（每档 >=100 次调用，p99 可信）。
+14. [量化评测报告](./docs/evaluation-report.md)：真实文档语料（5303 个人写 Markdown chunk，中英混排）与合成语料的全量数据。第 0 节是当前结论速览——**R@10 = 0.912**（gold set 按 h1–h4 小节划分，1~8 个 chunk，对齐 MS MARCO 量级）、6 个检索场景、答案质量与引用精确率、halfvec 精度损失拆分（fp16 舍入 vs HNSW 近似）、Agent 顺序与并发。第 0.5 节记录 6 条被自己的测量推翻的结论，第 23 节记录把 R@10 从 0.706 提到 0.912 的完整过程与被排除的 6 条无效杠杆。
 15. [Agent 能力五维评测](./docs/agent-capability-evaluation.md)：任务完成率、步数效率、工具调用正确率、Token 成本与人工评分的端到端 + 单步双轨评测。工具调用正确率过真实 `validateRetrievalRequest` 边界而非比对字符串；步数分母由状态机声明的理论最小值给出而非实测值；含 A/B 验证，以及满分意味着题目太容易的处理。
 
 `FireFly-开放式目标架构.drawio` 是旧的 11 页分析图，内容较密且存在重复；保留作历史参考，不再作为主图。`FireFly-Agent设计.drawio` 和 `FireFly-Agent设计说明.md` 均属于 Legacy Prototype v0。
