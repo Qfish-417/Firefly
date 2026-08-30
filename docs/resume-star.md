@@ -157,6 +157,9 @@ JSON Schema 校验；token 与成本只认 `model_invocation` 审计账本与原
 
 ## 追问准备
 
+> 面试前建议直接看 **[`docs/interview.md`](./interview.md)** —— 那份把 60 秒开场、STAR 口述、
+> 8 个必问问题与核心数字速查整合在一处，不含本文档的文案取舍内容。下面是同一批答案的原始版本。
+
 ### Q：R@10 = 0.912 是怎么算的？
 
 `前 10 条命中数 / gold set 大小`。除以 10 得到的是 Precision@10 —— 这两个必须分开，
